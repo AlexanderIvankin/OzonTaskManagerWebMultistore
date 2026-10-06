@@ -1,0 +1,10 @@
+{
+  "watch": ["server.js", "src", ".env"],
+  "ignore": ["bot_web.db", "bot_web-*.db", "bot_web.db-*", "bot_web-*.db-*", "node_modules"],
+  "ext": "js,json",
+  "delay": 1000,
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "exec": "node server.js"
+}

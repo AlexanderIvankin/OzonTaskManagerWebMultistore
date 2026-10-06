@@ -1,0 +1,37 @@
+node_modules/
+Ozon/
+BOTFILES/
+backups/
+exports/
+ServerFiles/
+
+backend/outputs/
+
+backend/models-cache/
+
+backend/bot*.db*
+backend/bot_web*.db*
+backend/notifications*.db*
+backend/store*.db*
+backend/users*.db*
+backend/models*.db*
+
+backend/team-info.xlsx
+backend/materials-prices.json
+backend/employees-db.xlsx
+backend/team-info*.xlsx
+backend/materials-prices*.json
+backend/employees-db*.xlsx
+*.xlsx~
+*.xls~
+~$*.xlsx
+
+.env.production
+.env
+
+# Игнорировать все файлы окружения для магазинов
+.env.store*
+
+# Но не игнорировать их файлы-примеры
+!.env.store*.example
+

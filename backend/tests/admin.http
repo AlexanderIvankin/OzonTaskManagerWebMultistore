@@ -1,0 +1,112 @@
+### Переменные
+@baseUrl = http://localhost:5000
+# Ввести админский access токен (после авторизации)
+@adminToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjMsImlhdCI6MTc4ODE4NTI3MywiZXhwIjoxNzg4MTg2MTczfQ.rid7spsMof9Dxb2QSw_G2wwE0Fq4OvRbEqMeh8Rj9IQ
+
+### Получить всех пользователей
+GET {{baseUrl}}/api/admin/users
+Authorization: Bearer {{adminToken}}
+
+### Получить пользователя по ID
+GET {{baseUrl}}/api/admin/users/1
+Authorization: Bearer {{adminToken}}
+
+### Обновить пользователя
+PUT {{baseUrl}}/api/admin/users/1
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Обновлённое имя",
+  "capacity": 3,
+  "earnings_factor": 1.5
+}
+
+### Уволить пользователя (DELETE)
+DELETE {{baseUrl}}/api/admin/users/1
+Authorization: Bearer {{adminToken}}
+
+### Обновить пользователя
+PUT {{baseUrl}}/api/admin/users/1
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "role": "employee"
+}
+
+### Синхронизировать склады из Ozon
+POST {{baseUrl}}/api/admin/warehouses/sync
+Authorization: Bearer {{adminToken}}
+
+### Получить список складов
+GET {{baseUrl}}/api/admin/warehouses
+Authorization: Bearer {{adminToken}}
+
+### Получить заказы в ожидании (awaiting_packaging)
+GET {{baseUrl}}/api/admin/orders/awaiting
+Authorization: Bearer {{adminToken}}
+
+### Назначить заказ сотруднику
+POST {{baseUrl}}/api/admin/orders/TEST-ORDER-001/assign
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "userId": 1
+}
+
+### Снять заказ с сотрудника
+POST {{baseUrl}}/api/admin/orders/TEST-ORDER-001/unassign
+Authorization: Bearer {{adminToken}}
+
+### Экспорт заработка за месяц (скачает файл)
+GET {{baseUrl}}/api/admin/earnings/monthly?month=2025-01
+Authorization: Bearer {{adminToken}}
+
+### Добавить корректировку заработка
+POST {{baseUrl}}/api/admin/earnings/adjust
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "userId": 1,
+  "amount": 100,
+  "reason": "Премия за хорошую работу"
+}
+
+### Обнулить активный заработок сотрудника
+POST {{baseUrl}}/api/admin/earnings/settle/1
+Authorization: Bearer {{adminToken}}
+
+### Сбросить все назначения (только админ)
+POST {{baseUrl}}/api/admin/assignments/clear
+Authorization: Bearer {{adminToken}}
+
+### Перезагрузить очередь заказов
+POST {{baseUrl}}/api/admin/orders/reload-queue
+Authorization: Bearer {{adminToken}}
+
+### Получить текущие настройки материалов
+GET {{baseUrl}}/api/admin/materials
+Authorization: Bearer {{adminToken}}
+
+### Загрузить файл материалов (materials-prices.json)
+POST {{baseUrl}}/api/admin/materials/upload
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary
+
+------WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="materials-prices.json"
+Content-Type: application/json
+
+< ../materials-prices.json
+------WebKitFormBoundary--
+
+### Экспорт team-info (активные сотрудники) — скачает файл
+GET {{baseUrl}}/api/admin/export/team-info
+Authorization: Bearer {{adminToken}}
+
+### Экспорт team-info с уволенными — скачает файл
+GET {{baseUrl}}/api/admin/export/team-info?includeFired=true
+Authorization: Bearer {{adminToken}}

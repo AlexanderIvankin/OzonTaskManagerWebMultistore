@@ -1,0 +1,98 @@
+### Ручная проверка API оповещений (VS Code REST Client / JetBrains HTTP client)
+### 1) Получите accessToken через POST /api/auth/login (см. auth.http)
+### 2) Подставьте токен в переменную ниже
+
+@baseUrl = http://localhost:5000/api
+@accessToken = PASTE_ACCESS_TOKEN_HERE
+
+### Список личных оповещений
+GET {{baseUrl}}/notifications?box=mine&limit=30
+Authorization: Bearer {{accessToken}}
+
+### Журнал действий сотрудников (только admin/moderator)
+GET {{baseUrl}}/notifications?box=staff&limit=30
+Authorization: Bearer {{accessToken}}
+
+### Поиск по номеру заказа (в личных или в журнале действий)
+GET {{baseUrl}}/notifications?box=staff&orderId=12345-1
+Authorization: Bearer {{accessToken}}
+
+### Поиск по имени сотрудника (журнал действий)
+GET {{baseUrl}}/notifications?box=staff&userName=Иван
+Authorization: Bearer {{accessToken}}
+
+### Комбинированный поиск: заказ + сотрудник
+GET {{baseUrl}}/notifications?box=staff&orderId=12345&userName=Иван
+Authorization: Bearer {{accessToken}}
+
+### Непрочитанные личные
+GET {{baseUrl}}/notifications?box=mine&unread=1
+Authorization: Bearer {{accessToken}}
+
+### Счётчик непрочитанных личных
+GET {{baseUrl}}/notifications/unread-count?box=mine
+Authorization: Bearer {{accessToken}}
+
+### Счётчик непрочитанных в журнале действий
+GET {{baseUrl}}/notifications/unread-count?box=staff
+Authorization: Bearer {{accessToken}}
+
+### Отметить выбранные прочитанными
+POST {{baseUrl}}/notifications/read
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "box": "mine",
+  "ids": [1, 2]
+}
+
+### Отметить ВСЕ личные прочитанными
+POST {{baseUrl}}/notifications/read
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "box": "mine",
+  "all": true
+}
+
+### Удалить выбранные
+POST {{baseUrl}}/notifications/delete
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "box": "mine",
+  "ids": [1, 2]
+}
+
+### Очистить прочитанные
+POST {{baseUrl}}/notifications/clear-read
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "box": "mine"
+}
+
+### Журнал ошибок сервера (только admin/moderator)
+GET {{baseUrl}}/notifications/errors?limit=30
+Authorization: Bearer {{accessToken}}
+
+### Количество ошибок
+GET {{baseUrl}}/notifications/errors/count
+Authorization: Bearer {{accessToken}}
+
+### Удалить выбранные ошибки
+POST {{baseUrl}}/notifications/errors/delete
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "ids": [1]
+}
+
+### Очистить весь журнал ошибок
+POST {{baseUrl}}/notifications/errors/clear
+Authorization: Bearer {{accessToken}}

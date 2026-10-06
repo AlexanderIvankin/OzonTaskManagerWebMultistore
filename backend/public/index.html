@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>API Test</title>
+</head>
+<body>
+  <h1>API Test Console</h1>
+  <p>Откройте консоль (F12) и выполняйте запросы к /api/...</p>
+  <button onclick="testRegister()">Test Register</button>
+  <button onclick="testLogin()">Test Login</button>
+  <pre id="output"></pre>
+  <script>
+    const output = document.getElementById('output');
+    function log(data) { output.textContent = JSON.stringify(data, null, 2); }
+
+    async function testRegister() {
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'testuser',
+            email: 'test@example.com',
+            password: '123456',
+            name: 'Test User'
+          })
+        });
+        const data = await res.json();
+        log(data);
+      } catch (e) { log(e.message); }
+    }
+
+    async function testLogin() {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            usernameOrEmail: 'testuser',
+            password: '123456'
+          })
+        });
+        const data = await res.json();
+        log(data);
+      } catch (e) { log(e.message); }
+    }
+  </script>
+</body>
+</html>

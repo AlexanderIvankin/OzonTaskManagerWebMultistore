@@ -1,0 +1,68 @@
+### Переменные
+@baseUrl = http://localhost:5000
+
+### Регистрация нового пользователя
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "testuser",
+  "email": "test@example.com",
+  "password": "password123",
+  "name": "Тестовый Пользователь"
+}
+
+### Попытка регистрации с уже существующим email (должна вернуть 409)
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "testuser2",
+  "email": "test@example.com",
+  "password": "password123",
+  "name": "Дубликат"
+}
+
+### Логин Admin (получаем accessToken и refreshToken)
+# @name login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "usernameOrEmail": "admin",
+  "password": "admin123"
+}
+
+### Логин (получаем accessToken и refreshToken)
+# @name login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "usernameOrEmail": "testuser",
+  "password": "password123"
+}
+
+### Сохраняем токены в переменные
+@accessToken = {{login.response.body.accessToken}}
+@refreshToken = {{login.response.body.refreshToken}}
+
+### Получить профиль (требуется accessToken)
+GET {{baseUrl}}/api/user/profile
+Authorization: Bearer {{accessToken}}
+
+### Обновить accessToken
+POST {{baseUrl}}/api/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{refreshToken}}"
+}
+
+### Выйти (удалить refreshToken)
+POST {{baseUrl}}/api/auth/logout
+Content-Type: application/json
+
+{
+  "refreshToken": "{{refreshToken}}"
+}

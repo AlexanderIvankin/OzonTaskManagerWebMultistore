@@ -1,0 +1,10 @@
+node_modules/
+.env
+input/*.db*
+output/*.db*
+output-merged/*.db*
+backups/
+logs/
+MigrationHistory/
+!input/.gitkeep
+!output/.gitkeep

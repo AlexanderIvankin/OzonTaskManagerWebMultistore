@@ -1,0 +1,44 @@
+### Переменные
+@baseUrl = http://localhost:5000
+# Ввести access токен (после авторизации)
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImlhdCI6MTc4ODExNDU1MiwiZXhwIjoxNzg4MTE1NDUyfQ.moLjeNrWkgMNb1j8o9y_kenBCsfSgFJyCAiRul2aeME
+
+### Получить активные заказы (требуется роль сотрудника)
+GET {{baseUrl}}/api/user/orders/active
+Authorization: Bearer {{accessToken}}
+
+### Завершить заказ (пример с TEST-ORDER-001)
+POST {{baseUrl}}/api/user/orders/TEST-ORDER-001/finish
+Authorization: Bearer {{accessToken}}
+
+### Отменить заказ
+POST {{baseUrl}}/api/user/orders/TEST-ORDER-001/cancel
+Authorization: Bearer {{accessToken}}
+
+### Получить этикетку (если заказ завершён)
+GET {{baseUrl}}/api/user/orders/TEST-ORDER-001/label
+Authorization: Bearer {{accessToken}}
+
+### Получить заработок за текущий месяц
+GET {{baseUrl}}/api/user/earnings/monthly
+Authorization: Bearer {{accessToken}}
+
+### Получить активный заработок
+GET {{baseUrl}}/api/user/earnings/active
+Authorization: Bearer {{accessToken}}
+
+### Переключить приём заказов
+POST {{baseUrl}}/api/user/toggle-orders
+Authorization: Bearer {{accessToken}}
+
+### Заполнить статистику товара
+POST {{baseUrl}}/api/user/fill-stats
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "offerId": "TEST-OFFER-1",
+  "material": "Pet-G",
+  "color": "Черный",
+  "weight": 150
+}
