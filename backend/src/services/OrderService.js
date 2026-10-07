@@ -1,9 +1,17 @@
 const OzonService = require('./OzonService');
-const { Assignment, UserStats, Earnings, ProductStat, User } = require('../models');
-const { getDB } = require('../config/database');
+const { Assignment, UserStats, Earnings, ProductStat } = require('../models');
+const User = require('../models/User');
+const UserStore = require('../models/UserStore');
+const { getStoreDB } = require('../config/database');
 const NotificationService = require('./NotificationService');
-const { escapeHtml } = require('../utils');
-const { finishingOrders, pendingFinishConfirmations, pendingForms, processingOrders, productImagesCache, orderStateCache } = require('../state');
+const {
+  finishingOrders,
+  pendingFinishConfirmations,
+  pendingForms,
+  processingOrders,
+  productImagesCache,
+  orderStateCache,
+} = require('../state');
 const EarningsService = require('./EarningsService');
 const ModelService = require('./ModelService');
 
@@ -11,29 +19,45 @@ const ModelService = require('./ModelService');
 //   awaiting_packaging — активный заказ (в работе);
 //   awaiting_deliver   — завершён, но этикетка ещё доступна (см. вкладку
 //                        «Завершённые заказы»).
-// Пока заказ в одном из них, в orderStateCache хранятся его детали и статус,
-// а в productImagesCache — фотографии товаров.
 const ORDER_STATUS_PACKAGING = 'awaiting_packaging';
 const ORDER_STATUS_DELIVER = 'awaiting_deliver';
 
 // Страховочный TTL кэша фотографий (24 часа): записи, которые давно никто не
 // запрашивал и которые не принадлежат ни одному «живому» заказу из кэша,
-// вычищаются при синхронизации — иначе фото отменённых/зависших заказов
-// оставались бы в памяти до перезапуска сервера.
+// вычищаются при синхронизации.
 const PRODUCT_IMAGES_TTL_MS = 24 * 60 * 60 * 1000;
 
-// Глобальное состояние очереди (в памяти)
-let pendingNewOrders = [];
-let currentOrderProcessing = null;
-let orderAssignRetries = new Map();
+// ============================================================================
+//  Глобальное состояние очереди — per-store.
+//  Каждый магазин имеет свой список «новых заказов» и свой флаг «идёт
+//  назначение». Ключ — строка storeId.
+// ============================================================================
+const pendingNewOrdersByStore = new Map();       // storeId -> []
+const currentOrderProcessingByStore = new Map(); // storeId -> { order, timestamp } | undefined
+const orderAssignRetriesByStore = new Map();     // storeId -> Map<orderId, count>
 
-// Конфигурация материалов и минимального заработка загружается внутри
-// EarningsService (MaterialsService) — здесь дубликаты не нужны.
+function getPendingList(storeId) {
+  const key = String(storeId);
+  if (!pendingNewOrdersByStore.has(key)) pendingNewOrdersByStore.set(key, []);
+  return pendingNewOrdersByStore.get(key);
+}
+
+function getRetries(storeId) {
+  const key = String(storeId);
+  if (!orderAssignRetriesByStore.has(key)) orderAssignRetriesByStore.set(key, new Map());
+  return orderAssignRetriesByStore.get(key);
+}
+
+// ============================================================================
+//  Составные ключи in-memory кэшей (state.js): одна и та же строка orderId
+//  теоретически может встретиться в двух магазинах — префиксуем storeId.
+// ============================================================================
+function stateKey(storeId, id) {
+  return `${storeId}:${id}`;
+}
 
 /**
- * Формирует компактный JSON-слепок деталей заказа для payload оповещения
- * (по мотивам formatOrderDetails из commands.js, но в структурированном виде).
- * Сохраняется в notifications.db -> payload и участвует в поиске по offer_id.
+ * Формирует компактный JSON-слепок деталей заказа для payload оповещения.
  */
 function buildOrderNotificationDetails(details) {
   if (!details) return null;
@@ -42,9 +66,9 @@ function buildOrderNotificationDetails(details) {
     substatus: details.substatus || null,
     delivery_method: details.delivery_method
       ? {
-          name: details.delivery_method.name || null,
-          warehouse_id: details.delivery_method.warehouse_id || null,
-        }
+        name: details.delivery_method.name || null,
+        warehouse_id: details.delivery_method.warehouse_id || null,
+      }
       : null,
     products: (details.products || []).map((p) => ({
       name: p.name || null,
@@ -61,67 +85,66 @@ function buildOrderNotificationDetails(details) {
 
 class OrderService {
   // =================================================================
-  // 1. ОЧИСТКА УСТАРЕВШИХ НАЗНАЧЕНИЙ (из bot.js)
+  // 1. ОЧИСТКА УСТАРЕВШИХ НАЗНАЧЕНИЙ
   // =================================================================
-  static async cleanExpiredAssignments(activeOrderIds, { userId = null } = {}) {
-    console.log('[OrderService] cleanExpiredAssignments начата');
+  static async cleanExpiredAssignments(storeId, activeOrderIds, { userId = null } = {}) {
+    console.log(`[OrderService][store ${storeId}] cleanExpiredAssignments начата`);
     const activeSet = new Set(activeOrderIds);
-    const db = getDB();
+    const db = getStoreDB(storeId);
 
-    // Получаем все активные назначения с LEFT JOIN на users.
-    // userId (опционально) ограничивает проверку одним сотрудником — так
-    // вызывается авто-снятие из интерфейса (кнопка «Обновить»), чтобы кнопка
-    // одного сотрудника не снимала заказы у остальных.
+    // Забираем активные назначения + per-store статус сотрудника (is_fired
+    // лежит в user_stores, не в users).
     const assignments = await db.all(
-      `SELECT a.order_id, a.user_id, u.tg_user_id, u.name as employee_name,
-            u.is_fired, a.status as local_status
-     FROM assignments a
-     LEFT JOIN users u ON a.user_id = u.id
-     WHERE a.status = "assigned"${userId ? ' AND a.user_id = ?' : ''}`,
-      ...(userId ? [userId] : [])
+      `SELECT a.order_id, a.user_id, u.tg_user_id, u.name AS employee_name,
+              COALESCE(us.is_fired, 0) AS is_fired,
+              a.status AS local_status
+       FROM assignments a
+       LEFT JOIN usersdb.users u ON a.user_id = u.id
+       LEFT JOIN usersdb.user_stores us ON us.user_id = a.user_id AND us.store_id = ?
+       WHERE a.status = "assigned"${userId ? ' AND a.user_id = ?' : ''}`,
+      ...(userId ? [storeId, userId] : [storeId])
     );
 
     for (const assignment of assignments) {
       const orderId = assignment.order_id;
+      const compositeKey = stateKey(storeId, orderId);
 
       // === 1. Проверка зависших состояний завершения ===
-      const finishState = finishingOrders.get(orderId);
+      const finishState = finishingOrders.get(compositeKey);
       if (finishState) {
         const elapsed = Date.now() - finishState.startedAt;
         if (elapsed < 10 * 60 * 1000) {
-          console.log(`[CLEAN] Заказ ${orderId} в процессе завершения (${Math.round(elapsed / 1000)} сек.), пропускаем`);
+          console.log(`[CLEAN][store ${storeId}] Заказ ${orderId} в процессе завершения (${Math.round(elapsed / 1000)} сек.), пропускаем`);
           continue;
         }
-        console.warn(`[CLEAN] Заказ ${orderId} завис в finishingOrders на ${Math.round(elapsed / 60000)} мин. Принудительно удаляем.`);
-        finishingOrders.delete(orderId);
-        pendingFinishConfirmations.delete(orderId);
+        console.warn(`[CLEAN][store ${storeId}] Заказ ${orderId} завис в finishingOrders на ${Math.round(elapsed / 60000)} мин. Принудительно удаляем.`);
+        finishingOrders.delete(compositeKey);
+        pendingFinishConfirmations.delete(compositeKey);
       }
 
-      const confirmState = pendingFinishConfirmations.get(orderId);
+      const confirmState = pendingFinishConfirmations.get(compositeKey);
       if (confirmState) {
         if (!confirmState.startedAt) {
-          console.warn(`[CLEAN] Заказ ${orderId} имеет pendingFinishConfirmations без startedAt. Удаляем.`);
-          pendingFinishConfirmations.delete(orderId);
+          console.warn(`[CLEAN][store ${storeId}] Заказ ${orderId} имеет pendingFinishConfirmations без startedAt. Удаляем.`);
+          pendingFinishConfirmations.delete(compositeKey);
         } else {
           const elapsed = Date.now() - confirmState.startedAt;
           if (elapsed > 10 * 60 * 1000) {
-            console.warn(`[CLEAN] Заказ ${orderId} имеет зависшее pendingFinishConfirmations (${Math.round(elapsed / 60000)} мин), удаляем.`);
-            pendingFinishConfirmations.delete(orderId);
+            console.warn(`[CLEAN][store ${storeId}] Заказ ${orderId} имеет зависшее pendingFinishConfirmations (${Math.round(elapsed / 60000)} мин), удаляем.`);
+            pendingFinishConfirmations.delete(compositeKey);
           } else {
-            console.log(`[CLEAN] Заказ ${orderId} ожидает подтверждения, пропускаем`);
+            console.log(`[CLEAN][store ${storeId}] Заказ ${orderId} ожидает подтверждения, пропускаем`);
             continue;
           }
         }
       }
 
       // === 2. Если заказ всё ещё в awaiting_packaging — пропускаем ===
-      if (activeSet.has(orderId)) {
-        continue;
-      }
+      if (activeSet.has(orderId)) continue;
 
       // === 3. Если заказ уже завершён в БД — пропускаем ===
       if (assignment.local_status === 'completed') {
-        console.log(`[CLEAN] Заказ ${orderId} уже завершён (status=completed), пропускаем`);
+        console.log(`[CLEAN][store ${storeId}] Заказ ${orderId} уже завершён (status=completed), пропускаем`);
         continue;
       }
 
@@ -130,36 +153,32 @@ class OrderService {
         orderId
       );
       if (freshStatus && freshStatus.status === 'completed') {
-        console.log(`[CLEAN] Заказ ${orderId} уже завершён (повторная проверка), пропускаем`);
+        console.log(`[CLEAN][store ${storeId}] Заказ ${orderId} уже завершён (повторная проверка), пропускаем`);
         continue;
       }
 
       // === 4. Если сотрудник отсутствует или уволен — снимаем заказ ===
       if (!assignment.employee_name || assignment.is_fired === 1) {
-        console.warn(`[CLEAN] Заказ ${orderId} назначен на некорректного сотрудника (user_id=${assignment.user_id}), снимаем`);
+        console.warn(`[CLEAN][store ${storeId}] Заказ ${orderId} назначен на некорректного сотрудника (user_id=${assignment.user_id}), снимаем`);
         await db.run('DELETE FROM assignments WHERE order_id = ?', orderId);
 
-        // Оповещения: персоналу в журнал действий + сотруднику лично.
-        // Фикс: раньше отправляли по tg_user_id, а комнаты сокета именуются
-        // по user_id — поэтому авто-снятие до сотрудника не доходило.
         NotificationService.notifyStaff('order_unassigned', {
           orderId,
           auto: true,
           reason: 'Сотрудник отсутствует или уволен',
           userName: assignment.employee_name || 'не найден',
-        });
+        }, { storeId });
         NotificationService.notifyUser(assignment.user_id, 'order_unassigned', {
           orderId,
           auto: true,
           reason: 'Сотрудник отсутствует или уволен',
-        });
-        // Снимок заказа больше не нужен: он не в awaiting_packaging, фото чистим
-        OrderService.forgetOrderState(orderId, { prunePhotos: true });
+        }, { storeId });
+        this.forgetOrderState(storeId, orderId, { prunePhotos: true });
         continue;
       }
 
       // === 5. Стандартное удаление: заказ больше не в awaiting_packaging ===
-      console.log(`[CLEAN] Заказ ${orderId} больше не в awaiting_packaging, отменяем назначение у ${assignment.employee_name}`);
+      console.log(`[CLEAN][store ${storeId}] Заказ ${orderId} больше не в awaiting_packaging, отменяем назначение у ${assignment.employee_name}`);
       await db.run('DELETE FROM assignments WHERE order_id = ?', orderId);
 
       NotificationService.notifyStaff('order_unassigned', {
@@ -167,107 +186,110 @@ class OrderService {
         auto: true,
         reason: 'Заказ более не актуален (не в awaiting_packaging)',
         userName: assignment.employee_name,
-      });
+      }, { storeId });
       NotificationService.notifyUser(assignment.user_id, 'order_unassigned', {
         orderId,
         auto: true,
         reason: 'Заказ более не актуален',
-      });
-      // Заказ вышел из awaiting_packaging -> забываем снимок и чистим фото
-      OrderService.forgetOrderState(orderId, { prunePhotos: true });
+      }, { storeId });
+      this.forgetOrderState(storeId, orderId, { prunePhotos: true });
     }
 
-    console.log('[OrderService] cleanExpiredAssignments завершена');
+    console.log(`[OrderService][store ${storeId}] cleanExpiredAssignments завершена`);
   }
 
   // =================================================================
-  // 2. ПРОВЕРКА НОВЫХ ЗАКАЗОВ (из bot.js checkAndOfferNewOrders)
+  // 2. ПРОВЕРКА НОВЫХ ЗАКАЗОВ
   // =================================================================
-  static async checkNewOrders() {
-    console.log('[OrderService] Проверка новых заказов...');
+  static async checkNewOrders(storeId) {
+    console.log(`[OrderService][store ${storeId}] Проверка новых заказов...`);
     try {
-      const allOrders = await OzonService.fetchAwaitingOrders();
+      const allOrders = await OzonService.fetchAwaitingOrders(storeId);
       const activeOrderIds = allOrders.map(o => o.posting_number);
-      await OrderService.cleanExpiredAssignments(activeOrderIds);
+      await OrderService.cleanExpiredAssignments(storeId, activeOrderIds);
+
+      const pending = getPendingList(storeId);
+      const storeKey = String(storeId);
 
       if (!allOrders.length) {
-        if (pendingNewOrders.length === 0) {
-          currentOrderProcessing = null;
+        if (pending.length === 0) {
+          currentOrderProcessingByStore.delete(storeKey);
         }
         return;
       }
 
-      const db = getDB();
+      const db = getStoreDB(storeId);
       const assignedOrderIds = (await db.all('SELECT order_id FROM assignments WHERE status = "assigned"'))
         .map(r => r.order_id);
       const assignedSet = new Set(assignedOrderIds);
 
       const newOrders = allOrders.filter(order => !assignedSet.has(order.posting_number));
-      if (!newOrders.length) {
-        return;
-      }
+      if (!newOrders.length) return;
 
-      // Сохраняем текущий обрабатываемый заказ
-      const currentOrderId = currentOrderProcessing?.order?.posting_number;
+      // Текущий обрабатываемый заказ: если он больше не в списке — сбрасываем
+      const current = currentOrderProcessingByStore.get(storeKey);
+      const currentOrderId = current?.order?.posting_number;
       if (currentOrderId && !newOrders.some(o => o.posting_number === currentOrderId)) {
-        console.log(`[CHECK] Текущий заказ ${currentOrderId} больше не в awaiting_packaging, сбрасываем`);
-        currentOrderProcessing = null;
+        console.log(`[CHECK][store ${storeId}] Текущий заказ ${currentOrderId} больше не в awaiting_packaging, сбрасываем`);
+        currentOrderProcessingByStore.delete(storeKey);
       }
 
-      pendingNewOrders = newOrders;
-      console.log(`[CHECK] Очередь обновлена, заказов: ${pendingNewOrders.length}`);
+      // Обновляем per-store очередь
+      pendingNewOrdersByStore.set(storeKey, newOrders);
+      console.log(`[CHECK][store ${storeId}] Очередь обновлена, заказов: ${newOrders.length}`);
 
-      // Оповещаем персонал о новых заказах (БД оповещений + WebSocket).
-      // ТОЛЬКО модераторам; новое оповещение заменяет старое непрочитанное
-      // (в журнале подобное оповещение всегда ОДНО).
       NotificationService.notifyStaff(
         'new_orders_available',
         {
-          count: pendingNewOrders.length,
-          orders: pendingNewOrders.map(o => ({
+          count: newOrders.length,
+          orders: newOrders.map(o => ({
             posting_number: o.posting_number,
             products_count: o.products?.length || 0,
           })),
         },
         {
+          storeId,
           roles: ['moderator'],
           replaceUnreadType: 'new_orders_available',
-          // Без Web Push: оповещение дедуплицируется и обновляется постоянно —
-          // будить телефон на каждый тик планировщика нельзя.
           push: false,
         },
       );
 
       // Если нет активного заказа и есть заказы – берём первый
-      if (!currentOrderProcessing && pendingNewOrders.length) {
-        currentOrderProcessing = { order: pendingNewOrders[0], timestamp: Date.now() };
+      if (!currentOrderProcessingByStore.has(storeKey) && newOrders.length) {
+        currentOrderProcessingByStore.set(storeKey, { order: newOrders[0], timestamp: Date.now() });
       }
 
     } catch (err) {
-      console.error('[OrderService] Ошибка checkNewOrders:', err);
+      console.error(`[OrderService][store ${storeId}] Ошибка checkNewOrders:`, err);
       throw err;
     }
   }
 
   // =================================================================
-  // 3. НАЗНАЧЕНИЕ ЗАКАЗА (из commands.js assignOrder)
+  // 3. НАЗНАЧЕНИЕ ЗАКАЗА
   // =================================================================
-  static async assignOrder(orderId, userId, adminId = null) {
+  static async assignOrder(storeId, orderId, userId, adminId = null) {
+    const compositeKey = stateKey(storeId, orderId);
+    const storeKey = String(storeId);
+    const pending = getPendingList(storeId);
+
     // Блокировка
-    if (processingOrders.has(orderId)) {
-      console.log(`[ASSIGN] Заказ ${orderId} уже обрабатывается, пропускаем.`);
+    if (processingOrders.has(compositeKey)) {
+      console.log(`[ASSIGN][store ${storeId}] Заказ ${orderId} уже обрабатывается, пропускаем.`);
       throw new Error('Заказ уже обрабатывается');
     }
-    processingOrders.add(orderId);
+    processingOrders.add(compositeKey);
 
     let queuedOrder = null;
-    const queueIndex = pendingNewOrders.findIndex(o => o.posting_number === orderId);
+    const queueIndex = pending.findIndex(o => o.posting_number === orderId);
     if (queueIndex !== -1) {
-      queuedOrder = pendingNewOrders.splice(queueIndex, 1)[0];
-      console.log(`[ASSIGN] Заказ ${orderId} удалён из очереди`);
+      queuedOrder = pending.splice(queueIndex, 1)[0];
+      console.log(`[ASSIGN][store ${storeId}] Заказ ${orderId} удалён из очереди`);
     }
-    if (currentOrderProcessing?.order?.posting_number === orderId) {
-      currentOrderProcessing = null;
+    const current = currentOrderProcessingByStore.get(storeKey);
+    if (current?.order?.posting_number === orderId) {
+      currentOrderProcessingByStore.delete(storeKey);
     }
 
     let assignedInDb = false;
@@ -278,33 +300,39 @@ class OrderService {
       // Проверка сотрудника
       employee = await User.getById(userId);
       if (!employee) throw new Error(`Сотрудник с ID ${userId} не найден.`);
-      if (employee.is_fired) throw new Error(`Сотрудник ${employee.name} уволен.`);
+
+      // Per-store статус: запись в user_stores обязательна (иначе человек не
+      // числится сотрудником этого магазина) и is_fired должен быть 0.
+      const storeRecord = await UserStore.get(userId, storeId);
+      if (!storeRecord) {
+        throw new Error(`Пользователь ${employee.name} не привязан к магазину ${storeId}.`);
+      }
+      if (storeRecord.is_fired) {
+        throw new Error(`Сотрудник ${employee.name} уволен в магазине ${storeId}.`);
+      }
+
       // Создателю ('god') заказы не назначаются — он вне списков сотрудников.
-      // Исключение: Создатель может назначить заказ самому себе (для тестов),
-      // т.е. разрешено только когда назначающий (adminId) и получатель (userId)
-      // — один и тот же пользователь.
+      // Исключение: Создатель может назначить заказ самому себе (для тестов).
       if (employee.role === 'god') {
         if (!adminId || adminId !== userId) {
           throw new Error(`Заказ нельзя назначить Создателю.`);
         }
       }
 
-      // Получение деталей заказа
-      orderDetails = await OzonService.getOrderDetails(orderId);
+      // Получение деталей заказа (per-store клиент Ozon)
+      orderDetails = await OzonService.getOrderDetails(storeId, orderId);
       if (!orderDetails) throw new Error(`Не удалось получить детали заказа ${orderId}.`);
 
       // Очистка старых состояний
-      await this.clearOrderState(orderId);
+      await this.clearOrderState(storeId, orderId);
 
-      // Назначение в БД
-      await Assignment.assign(orderId, userId);
+      // Назначение в БД (store-N.db)
+      await Assignment.assign(storeId, orderId, userId);
       assignedInDb = true;
-      console.log(`[ASSIGN] Заказ ${orderId} записан в БД за сотрудником ${employee.name}`);
+      console.log(`[ASSIGN][store ${storeId}] Заказ ${orderId} записан в БД за сотрудником ${employee.name}`);
 
-      // Снимок заказа в кэше: детали УЖЕ загружены (0 доп. вызовов Ozon) —
-      // страница «Мои заказы» берёт состав отсюда, пока заказ не выйдет из
-      // awaiting_packaging/awaiting_deliver (см. syncOrderStatuses).
-      this.cacheOrderState(orderId, {
+      // Снимок заказа в кэше
+      this.cacheOrderState(storeId, orderId, {
         userId,
         status: orderDetails.status || ORDER_STATUS_PACKAGING,
         details: orderDetails,
@@ -312,133 +340,120 @@ class OrderService {
         completedAt: null,
       });
 
-      // === ПРОВЕРКА СТАТИСТИКИ (перенесено из commands.js assignOrder, шаг 4) ===
-      // Каких товаров ещё нет в product_stats — сотрудник заполнит их
-      // через диалог «Заполнить статистику» на странице «Заказы».
+      // === ПРОВЕРКА СТАТИСТИКИ (per-store product_stats) ===
       const missingStats = [];
       for (const product of orderDetails.products || []) {
         const offerId = product.offer_id;
         if (!offerId) continue;
-        const stats = await ProductStat.get(offerId);
+        const stats = await ProductStat.get(storeId, offerId);
         if (!stats) missingStats.push(offerId);
       }
 
-      // === ОПОВЕЩЕНИЕ О НАЗНАЧЕНИИ (вместо сообщений в Telegram) ===
-      // Одно событие «order_assigned» для обеих аудиторий. В payload кладём
-      // детали заказа (состав с offer_id, склад, трек-номер) + missingStats —
-      // как в бот-версии уходило текстом в сообщении сотруднику и модератору.
+      // === ОПОВЕЩЕНИЕ О НАЗНАЧЕНИИ ===
+      const adminUser = adminId ? await User.getById(adminId) : null;
       const assignPayload = {
         orderId,
         userId,
         userName: employee.name,
         adminId: adminId || null,
-        adminName: adminId
-          ? (await User.getById(adminId))?.name || String(adminId)
-          : null,
+        adminName: adminUser?.name || (adminId ? String(adminId) : null),
         missingStats,
         details: buildOrderNotificationDetails(orderDetails),
       };
-      NotificationService.notifyUser(userId, 'order_assigned', assignPayload);
-      NotificationService.notifyStaff('order_assigned', assignPayload);
+      NotificationService.notifyUser(userId, 'order_assigned', assignPayload, { storeId });
+      NotificationService.notifyStaff('order_assigned', assignPayload, { storeId });
 
-      // === ФОТОГРАФИИ: пропускаем ===
-      // В бот-версии фото товаров отправлялись в Telegram (fetchProductsImages).
-      // В веб-версии фото всегда доступны на странице «Заказы»
-      // (attachProductImages) — дублировать в оповещения не нужно.
-
-      // === 3D-МОДЕЛИ (шаг 9 из bot.js assignOrder) ===
-      // Для каждого offer_id из состава заказа ищем zip-модель в offer_models
-      // (с учётом родительского артикула -NR/-NL). Найденные модели записываются
-      // сотруднику в issued_models, сотруднику уходит оповещение «модели доступны»,
-      // персоналу — журнал выданных и список недостающих. Ошибка выдачи моделей
-      // НЕ отменяет назначение заказа (как в бот-версии).
+      // === 3D-МОДЕЛИ ===
+      // Модели и их выдача глобальны (models.db), но если магазин отключил
+      // модели (DISABLE_MODELS=true) — пропускаем выдачу.
       let modelsSummary = null;
-      try {
-        modelsSummary = await ModelService.issueForAssignment(
-          orderId,
-          userId,
-          employee,
-          orderDetails
-        );
-      } catch (modelsErr) {
-        console.error(`[ASSIGN] Ошибка выдачи 3D-моделей для ${orderId}:`, modelsErr);
-        NotificationService.notifyStaff('order_assign_error', {
-          orderId,
-          error: `Выдача 3D-моделей: ${modelsErr.message}`,
-          userName: employee.name,
-        });
+      const store = require('../config/stores').getStore(storeId);
+      if (!store.features.disableModels) {
+        try {
+          modelsSummary = await ModelService.issueForAssignment(
+            orderId,
+            userId,
+            employee,
+            orderDetails,
+            { storeId },
+          );
+        } catch (modelsErr) {
+          console.error(`[ASSIGN][store ${storeId}] Ошибка выдачи 3D-моделей для ${orderId}:`, modelsErr);
+          NotificationService.notifyStaff('order_assign_error', {
+            orderId,
+            error: `Выдача 3D-моделей: ${modelsErr.message}`,
+            userName: employee.name,
+          }, { storeId });
+        }
       }
 
-      orderAssignRetries.delete(orderId);
-      console.log(`[ASSIGN] Заказ ${orderId} успешно назначен сотруднику ${employee.name} (ID ${employee.id})`);
+      getRetries(storeId).delete(orderId);
+      console.log(`[ASSIGN][store ${storeId}] Заказ ${orderId} успешно назначен сотруднику ${employee.name} (ID ${employee.id})`);
       return { success: true, employee };
 
     } catch (err) {
-      console.error(`[ASSIGN] Ошибка назначения заказа ${orderId}:`, err);
+      console.error(`[ASSIGN][store ${storeId}] Ошибка назначения заказа ${orderId}:`, err);
 
       if (assignedInDb) {
-        // Ошибка после записи в БД — не возвращаем заказ в очередь
-        console.error(`[ASSIGN] Заказ ${orderId} уже назначен в БД, в очередь не возвращаем.`);
+        console.error(`[ASSIGN][store ${storeId}] Заказ ${orderId} уже назначен в БД, в очередь не возвращаем.`);
         NotificationService.notifyStaff('order_assign_error', {
           orderId,
           error: err.message,
           userName: employee?.name || userId,
-        });
+        }, { storeId });
         NotificationService.logServerError('OrderService.assignOrder', err, {
-          orderId,
-          phase: 'after_db_write',
+          storeId, orderId, phase: 'after_db_write',
         });
       } else {
-        // Ошибка до записи в БД — возвращаем заказ в очередь
-        let retries = orderAssignRetries.get(orderId) || 0;
+        const retriesMap = getRetries(storeId);
+        let retries = retriesMap.get(orderId) || 0;
         retries++;
-        orderAssignRetries.set(orderId, retries);
+        retriesMap.set(orderId, retries);
 
         if (retries <= 3) {
-          if (!pendingNewOrders.some(o => o.posting_number === orderId)) {
+          if (!pending.some(o => o.posting_number === orderId)) {
             if (!queuedOrder) {
               try {
-                queuedOrder = await OzonService.fetchAwaitingOrdersById(orderId);
+                queuedOrder = await OzonService.fetchAwaitingOrdersById(storeId, orderId);
               } catch (e) {
                 queuedOrder = { posting_number: orderId, products: [] };
               }
             }
             if (queuedOrder) {
-              pendingNewOrders.unshift(queuedOrder);
-              console.log(`[ASSIGN] Заказ ${orderId} возвращён в очередь (попытка ${retries}/3).`);
+              pending.unshift(queuedOrder);
+              console.log(`[ASSIGN][store ${storeId}] Заказ ${orderId} возвращён в очередь (попытка ${retries}/3).`);
             }
           }
         } else {
-          console.error(`[ASSIGN] Заказ ${orderId} не удалось назначить после 3 попыток.`);
+          console.error(`[ASSIGN][store ${storeId}] Заказ ${orderId} не удалось назначить после 3 попыток.`);
           NotificationService.notifyStaff('order_assign_failed', {
             orderId,
             error: err.message,
             attempts: retries,
-          });
+          }, { storeId });
           NotificationService.logServerError('OrderService.assignOrder', err, {
-            orderId,
-            attempts: retries,
+            storeId, orderId, attempts: retries,
           });
-          orderAssignRetries.delete(orderId);
+          retriesMap.delete(orderId);
         }
       }
       throw err;
     } finally {
-      processingOrders.delete(orderId);
-      console.log(`[ASSIGN] Блокировка для ${orderId} снята.`);
+      processingOrders.delete(compositeKey);
+      console.log(`[ASSIGN][store ${storeId}] Блокировка для ${orderId} снята.`);
     }
   }
 
   // =================================================================
-  // 4. ЗАВЕРШЕНИЕ ЗАКАЗА (из commands.js finishOrder)
+  // 4. ЗАВЕРШЕНИЕ ЗАКАЗА
   // =================================================================
-  static async finishOrder(orderId, userId) {
-    console.log(`[FINISH] === Начало завершения заказа ${orderId} сотрудником ${userId} ===`);
+  static async finishOrder(storeId, orderId, userId) {
+    console.log(`[FINISH][store ${storeId}] === Начало завершения заказа ${orderId} сотрудником ${userId} ===`);
     let transactionCompleted = false;
+    const compositeKey = stateKey(storeId, orderId);
 
     try {
-      // Проверяем, что заказ ещё активен и принадлежит пользователю
-      const db = getDB();
+      const db = getStoreDB(storeId);
       const assignment = await db.get(
         'SELECT status FROM assignments WHERE order_id = ? AND user_id = ? AND status = "assigned"',
         orderId, userId
@@ -447,114 +462,96 @@ class OrderService {
         throw new Error(`Заказ ${orderId} уже завершён или не найден.`);
       }
 
-      // Получаем пользователя
       const user = await User.getById(userId);
       if (!user) throw new Error('Пользователь не найден');
 
-      // 1. Получаем сумму заказа
-      const orderAmount = await OzonService.getOrderTotalAmount(orderId);
-      console.log(`[FINISH] Сумма заказа: ${orderAmount}`);
+      // Для расчёта заработка нужен per-store коэффициент
+      const storeRecord = await UserStore.get(userId, storeId);
+      const earningsFactor = storeRecord?.earnings_factor ?? 1.0;
 
-      // 2. Рассчитываем заработок
-      const orderDetails = await OzonService.getOrderDetails(orderId);
+      // 1. Сумма заказа
+      const orderAmount = await OzonService.getOrderTotalAmount(storeId, orderId);
+      console.log(`[FINISH][store ${storeId}] Сумма заказа: ${orderAmount}`);
+
+      // 2. Расчёт заработка
+      const orderDetails = await OzonService.getOrderDetails(storeId, orderId);
       let earningsData = null;
       if (orderDetails && orderDetails.products) {
-        // Конфигурация материалов/спецпредложений загружается внутри EarningsService
-        earningsData = await EarningsService.calculateOrderEarnings(orderDetails, user);
+        earningsData = await EarningsService.calculateOrderEarnings(
+          storeId, orderDetails, { ...user, earnings_factor: earningsFactor }
+        );
         if (!earningsData.allHaveStats) {
-          console.warn(`[FINISH] Не все товары имеют статистику для заказа ${orderId}`);
+          console.warn(`[FINISH][store ${storeId}] Не все товары имеют статистику для заказа ${orderId}`);
         }
       }
 
-      // 3. Подтверждение сборки через Ozon
+      // 3. Подтверждение сборки
       let labelBuffer = null;
       try {
-        await OzonService.confirmPostingShip(orderId);
+        await OzonService.confirmPostingShip(storeId, orderId);
       } catch (shipError) {
         if (shipError.message && shipError.message.includes('не в статусе awaiting_packaging')) {
-          console.warn(`[FINISH] Заказ ${orderId} уже подтверждён (статус не awaiting_packaging)`);
+          console.warn(`[FINISH][store ${storeId}] Заказ ${orderId} уже подтверждён (статус не awaiting_packaging)`);
         } else {
           throw shipError;
         }
       }
 
-      // Пауза не нужна: getPackageLabel сам ждёт готовности задачи
-      // (первый опрос — через 45-60 секунд по рекомендации Ozon).
-      labelBuffer = await OzonService.getPackageLabel(orderId);
+      labelBuffer = await OzonService.getPackageLabel(storeId, orderId);
 
-      // ========== ТРАНЗАКЦИЯ БД ==========
+      // ========== ТРАНЗАКЦИЯ БД (store-N.db) ==========
       await db.run('BEGIN TRANSACTION');
-
       try {
-        // Обновляем статистику
-        await UserStats.incrementStats(userId, orderAmount);
+        await UserStats.incrementStats(storeId, userId, orderAmount);
 
-        // Сохраняем заработок
         if (earningsData && earningsData.total > 0) {
           const existing = await db.get('SELECT id FROM earnings_history WHERE order_id = ?', orderId);
           if (!existing) {
-            await Earnings.saveHistory(userId, orderId, earningsData.total);
-            await Earnings.saveActive(userId, orderId, earningsData.total);
+            await Earnings.saveHistory(storeId, userId, orderId, earningsData.total);
+            await Earnings.saveActive(storeId, userId, orderId, earningsData.total);
           }
         }
 
-        // Завершаем заказ + сохраняем «слепок» (сумма и состав) для
-        // страницы «Завершённые заказы»
-        await Assignment.complete(orderId, {
-          orderAmount: orderAmount,
-          products:
-            orderDetails && Array.isArray(orderDetails.products)
-              ? orderDetails.products
-              : null,
+        await Assignment.complete(storeId, orderId, {
+          orderAmount,
+          products: orderDetails?.products || null,
         });
-
-        // Фотографии товаров НЕ удаляем: заказ только что переведён в
-        // awaiting_deliver, карточка нужна на вкладке «Завершённые заказы»
-        // (фото очистятся, когда заказ выйдет из awaiting_deliver —
-        // см. OrderService.syncOrderStatuses).
 
         await db.run('COMMIT');
         transactionCompleted = true;
-        console.log(`[FINISH] Транзакция успешно закоммичена для заказа ${orderId}`);
+        console.log(`[FINISH][store ${storeId}] Транзакция закоммичена для заказа ${orderId}`);
       } catch (txError) {
         await db.run('ROLLBACK');
-        console.error(`[FINISH] Ошибка в транзакции для заказа ${orderId}:`, txError);
+        console.error(`[FINISH][store ${storeId}] Ошибка в транзакции для заказа ${orderId}:`, txError);
         throw txError;
       }
 
       // === СИНХРОНИЗАЦИЯ С OZON ПОСЛЕ ЗАВЕРШЕНИЯ ===
-      // Заказ подтверждён (confirmPostingShip) -> статус стал awaiting_deliver.
-      // Сохраняем снимок в кэше сразу (даже если синк ниже не удастся) и
-      // уточняем статус/детали одним вызовом. Сбой синка НЕ отменяет завершение:
-      // статус подтянут планировщик и кнопка «Обновить» на странице заказов.
-      this.cacheOrderState(orderId, {
+      this.cacheOrderState(storeId, orderId, {
         userId,
         status: ORDER_STATUS_DELIVER,
         details: orderDetails || null,
         completedAt: Date.now(),
       });
       try {
-        const freshDetails = await OzonService.getOrderDetails(orderId);
+        const freshDetails = await OzonService.getOrderDetails(storeId, orderId);
         if (freshDetails) {
-          this.cacheOrderState(orderId, {
+          this.cacheOrderState(storeId, orderId, {
             status: freshDetails.status || ORDER_STATUS_DELIVER,
             details: freshDetails,
           });
           if (freshDetails.status && freshDetails.status !== ORDER_STATUS_DELIVER) {
             console.warn(
-              `[FINISH] Заказ ${orderId} после подтверждения сборки в статусе "${freshDetails.status}" ` +
+              `[FINISH][store ${storeId}] Заказ ${orderId} после подтверждения сборки в статусе "${freshDetails.status}" ` +
               `(ожидался awaiting_deliver) — этикетка может быть недоступна`
             );
           }
         }
       } catch (syncErr) {
-        console.error(`[FINISH] Не удалось синхронизировать статус заказа ${orderId}:`, syncErr.message);
-        NotificationService.logServerError('OrderService.finishOrder.sync', syncErr, { orderId });
+        console.error(`[FINISH][store ${storeId}] Не удалось синхронизировать статус заказа ${orderId}:`, syncErr.message);
+        NotificationService.logServerError('OrderService.finishOrder.sync', syncErr, { storeId, orderId });
       }
 
-      // Оповещения: сотруднику (этикетка/заработок) + персоналу в журнал действий.
-      // В payload кладём детализацию заработка по товарам — в бот-версии она
-      // отправлялась сотруднику отдельным сообщением «💰 Заработок за заказ».
       const finishedPayload = {
         orderId,
         labelAvailable: !!labelBuffer,
@@ -570,29 +567,27 @@ class OrderService {
           isSpecial: item.isSpecial,
         })),
       };
-      NotificationService.notifyUser(userId, 'order_finished', finishedPayload);
+      NotificationService.notifyUser(userId, 'order_finished', finishedPayload, { storeId });
       NotificationService.notifyStaff('order_finished', {
         orderId,
         userId,
         userName: user.name,
         ...finishedPayload,
-      });
+      }, { storeId });
 
-      // Очищаем состояния
-      await this.clearOrderState(orderId);
+      await this.clearOrderState(storeId, orderId);
 
-      console.log(`[FINISH] === Заказ ${orderId} успешно завершён ===`);
+      console.log(`[FINISH][store ${storeId}] === Заказ ${orderId} успешно завершён ===`);
       return { success: true, earnings: earningsData?.total || 0, labelAvailable: !!labelBuffer };
 
     } catch (err) {
-      console.error(`[FINISH] Ошибка при завершении заказа ${orderId}:`, err);
+      console.error(`[FINISH][store ${storeId}] Ошибка при завершении заказа ${orderId}:`, err);
       throw err;
     } finally {
-      // Принудительно удаляем флаги
       if (!transactionCompleted) {
-        console.log(`[FINISH] Принудительно удаляем флаги для ${orderId}`);
-        finishingOrders.delete(orderId);
-        pendingFinishConfirmations.delete(orderId);
+        console.log(`[FINISH][store ${storeId}] Принудительно удаляем флаги для ${orderId}`);
+        finishingOrders.delete(compositeKey);
+        pendingFinishConfirmations.delete(compositeKey);
       }
     }
   }
@@ -600,214 +595,162 @@ class OrderService {
   // =================================================================
   // 5. ОТМЕНА ЗАКАЗА
   // =================================================================
+  static async cancelOrder(storeId, orderId, userId) {
+    console.log(`[CANCEL][store ${storeId}] Отмена заказа ${orderId} пользователем ${userId}`);
+    const db = getStoreDB(storeId);
 
-  // ОТМЕНА ЗАКАЗА (пользователь)
-  static async cancelOrder(orderId, userId) {
-    console.log(`[CANCEL] Отмена заказа ${orderId} пользователем ${userId}`);
-    const db = getDB();
-
-    // Проверяем, что заказ назначен этому пользователю и ещё не завершён
     const assignment = await db.get(
       'SELECT * FROM assignments WHERE order_id = ? AND user_id = ? AND status = "assigned"',
       orderId, userId
     );
-    if (!assignment) {
-      throw new Error('Заказ не найден или не назначен вам');
-    }
+    if (!assignment) throw new Error('Заказ не найден или не назначен вам');
 
-    // Удаляем назначение
     await db.run('DELETE FROM assignments WHERE order_id = ?', orderId);
+    this.forgetOrderState(storeId, orderId);
+    await UserStats.incrementCanceled(storeId, userId);
 
-    // Снимок заказа в кэше больше не нужен (заказ вернулся в очередь).
-    // Фотографии оставляем: заказ по-прежнему в awaiting_packaging и может быть
-    // назначен снова (фото в кэше привязаны к артикулу, а не к сотруднику).
-    this.forgetOrderState(orderId);
-
-    // Увеличиваем счётчик отменённых заказов (вина пользователя)
-    await UserStats.incrementCanceled(userId);
-
-    // Оповещения: сотруднику + персоналу в журнал действий
     const cancelledUser = await User.getById(userId);
-    NotificationService.notifyUser(userId, 'order_cancelled', { orderId });
+    NotificationService.notifyUser(userId, 'order_cancelled', { orderId }, { storeId });
     NotificationService.notifyStaff('order_cancelled', {
       orderId,
       userId,
       userName: cancelledUser?.name || userId,
-    });
+    }, { storeId });
 
-    // Возвращаем заказ в очередь (перезагружаем)
-    await this.reloadQueue();
-
+    await this.reloadQueue(storeId);
     return { success: true };
   }
 
-  // СНЯТИЕ ЗАКАЗА АДМИНИСТРАТОРОМ (без увеличения счётчика отмен)
-  static async unassignOrder(orderId, adminId) {
-    console.log(`[UNASSIGN] Снятие заказа ${orderId} администратором ${adminId}`);
-    const db = getDB();
+  static async unassignOrder(storeId, orderId, adminId) {
+    console.log(`[UNASSIGN][store ${storeId}] Снятие заказа ${orderId} администратором ${adminId}`);
+    const db = getStoreDB(storeId);
 
-    // Проверяем, что заказ назначен
     const assignment = await db.get(
       'SELECT * FROM assignments WHERE order_id = ? AND status = "assigned"',
       orderId
     );
-    if (!assignment) {
-      throw new Error('Заказ не назначен');
-    }
+    if (!assignment) throw new Error('Заказ не назначен');
 
-    // Сохраняем userId для уведомления
     const userId = assignment.user_id;
-
-    // Удаляем назначение (без увеличения счётчика отмен)
     await db.run('DELETE FROM assignments WHERE order_id = ?', orderId);
+    this.forgetOrderState(storeId, orderId);
 
-    // Снимок заказа в кэше больше не нужен (заказ вернулся в очередь);
-    // фотографии оставляем — заказ всё ещё в awaiting_packaging
-    this.forgetOrderState(orderId);
-
-    // Оповещения: сотруднику + персоналу в журнал действий
     const unassignedUser = await User.getById(userId);
     NotificationService.notifyUser(userId, 'order_unassigned', {
       orderId,
       auto: false,
       reason: 'Снят администратором',
-    });
+    }, { storeId });
     NotificationService.notifyStaff('order_unassigned', {
       orderId,
       userId,
       adminId,
       userName: unassignedUser?.name || userId,
       reason: 'Снят администратором',
-    });
+    }, { storeId });
 
-    // Возвращаем заказ в очередь
-    await this.reloadQueue();
-
+    await this.reloadQueue(storeId);
     return { success: true };
   }
 
   // =================================================================
   // 6. ПОЛУЧЕНИЕ ЭТИКЕТКИ
   // =================================================================
-  static async getLabel(orderId, userId) {
-    const db = getDB();
-    // Проверяем, что заказ завершён и принадлежит пользователю
+  static async getLabel(storeId, orderId, userId) {
+    const db = getStoreDB(storeId);
     const assignment = await db.get(
       'SELECT * FROM assignments WHERE order_id = ? AND user_id = ? AND status = "completed"',
       orderId, userId
     );
-    if (!assignment) {
-      throw new Error('Заказ не найден или не завершён');
-    }
+    if (!assignment) throw new Error('Заказ не найден или не завершён');
 
-    // Проверяем статус заказа в Ozon
-    const details = await OzonService.getOrderDetails(orderId);
+    const details = await OzonService.getOrderDetails(storeId, orderId);
     if (!details || details.status !== 'awaiting_deliver') {
       throw new Error('Этикетка ещё не доступна');
     }
-
-    return await OzonService.getPackageLabel(orderId);
+    return await OzonService.getPackageLabel(storeId, orderId);
   }
 
-  static async getAllLabels(userId) {
-    const db = getDB();
+  static async getAllLabels(storeId, userId) {
+    const db = getStoreDB(storeId);
     const completed = await db.all(
       'SELECT order_id FROM assignments WHERE user_id = ? AND status = "completed"',
       userId
     );
     if (!completed.length) return null;
 
-    // Один запрос списка заказов в статусе awaiting_deliver (этикетка
-    // доступна только в этом статусе; паритет с /send_all_labels в боте).
     let awaitingDeliver;
     try {
-      awaitingDeliver = await OzonService.fetchAwaitingDeliverOrders();
+      awaitingDeliver = await OzonService.fetchAwaitingDeliverOrders(storeId);
     } catch (err) {
-      console.error(
-        '[getAllLabels] Не удалось получить заказы awaiting_deliver из Ozon:',
-        err.message
-      );
+      console.error(`[getAllLabels][store ${storeId}] Не удалось получить заказы awaiting_deliver из Ozon:`, err.message);
       throw new Error(`Не удалось получить список заказов из Ozon: ${err.message}`);
     }
 
-    // Пересечение: завершённые заказы сотрудника, которые всё ещё в
-    // awaiting_deliver. Один вызов package-label/create на весь массив —
-    // Ozon сам отдаёт один PDF сразу со всеми этикетками (без mergePdfs).
     const completedIds = new Set(completed.map((o) => o.order_id));
     const postingNumbers = awaitingDeliver
       .map((o) => o.posting_number)
       .filter((n) => completedIds.has(n))
-      .slice(0, 1000); // лимит posting_numbers в package-label/create
+      .slice(0, 1000);
     if (!postingNumbers.length) {
-      console.log(
-        `[getAllLabels] У сотрудника ${userId} нет завершённых заказов в статусе awaiting_deliver`
-      );
+      console.log(`[getAllLabels][store ${storeId}] У сотрудника ${userId} нет завершённых заказов в статусе awaiting_deliver`);
       return null;
     }
-    console.log(
-      `[getAllLabels] Запрос склейки этикеток для ${postingNumbers.length} отправлений`
-    );
-    return await OzonService.getPackageLabel(postingNumbers);
+    console.log(`[getAllLabels][store ${storeId}] Запрос склейки этикеток для ${postingNumbers.length} отправлений`);
+    return await OzonService.getPackageLabel(storeId, postingNumbers);
   }
 
   // =================================================================
   // 7. ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ОЧЕРЕДЬЮ
   // =================================================================
-
-  static getCurrentOrder() {
-    return currentOrderProcessing?.order || null;
+  static getCurrentOrder(storeId) {
+    const cur = currentOrderProcessingByStore.get(String(storeId));
+    return cur?.order || null;
   }
 
-  static getPendingOrders() {
-    return pendingNewOrders;
+  static getPendingOrders(storeId) {
+    return pendingNewOrdersByStore.get(String(storeId)) || [];
   }
 
-  static async reloadQueue() {
-    console.log('[OrderService] Принудительная перезагрузка очереди');
-    pendingNewOrders = [];
-    currentOrderProcessing = null;
-    await this.checkNewOrders();
+  static async reloadQueue(storeId) {
+    console.log(`[OrderService][store ${storeId}] Принудительная перезагрузка очереди`);
+    pendingNewOrdersByStore.set(String(storeId), []);
+    currentOrderProcessingByStore.delete(String(storeId));
+    await this.checkNewOrders(storeId);
   }
 
-// =================================================================
-  // 7.5 ПРИВЯЗКА ФОТОГРАФИЙ К ТОВАРАМ С ИСПОЛЬЗОВАНИЕМ КЭША
   // =================================================================
-  // Для каждого offer_id фото грузятся с Ozon только один раз и кладутся в in-memory кэш
-  // (productImagesCache). При повторных запросах (обновлении страниц админом/пользователем)
-  // фото берутся из кэша. Кэш живёт, пока заказ находится в awaiting_packaging /
-  // awaiting_deliver (чистка — при синхронизации статусов, см. syncOrderStatuses).
-  static async attachProductImages(products) {
+  // 7.5 ПРИВЯЗКА ФОТОГРАФИЙ К ТОВАРАМ (per-store кэш)
+  // =================================================================
+  static async attachProductImages(storeId, products) {
     if (!Array.isArray(products) || !products.length) return products || [];
 
-    const needSkus = new Set(); // SKU, для которых фото ещё нет ни в кэше, ни в товаре
+    const needSkus = new Set();
 
-    // 1. Привязываем фото из кэша по offer_id
     for (const p of products) {
       if (p.offer_id) {
-        const cached = productImagesCache.get(String(p.offer_id));
+        const key = stateKey(storeId, String(p.offer_id));
+        const cached = productImagesCache.get(key);
         if (cached && cached.images && cached.images.length) {
           p.images = cached.images.map(url => ({ url, name: p.name }));
-          // Отмечаем обращение: пока фото запрашивают, TTL-чистка их не тронет
           cached.updatedAt = Date.now();
         } else if (p.sku) {
           needSkus.add(String(p.sku));
         }
       } else if (p.sku) {
-        // У товара нет offer_id — грузим по sku (кэшировать некуда)
         needSkus.add(String(p.sku));
       }
     }
 
-    // 2. Догружаем с Ozon только недостающие фото
     if (needSkus.size) {
-      const imageMap = await OzonService.fetchProductsImages(Array.from(needSkus));
+      const imageMap = await OzonService.fetchProductsImages(storeId, Array.from(needSkus));
       for (const p of products) {
         if (p.images || !p.sku) continue;
         const urls = imageMap[String(p.sku)];
         if (!urls || !urls.length) continue;
         p.images = urls.map(url => ({ url, name: p.name }));
         if (p.offer_id) {
-          productImagesCache.set(String(p.offer_id), {
+          productImagesCache.set(stateKey(storeId, String(p.offer_id)), {
             sku: String(p.sku),
             images: urls,
             updatedAt: Date.now(),
@@ -816,7 +759,6 @@ class OrderService {
       }
     }
 
-    // 3. Если фото не нашлось — ставим пустой массив
     for (const p of products) {
       if (!p.images) p.images = [];
     }
@@ -825,80 +767,54 @@ class OrderService {
   }
 
   // =================================================================
-  // 7.5.1 ПРИВЯЗКА СТАТИСТИКИ ТОВАРА (материал, цвет, вес)
+  // 7.5.1 ПРИВЯЗКА СТАТИСТИКИ ТОВАРА
   // =================================================================
-  // Для каждого offer_id берём запись из product_stats и кладём её в p.stats —
-  // фронт показывает её под товаром (как «Материал/Цвет» в карточке бота).
-  // Если статистики нет — p.stats = null, блок не рендерится. Вызывается
-  // ПОСЛЕ attachProductImages/attachToProducts на копии состава (cloneProducts),
-  // чтобы служебные поля не оседали в кэше деталей заказа.
-  static async attachProductStats(products) {
+  static async attachProductStats(storeId, products) {
     if (!Array.isArray(products) || !products.length) return products || [];
     for (const p of products) {
       if (!p || !p.offer_id) {
         if (p) p.stats = null;
         continue;
       }
-      const stat = await ProductStat.get(p.offer_id);
+      const stat = await ProductStat.get(storeId, p.offer_id);
       p.stats = stat
         ? {
-            material: stat.material,
-            color: stat.color,
-            weight_grams: stat.weight_grams,
-          }
+          material: stat.material,
+          color: stat.color,
+          weight_grams: stat.weight_grams,
+        }
         : null;
     }
     return products;
   }
 
   // =================================================================
-  // 7.6 КЭШ СОСТОЯНИЯ ЗАКАЗОВ И ВКЛАДКА «ЗАВЕРШЁННЫЕ ЗАКАЗЫ»
+  // 7.6 КЭШ СОСТОЯНИЯ ЗАКАЗОВ
   // =================================================================
-  // orderStateCache (см. state.js) хранит снимок заказа, пока он «жив»:
-  // awaiting_packaging (активный) или awaiting_deliver (завершён, этикетка
-  // доступна). Это избавляет страницу «Мои заказы» от запроса деталей в Ozon
-  // на каждое открытие и позволяет показать состав с фото на вкладке
-  // «🗳️ Завершённые заказы».
-
-  /**
-   * Записать/обновить снимок заказа в кэше (патч накладывается на запись).
-   * @param {string} orderId
-   * @param {object} [patch] - { userId, status, details, assignedAt, completedAt }
-   * @returns {object|null} обновлённая запись
-   */
-  static cacheOrderState(orderId, patch = {}) {
+  static cacheOrderState(storeId, orderId, patch = {}) {
     if (!orderId) return null;
-    const key = String(orderId);
+    const key = stateKey(storeId, orderId);
     const prev = orderStateCache.get(key) || {};
-    const next = { ...prev, ...patch, orderId: key, updatedAt: Date.now() };
+    const next = { ...prev, ...patch, storeId: String(storeId), orderId: String(orderId), updatedAt: Date.now() };
     orderStateCache.set(key, next);
     return next;
   }
 
-  /** Снимок заказа из кэша (или null). */
-  static getOrderState(orderId) {
+  static getOrderState(storeId, orderId) {
     if (!orderId) return null;
-    return orderStateCache.get(String(orderId)) || null;
+    return orderStateCache.get(stateKey(storeId, orderId)) || null;
   }
 
-  /**
-   * Забыть заказ (отмена, снятие админом, выход из «живых» статусов).
-   * @param {string} orderId
-   * @param {object} [options]
-   * @param {boolean} [options.prunePhotos] - удалить и фотографии товаров
-   *   (только те артикулы, которые больше не используются другими заказами)
-   */
-  static forgetOrderState(orderId, { prunePhotos = false } = {}) {
+  static forgetOrderState(storeId, orderId, { prunePhotos = false } = {}) {
     if (!orderId) return;
-    const key = String(orderId);
+    const key = stateKey(storeId, orderId);
     const state = orderStateCache.get(key);
     orderStateCache.delete(key);
     if (prunePhotos && state) {
-      this.pruneProductImagesCache(new Set(this.offerIdsOfState(state)));
+      this.pruneProductImagesCache(storeId, new Set(this.offerIdsOfState(state)));
     }
   }
 
-  /** Артикулы (offer_id) из снимка заказа. */
   static offerIdsOfState(state) {
     const products = state && state.details ? state.details.products : null;
     if (!Array.isArray(products)) return [];
@@ -907,44 +823,27 @@ class OrderService {
       .filter(Boolean);
   }
 
-  /**
-   * Копия состава заказа: поля, которые добавляются на лету при формировании
-   * ответа (images, model), не должны «оседать» в кэше.
-   */
   static cloneProducts(products) {
     return (products || []).map((p) => ({ ...p }));
   }
 
-  /**
-   * Детали заказа: из кэша, при промахе — 1 запрос к Ozon с записью в кэш.
-   * @param {string} orderId
-   * @param {object} [options]
-   * @param {boolean} [options.forceFresh] - игнорировать кэш (принудительный синк)
-   */
-  static async resolveOrderDetails(orderId, { forceFresh = false } = {}) {
-    const cached = this.getOrderState(orderId);
+  static async resolveOrderDetails(storeId, orderId, { forceFresh = false } = {}) {
+    const cached = this.getOrderState(storeId, orderId);
     if (!forceFresh && cached && cached.details) return cached;
-    const details = await OzonService.getOrderDetails(orderId);
+    const details = await OzonService.getOrderDetails(storeId, orderId);
     if (!details) return cached;
-    return this.cacheOrderState(orderId, {
+    return this.cacheOrderState(storeId, orderId, {
       status: details.status || (cached ? cached.status : null),
       details,
     });
   }
 
-  /**
-   * Активные заказы сотрудника (состав, фото, статус статистики).
-   * Детали берутся из кэша (при промахе — 1 запрос к Ozon), поэтому страница
-   * «Мои заказы» больше не дёргает Ozon по каждому заказу при каждом рендере.
-   * @param {number} userId
-   */
-  static async buildActiveOrders(userId) {
-    const orders = await Assignment.getActiveOrders(userId);
+  static async buildActiveOrders(storeId, userId) {
+    const orders = await Assignment.getActiveOrders(storeId, userId);
     const result = [];
     for (const order of orders) {
-      let state = await this.resolveOrderDetails(order.order_id);
-      // Снимок «кто и когда взял» — по нему видно принадлежность заказа
-      state = this.cacheOrderState(order.order_id, {
+      let state = await this.resolveOrderDetails(storeId, order.order_id);
+      state = this.cacheOrderState(storeId, order.order_id, {
         userId,
         assignedAt: order.assigned_at,
         status: (state && state.status) || ORDER_STATUS_PACKAGING,
@@ -956,16 +855,24 @@ class OrderService {
       if (details && Array.isArray(details.products)) {
         for (const p of details.products) {
           if (!p.offer_id) continue;
-          const stat = await ProductStat.get(p.offer_id);
+          const stat = await ProductStat.get(storeId, p.offer_id);
           if (!stat) {
             statsStatus = 'missing';
             missingStats.push(p.offer_id);
           }
         }
       }
-      const products = await this.attachProductImages(this.cloneProducts(details?.products));
-      await ModelService.attachToProducts(products);
-      await this.attachProductStats(products);
+      const products = await this.attachProductImages(storeId, this.cloneProducts(details?.products));
+
+      // Модели: только если магазин не отключил их
+      const store = require('../config/stores').getStore(storeId);
+      if (!store.features.disableModels) {
+        await ModelService.attachToProducts(products);
+      } else {
+        for (const p of products) p.model = null;
+      }
+
+      await this.attachProductStats(storeId, products);
       result.push({
         orderId: order.order_id,
         assignedAt: order.assigned_at,
@@ -977,18 +884,8 @@ class OrderService {
     return result;
   }
 
-  /**
-   * Завершённые сотрудником заказы, которые ещё ожидают отправки
-   * (awaiting_deliver) — вкладка «🗳️ Завершённые заказы».
-   * Источник списка — БД (assignments.status='completed' пишется при завершении),
-   * статус — из кэша. Для заказов без снимка (завершены до перезапуска сервера/
-   * до внедрения кэша) достаточно ОДНОГО вызова fetchAwaitingDeliverOrders: он
-   * отсеивает уже отправленные заказы без запроса деталей по каждому. Детали
-   * (состав с фото) добираются по требованию и тоже кэшируются.
-   * @param {number} userId
-   */
-  static async buildCompletedOrdersAwaitingDeliver(userId) {
-    const db = getDB();
+  static async buildCompletedOrdersAwaitingDeliver(storeId, userId) {
+    const db = getStoreDB(storeId);
     const rows = await db.all(
       `SELECT order_id, completed_at FROM assignments
        WHERE user_id = ? AND status = 'completed'
@@ -998,53 +895,43 @@ class OrderService {
     );
     if (!rows.length) return [];
 
-    // Статус неизвестен (нет снимка или в снимке нет статуса) -> уточняем одним
-    // списком awaiting_deliver
     const needsStatus = (orderId) => {
-      const state = this.getOrderState(orderId);
+      const state = this.getOrderState(storeId, orderId);
       return !state || !state.status;
     };
     let awaitingDeliverSet = null;
     if (rows.some((row) => needsStatus(row.order_id))) {
       try {
-        const postings = await OzonService.fetchAwaitingDeliverOrders();
+        const postings = await OzonService.fetchAwaitingDeliverOrders(storeId);
         awaitingDeliverSet = new Set(
           (postings || []).map((p) => p && p.posting_number).filter(Boolean)
         );
       } catch (err) {
-        // Ozon недоступен: показываем только то, что уже известно из кэша
-        console.error(
-          '[COMPLETED] Не удалось получить заказы awaiting_deliver из Ozon:',
-          err.message
-        );
+        console.error(`[COMPLETED][store ${storeId}] Не удалось получить заказы awaiting_deliver из Ozon:`, err.message);
       }
     }
 
     const result = [];
     for (const row of rows) {
-      let state = this.getOrderState(row.order_id);
+      let state = this.getOrderState(storeId, row.order_id);
       let status = state ? state.status : null;
       if ((!state || !status) && awaitingDeliverSet) {
-        status = awaitingDeliverSet.has(row.order_id)
-          ? ORDER_STATUS_DELIVER
-          : 'other';
+        status = awaitingDeliverSet.has(row.order_id) ? ORDER_STATUS_DELIVER : 'other';
       }
-      // Статус неизвестен (Ozon недоступен) — заказ не показываем
       if (!status) continue;
 
-      state = this.cacheOrderState(row.order_id, {
+      state = this.cacheOrderState(storeId, row.order_id, {
         userId,
         status,
         completedAt: row.completed_at,
       });
-      // Показываем только ожидающие отправки: этикетка доступна только в них
       if (status !== ORDER_STATUS_DELIVER) continue;
 
       if (!state.details) {
-        state = await this.resolveOrderDetails(row.order_id);
+        state = await this.resolveOrderDetails(storeId, row.order_id);
       }
-      const products = await this.attachProductImages(this.cloneProducts(state?.details?.products));
-      await this.attachProductStats(products);
+      const products = await this.attachProductImages(storeId, this.cloneProducts(state?.details?.products));
+      await this.attachProductStats(storeId, products);
       result.push({
         orderId: row.order_id,
         completedAt: row.completed_at,
@@ -1054,25 +941,12 @@ class OrderService {
     return result;
   }
 
-  /**
-   * Синхронизация кэша со статусами Ozon: ДВА запроса списков
-   * (awaiting_packaging + awaiting_deliver; пагинация — внутри OzonService).
-   * Снимки заказов, вышедшие из обоих статусов, удаляются вместе с фотографиями
-   * (только если артикулы больше не используются оставшимися заказами).
-   * Вызывается планировщиком (ежечасно) и кнопкой «🔄 Обновить» на странице
-   * «Мои заказы» (кулдаун 1 минута).
-   * @returns {Promise<{checked:number, removed:number, photosRemoved:number,
-   *   activeOrderIds:string[]}>}
-   */
-  static async syncOrderStatuses() {
-    // Запросы параллельно; сбой любого -> исключение до правок кэша (fail-safe:
-    // при недоступном Ozon ничего не удаляем)
+  static async syncOrderStatuses(storeId) {
     const [packaging, deliver] = await Promise.all([
-      OzonService.fetchAwaitingOrders(),
-      OzonService.fetchAwaitingDeliverOrders(),
+      OzonService.fetchAwaitingOrders(storeId),
+      OzonService.fetchAwaitingDeliverOrders(storeId),
     ]);
 
-    // orderId -> статус, в котором заказ находится СЕЙЧАС
     const statusByOrderId = new Map();
     for (const order of packaging || []) {
       if (order && order.posting_number) {
@@ -1085,26 +959,29 @@ class OrderService {
       }
     }
 
-    const checked = orderStateCache.size;
+    // Чистим только записи ЭТОГО магазина
+    const prefix = `${storeId}:`;
+    let checked = 0;
     let removed = 0;
     const removedOfferIds = new Set();
-    for (const [orderId, state] of Array.from(orderStateCache.entries())) {
+    for (const [key, state] of Array.from(orderStateCache.entries())) {
+      if (!key.startsWith(prefix)) continue;
+      checked++;
+      const orderId = key.slice(prefix.length);
       const status = statusByOrderId.get(orderId);
       if (!status) {
-        // Заказ вышел из «живых» статусов (отправлен/отменён/возврат):
-        // убираем снимок, артикулы запоминаем для чистки фото
         for (const offerId of this.offerIdsOfState(state)) removedOfferIds.add(offerId);
-        orderStateCache.delete(orderId);
+        orderStateCache.delete(key);
         removed++;
         continue;
       }
       if (state.status !== status) {
-        this.cacheOrderState(orderId, { status });
+        this.cacheOrderState(storeId, orderId, { status });
       }
     }
 
-    let photosRemoved = this.pruneProductImagesCache(removedOfferIds);
-    photosRemoved += this.pruneStaleProductImages();
+    let photosRemoved = this.pruneProductImagesCache(storeId, removedOfferIds);
+    photosRemoved += this.pruneStaleProductImages(storeId);
 
     const activeOrderIds = [];
     for (const [orderId, status] of statusByOrderId) {
@@ -1113,7 +990,7 @@ class OrderService {
 
     if (removed || photosRemoved) {
       console.log(
-        `[SYNC] Статусы заказов: проверено ${checked}, убрано из кэша ${removed}, ` +
+        `[SYNC][store ${storeId}] Статусы заказов: проверено ${checked}, убрано из кэша ${removed}, ` +
         `удалено фото ${photosRemoved}`
       );
     }
@@ -1121,87 +998,67 @@ class OrderService {
     return { checked, removed, photosRemoved, activeOrderIds };
   }
 
-  /**
-   * Удаляет фотографии артикулов, забытых вместе с заказами, но только если они
-   * больше НЕ используются оставшимися в кэше заказами (один offer_id может
-   * встречаться в нескольких заказах).
-   * @param {Set<string>} candidateOfferIds
-   * @returns {number} сколько записей кэша удалено
-   */
-  static pruneProductImagesCache(candidateOfferIds) {
+  static pruneProductImagesCache(storeId, candidateOfferIds) {
     if (!candidateOfferIds || candidateOfferIds.size === 0) return 0;
-    const stillUsed = this.collectCachedOfferIds();
+    const stillUsed = this.collectCachedOfferIds(storeId);
     let removed = 0;
     for (const offerId of candidateOfferIds) {
       if (stillUsed.has(offerId)) continue;
-      if (productImagesCache.delete(offerId)) removed++;
+      if (productImagesCache.delete(stateKey(storeId, offerId))) removed++;
     }
     return removed;
   }
 
-  /**
-   * Страховочная чистка кэша фото: записи, которые не запрашивались дольше
-   * PRODUCT_IMAGES_TTL_MS и не принадлежат ни одному заказу из кэша (например,
-   * заказ отменили — фото остались, или фото смотрел админ по неназначенному
-   * заказу). Живые заказы не затрагиваются: их артикулы есть в кэше, а каждое
-   * обращение обновляет updatedAt.
-   * @param {number} [now] - метка времени (для тестов)
-   * @returns {number} сколько записей кэша удалено
-   */
-  static pruneStaleProductImages(now = Date.now()) {
-    const stillUsed = this.collectCachedOfferIds();
+  static pruneStaleProductImages(storeId, now = Date.now()) {
+    const stillUsed = this.collectCachedOfferIds(storeId);
+    const prefix = `${storeId}:`;
     let removed = 0;
-    for (const [offerId, entry] of Array.from(productImagesCache.entries())) {
+    for (const [key, entry] of Array.from(productImagesCache.entries())) {
+      if (!key.startsWith(prefix)) continue;
+      const offerId = key.slice(prefix.length);
       if (stillUsed.has(offerId)) continue;
       const updatedAt = entry && entry.updatedAt ? entry.updatedAt : 0;
       if (now - updatedAt < PRODUCT_IMAGES_TTL_MS) continue;
-      productImagesCache.delete(offerId);
+      productImagesCache.delete(key);
       removed++;
     }
     return removed;
   }
 
-  /** Артикулы, используемые всеми заказами, оставшимися в кэше. */
-  static collectCachedOfferIds() {
+  static collectCachedOfferIds(storeId) {
     const offerIds = new Set();
-    for (const state of orderStateCache.values()) {
+    const prefix = `${storeId}:`;
+    for (const [key, state] of orderStateCache.entries()) {
+      if (!key.startsWith(prefix)) continue;
       for (const offerId of this.offerIdsOfState(state)) offerIds.add(offerId);
     }
     return offerIds;
   }
 
   // =================================================================
-  // 8. ОЧИСТКА СОСТОЯНИЙ ЗАКАЗА (из commands.js clearOrderState)
+  // 8. ОЧИСТКА СОСТОЯНИЙ ЗАКАЗА
   // =================================================================
-  static async clearOrderState(orderId, userId = null) {
-    console.log(`[CLEAR] Начало очистки заказа ${orderId}${userId ? ` для пользователя ${userId}` : ''}`);
+  static async clearOrderState(storeId, orderId, userId = null) {
+    console.log(`[CLEAR][store ${storeId}] Начало очистки заказа ${orderId}${userId ? ` для пользователя ${userId}` : ''}`);
+    const compositeKey = stateKey(storeId, orderId);
 
-    // Очищаем pendingForms
     if (userId) {
-      const key = `${userId}_${orderId}`;
-      if (pendingForms.has(key)) {
-        pendingForms.delete(key);
-      }
+      const key = `${storeId}_${userId}_${orderId}`;
+      if (pendingForms.has(key)) pendingForms.delete(key);
     } else {
+      const prefix = `${storeId}_`;
       for (const [key, state] of pendingForms) {
-        if (state.orderId === orderId) {
+        if (key.startsWith(prefix) && state.orderId === orderId) {
           pendingForms.delete(key);
           break;
         }
       }
     }
 
-    // Очищаем pendingFinishConfirmations
-    if (pendingFinishConfirmations.has(orderId)) {
-      pendingFinishConfirmations.delete(orderId);
-    }
+    if (pendingFinishConfirmations.has(compositeKey)) pendingFinishConfirmations.delete(compositeKey);
+    if (finishingOrders.has(compositeKey)) finishingOrders.delete(compositeKey);
 
-    // Очищаем finishingOrders
-    if (finishingOrders.has(orderId)) {
-      finishingOrders.delete(orderId);
-    }
-
-    console.log(`[CLEAR] Завершена очистка заказа ${orderId}`);
+    console.log(`[CLEAR][store ${storeId}] Завершена очистка заказа ${orderId}`);
   }
 }
 

@@ -1,4 +1,4 @@
-const { Assignment, UserStats, Earnings, ProductStat, User } = require('../models');
+const { Assignment, UserStats, Earnings, ProductStat, UserStore, User } = require('../models');
 const Notification = require('../models/Notification');
 const OrderService = require('../services/OrderService');
 const OzonService = require('../services/OzonService');
@@ -12,31 +12,52 @@ const path = require('path');
 // Строгое ограничение веса пластика в граммах (10 кг) — как в бот-версии
 const MAX_WEIGHT_GRAMS = 10000;
 
+// ============================================================================
+// Все методы userController — store-scoped.
+// storeId всегда берётся из req.storeId (резолвится по Host в server.js).
+// Глобальные данные (users, notifications, push_subscriptions) — из общих БД;
+// рабочие данные магазина — из store-N.db.
+// ============================================================================
+
 /**
- * Получить профиль текущего пользователя
+ * Профиль текущего пользователя В КОНТЕКСТЕ МАГАЗИНА.
+ * Глобальные поля users + per-store статус (роль, is_fired, коэф.) + статистика
+ * магазина (user_stats, активные/завершённые назначения).
  */
 exports.getProfile = async (req, res) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
-    const stats = await UserStats.getStats(userId);
-    const activeOrders = await Assignment.getActiveOrders(userId);
-    const completedOrders = await Assignment.getCompletedOrders(userId);
+
+    const storeRecord = await UserStore.get(userId, storeId);
+    const stats = await UserStats.getStats(storeId, userId);
+    const activeOrders = await Assignment.getActiveOrders(storeId, userId);
+    const completedOrders = await Assignment.getCompletedOrders(storeId, userId);
+
     res.json({
       ...req.user,
+      // per-store блок — фронт показывает/скрывает разделы по этой роли
+      store: storeRecord
+        ? {
+          role: storeRecord.role,
+          is_fired: !!storeRecord.is_fired,
+          earnings_factor: storeRecord.earnings_factor,
+          was_employee: !!storeRecord.was_employee,
+        }
+        : null,
       stats,
       activeOrders,
       completedOrders,
     });
   } catch (err) {
-    console.error('[getProfile] Ошибка:', err);
+    console.error(`[getProfile][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Обновить отображаемое имя (display_name) — только для себя.
- * В отличие от name (которое редактирует Персонал в админке),
- * display_name пользователь меняет сам на странице Профиль.
+ * Отображаемое имя — глобальное поле users.display_name (своё у пользователя
+ * во всех магазинах сразу).
  */
 exports.updateDisplayName = async (req, res) => {
   try {
@@ -51,176 +72,182 @@ exports.updateDisplayName = async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
   } catch (err) {
-    console.error('[updateDisplayName] Ошибка:', err);
+    console.error(`[updateDisplayName][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Получить активные заказы пользователя с деталями (состав, статус статистики).
- * Детали берутся из серверного кэша состояния заказов (orderStateCache):
- * Ozon запрашивается только при промахе кэша, а не при каждом открытии страницы.
+ * Активные заказы сотрудника (с составом, фото, статусом статистики).
  */
 exports.getActiveOrders = async (req, res, next) => {
   try {
-    const orders = await OrderService.buildActiveOrders(req.user.id);
+    const orders = await OrderService.buildActiveOrders(req.storeId, req.user.id);
     res.json(orders);
   } catch (err) {
-    console.error('[getActiveOrders] Ошибка:', err);
+    console.error(`[getActiveOrders][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Получить завершённые пользователем заказы, которые ещё ожидают отправки
- * (awaiting_deliver) — вкладка «🗳️ Завершённые заказы». Такие карточки нужны,
- * чтобы скачать этикетку (getPackageLabel).
+ * Завершённые заказы, ещё ожидающие отправки (awaiting_deliver).
  */
 exports.getCompletedOrders = async (req, res, next) => {
   try {
-    const orders = await OrderService.buildCompletedOrdersAwaitingDeliver(req.user.id);
+    const orders = await OrderService.buildCompletedOrdersAwaitingDeliver(
+      req.storeId,
+      req.user.id
+    );
     res.json(orders);
   } catch (err) {
-    console.error('[getCompletedOrders] Ошибка:', err);
+    console.error(`[getCompletedOrders][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Обновить статусы ВСЕХ заказов сотрудника (активные + завершённые) и вернуть
- * оба списка одним ответом. Кулдаун 1 минута — см. routes/user.js
- * (cooldown('refreshOrders')).
- * Синхронизация — 2 запроса к Ozon (сравнимо с ежечасной задачей планировщика);
- * активные заказы, которых больше нет в awaiting_packaging, снимаются — так же,
- * как это делает плановый OrderService.checkNewOrders.
+ * Обновить статусы всех заказов сотрудника (активные + завершённые).
+ * Кулдаун 1 минута (middlewares/cooldown → CooldownService.touch).
  */
 exports.refreshOrders = async (req, res, next) => {
+  const storeId = req.storeId;
   const userId = req.user.id;
   try {
-    const sync = await OrderService.syncOrderStatuses();
-    // Снимаем заказы сотрудника, вышедшие из awaiting_packaging (иначе карточка
-    // «зависнет» до следующего часового прогона checkNewOrders). Ограничиваем
-    // только его назначениями — кнопка не должна трогать чужие заказы.
-    await OrderService.cleanExpiredAssignments(sync.activeOrderIds, { userId });
+    const sync = await OrderService.syncOrderStatuses(storeId);
+    await OrderService.cleanExpiredAssignments(storeId, sync.activeOrderIds, { userId });
+
     const [active, completed] = await Promise.all([
-      OrderService.buildActiveOrders(userId),
-      OrderService.buildCompletedOrdersAwaitingDeliver(userId),
+      OrderService.buildActiveOrders(storeId, userId),
+      OrderService.buildCompletedOrdersAwaitingDeliver(storeId, userId),
     ]);
-    // Кулдаун ставится ТОЛЬКО после успешной синхронизации (как у других команд)
-    CooldownService.touch('refreshOrders', userId);
+
+    // Кулдаун ставится ТОЛЬКО после успешной синхронизации
+    CooldownService.touch('refreshOrders', storeId, userId);
     res.json({ active, completed, syncedAt: Date.now(), removed: sync.removed });
   } catch (err) {
-    console.error('[refreshOrders] Ошибка:', err);
+    console.error(`[refreshOrders][store ${storeId}] Ошибка:`, err);
     res.status(400).json({ error: err.message });
   }
 };
 
 /**
- * Завершить заказ (требуется, чтобы все товары имели статистику)
+ * Завершить заказ (требуется статистика по всем товарам).
  */
 exports.finishOrder = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
     const { orderId } = req.params;
-    const result = await OrderService.finishOrder(orderId, userId);
-    res.json({ message: 'Order finished', earnings: result.earnings, label: result.labelAvailable ? 'label available' : 'no label' });
+    const result = await OrderService.finishOrder(storeId, orderId, userId);
+    res.json({
+      message: 'Order finished',
+      earnings: result.earnings,
+      label: result.labelAvailable ? 'label available' : 'no label',
+    });
   } catch (err) {
-    console.error('[finishOrder] Ошибка:', err);
+    console.error(`[finishOrder][store ${req.storeId}] Ошибка:`, err);
     res.status(400).json({ error: err.message });
   }
 };
 
 /**
- * Отменить заказ (с подтверждением на фронтенде)
+ * Отменить заказ (с подтверждением на фронте).
  */
 exports.cancelOrder = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
     const { orderId } = req.params;
-    const result = await OrderService.cancelOrder(orderId, userId);
+    await OrderService.cancelOrder(storeId, orderId, userId);
     res.json({ message: 'Order cancelled' });
   } catch (err) {
-    console.error('[cancelOrder] Ошибка:', err);
+    console.error(`[cancelOrder][store ${req.storeId}] Ошибка:`, err);
     res.status(400).json({ error: err.message });
   }
 };
 
 /**
- * Получить этикетку для завершённого заказа
+ * Этикетка завершённого заказа.
  */
 exports.getLabel = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
     const { orderId } = req.params;
-    const labelBuffer = await OrderService.getLabel(orderId, userId);
+    const labelBuffer = await OrderService.getLabel(storeId, orderId, userId);
     if (!labelBuffer) {
       return res.status(404).json({ error: 'Label not available' });
     }
-    // Кулдаун ставится только после успешной выдачи (паритет с ботом)
-    CooldownService.touch('label', userId);
+    // Кулдаун ставится только после успешной выдачи
+    CooldownService.touch('label', storeId, userId);
     disableCache(res);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=label_${orderId}.pdf`);
     res.send(labelBuffer);
   } catch (err) {
-    console.error('[getLabel] Ошибка:', err);
+    console.error(`[getLabel][store ${req.storeId}] Ошибка:`, err);
     res.status(400).json({ error: err.message });
   }
 };
 
 /**
- * Получить все этикетки для завершённых заказов (объединённые в PDF)
+ * Все этикетки для завершённых заказов сотрудника (склейка на стороне Ozon).
  */
 exports.getAllLabels = async (req, res, next) => {
+  const storeId = req.storeId;
   const userId = req.user.id;
   try {
-    const pdfBuffer = await OrderService.getAllLabels(userId);
+    const pdfBuffer = await OrderService.getAllLabels(storeId, userId);
     if (!pdfBuffer) {
-      // Нет пересечения completed ∩ awaiting_deliver либо задача Ozon
-      // не дождалась file_url. Отдаём явную ошибку, а не пустой ответ.
-      // Пустой ответ/ошибка -> короткий кулдаун 1 мин (как в боте).
-      CooldownService.touch('allLabels', userId, 1);
+      CooldownService.touch('allLabels', storeId, userId, 1);
       return res.status(404).json({
         error: 'Нет этикеток для скачивания: нет завершённых заказов в статусе awaiting_deliver',
       });
     }
-    // Успех -> длинный кулдаун 1 час (как в боте)
-    CooldownService.touch('allLabels', userId, 0);
+    CooldownService.touch('allLabels', storeId, userId, 0);
     disableCache(res);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename=all_labels.pdf');
     res.send(pdfBuffer);
   } catch (err) {
-    // Ошибка -> короткий кулдаун 1 мин, чтобы не долбить Ozon (как в боте)
-    CooldownService.touch('allLabels', userId, 1);
-    console.error('[getAllLabels] Ошибка:', err);
+    CooldownService.touch('allLabels', storeId, userId, 1);
+    console.error(`[getAllLabels][store ${storeId}] Ошибка:`, err);
     res.status(400).json({ error: err.message });
   }
 };
 
 /**
- * Скачать этикетку, отправленную сотруднику администратором
- * (аналог получения PDF из /admin_send_label в боте).
- * Доступ: только если сотруднику отправляли оповещение label_sent
- * с этим номером заказа. Файл лежит в outputs/labels/<orderId>.pdf.
+ * Скачать этикетку, отправленную сотруднику администратором (label_sent).
+ * Доступ: только если сотруднику отправляли оповещение с этим orderId
+ * ИЗ ЭТОГО МАГАЗИНА. Файл: outputs/store-<id>/labels/<orderId>.pdf.
  */
 exports.getSentLabel = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
     const { orderId } = req.params;
-    // Строгая проверка номера заказа — защита от path traversal
+
     if (!/^[\w-]+$/.test(orderId)) {
       return res.status(400).json({ error: 'Некорректный номер заказа' });
     }
     const notification = await Notification.findLatestByTypeAndOrder(
       userId,
       'label_sent',
-      orderId
+      orderId,
+      storeId
     );
     if (!notification) {
       return res.status(403).json({ error: 'Этикетка этого заказа не отправлялась вам' });
     }
-    const filePath = path.join(__dirname, '../../outputs', 'labels', `${orderId}.pdf`);
+
+    const filePath = path.join(
+      __dirname,
+      '../../outputs',
+      `store-${storeId}`,
+      'labels',
+      `${orderId}.pdf`
+    );
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({
         error: 'Файл этикетки не найден на сервере. Попросите администратора отправить её заново.',
@@ -231,18 +258,20 @@ exports.getSentLabel = async (req, res, next) => {
     res.setHeader('Content-Disposition', `attachment; filename=label_${orderId}.pdf`);
     res.send(fs.readFileSync(filePath));
   } catch (err) {
-    console.error('[getSentLabel] Ошибка:', err);
+    console.error(`[getSentLabel][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Получить заработок за месяц (история)
+ * История заработка за месяц.
  */
 exports.getMonthlyEarnings = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
     const { month } = req.query;
+
     let fromDate, toDate;
     if (month) {
       if (!/^\d{4}-\d{2}$/.test(month)) {
@@ -252,14 +281,14 @@ exports.getMonthlyEarnings = async (req, res, next) => {
       fromDate = new Date(year, m - 1, 1).getTime();
       toDate = new Date(year, m, 1).getTime() - 1;
     } else {
-      // Текущий месяц по локальному времени (TIMEZONE), как в планировщике
       const now = getLocalDate();
       const year = now.getFullYear();
       const m = now.getMonth();
       fromDate = new Date(year, m, 1).getTime();
       toDate = new Date(year, m + 1, 1).getTime() - 1;
     }
-    const history = await Earnings.getHistory(userId, fromDate, toDate);
+
+    const history = await Earnings.getHistory(storeId, userId, fromDate, toDate);
     const total = history.reduce((sum, h) => sum + h.amount, 0);
     res.json({
       period: { from: fromDate, to: toDate },
@@ -268,74 +297,75 @@ exports.getMonthlyEarnings = async (req, res, next) => {
       count: history.length,
     });
   } catch (err) {
-    console.error('[getMonthlyEarnings] Ошибка:', err);
+    console.error(`[getMonthlyEarnings][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Получить активный заработок (с последнего расчёта)
+ * Активный заработок (с последнего расчёта).
  */
 exports.getActiveEarnings = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
-    const active = await Earnings.getActive(userId, 0, Date.now());
+    const active = await Earnings.getActive(storeId, userId, 0, Date.now());
     const totalBase = active.reduce((sum, a) => sum + a.amount, 0);
-    const adjustments = await Earnings.getActiveAdjustmentsSum(userId, 0, Date.now());
-    const totalWithAdjustments = totalBase + adjustments;
+    const adjustments = await Earnings.getActiveAdjustmentsSum(storeId, userId, 0, Date.now());
     res.json({
       baseEarnings: totalBase,
       adjustments,
-      total: totalWithAdjustments,
+      total: totalBase + adjustments,
       orders: active,
     });
   } catch (err) {
-    console.error('[getActiveEarnings] Ошибка:', err);
+    console.error(`[getActiveEarnings][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Переключить статус приёма заказов
+ * Переключить приём заказов.
+ * taking_orders — глобальное поле users (принимает ли человек заказы вообще,
+ * во всех магазинах сразу). Кулдаун и оповещение — per-store.
  */
 exports.toggleOrders = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
     const user = await User.getById(userId);
     if (!user) throw new Error('User not found');
+
     const newStatus = user.taking_orders === 1 ? 0 : 1;
     await User.update(userId, { taking_orders: newStatus });
 
-    // Кулдаун ставится только после успешного изменения (паритет с ботом)
-    CooldownService.touch('toggleOrders', userId);
+    CooldownService.touch('toggleOrders', storeId, userId);
 
-    // Оповещение персоналу: сотрудник изменил приём заказов
     NotificationService.notifyStaff('taking_orders_changed', {
       userId,
       userName: user.name,
       takingOrders: newStatus === 1,
-    });
+    }, { storeId });
 
     res.json({ taking_orders: newStatus });
   } catch (err) {
-    console.error('[toggleOrders] Ошибка:', err);
+    console.error(`[toggleOrders][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Заполнить статистику товара (материал, цвет, вес)
+ * Заполнить статистику товара (материал, цвет, вес).
  */
 exports.fillStats = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
     const { offerId, material, color, weight } = req.body;
     if (!offerId || !material || !color || !weight) {
       return res.status(400).json({ error: 'Missing fields' });
     }
-    // Валидация веса (паритет с фронтом): поддерживаем оба разделителя
-    // ("12.5" и "12,5"), строгий формат — максимум одна цифра после
-    // разделителя, положительное число в пределах MAX_WEIGHT_GRAMS
+
     const weightNormalized = String(weight).trim().replace(',', '.');
     const weightNum = Number(weightNormalized);
     if (!Number.isFinite(weightNum) || weightNum <= 0) {
@@ -347,9 +377,9 @@ exports.fillStats = async (req, res, next) => {
     if (weightNum > MAX_WEIGHT_GRAMS) {
       return res.status(400).json({ error: `Вес не может быть больше ${MAX_WEIGHT_GRAMS} г (10 кг)` });
     }
-    await ProductStat.upsert(offerId, material, color, weightNum, userId);
 
-    // Оповещение персоналу: сотрудник заполнил статистику товара
+    await ProductStat.upsert(storeId, offerId, material, color, weightNum, userId);
+
     NotificationService.notifyStaff('stats_filled', {
       userId,
       userName: req.user.name,
@@ -357,43 +387,31 @@ exports.fillStats = async (req, res, next) => {
       material,
       color,
       weight: weightNum,
-    });
+    }, { storeId });
 
     res.json({ message: 'Stats saved' });
   } catch (err) {
-    console.error('[fillStats] Ошибка:', err);
+    console.error(`[fillStats][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
-// ===========================================================================
-// WEB PUSH: подписки браузера (доступно ВСЕМ авторизованным — см. routes/user.js)
-//
-// Канал доставки оповещений выбирает NotificationService: онлайн-пользователю
-// событие уходит мгновенно через Socket.IO, офлайн — Web Push (PushService).
-// Здесь — только управление подписками устройства.
-// ===========================================================================
+// ============================================================================
+// WEB PUSH: подписки устройства — ГЛОБАЛЬНЫЕ (не store-scoped).
+// Одно устройство = одна подписка. Если пользователь подписан на push,
+// он получает оповещения всех магазинов, где у него есть роль (вкладки
+// на разных поддоменах → одна push-подписка на браузер). NotificationService
+// сам решает, кому и на какой storeId слать (см. socket + push).
+// ============================================================================
 
-/**
- * Публичный VAPID-ключ для подписки на Web Push.
- * Браузер использует его как applicationServerKey в pushManager.subscribe().
- * Секретов не содержит — можно отдавать любому авторизованному пользователю.
- */
 exports.getPushPublicKey = (req, res) => {
   const publicKey = PushService.publicKey;
   if (!publicKey) {
-    // Web Push не настроен (нет VAPID_* в .env) — фронт просто не подпишется
     return res.status(503).json({ error: 'Web Push не настроен на сервере' });
   }
   res.json({ publicKey });
 };
 
-/**
- * Сохранить подписку браузера на Web Push.
- * Body: { subscription: { endpoint, keys: { p256dh, auth } } } (PushSubscription.toJSON()).
- * endpoint уникален: повторная подписка того же браузера обновляет запись, а
- * вход другого пользователя на этом устройстве переприсваивает её ему.
- */
 exports.pushSubscribe = async (req, res) => {
   try {
     const { subscription } = req.body || {};
@@ -410,18 +428,15 @@ exports.pushSubscribe = async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err) {
-    console.error('[pushSubscribe] Ошибка:', err);
+    console.error(`[pushSubscribe][store ${req.storeId}] Ошибка:`, err);
     NotificationService.logServerError('user.pushSubscribe', err, {
+      storeId: req.storeId,
       userId: req.user?.id,
     });
     res.status(500).json({ error: err.message });
   }
 };
 
-/**
- * Удалить подписку устройства (кнопка «Отключить», выход из системы).
- * Body: { endpoint } — одно устройство, { all: true } — все устройства.
- */
 exports.pushUnsubscribe = async (req, res) => {
   try {
     const { endpoint, all } = req.body || {};
@@ -436,50 +451,48 @@ exports.pushUnsubscribe = async (req, res) => {
     }
     res.json({ ok: true, removed });
   } catch (err) {
-    console.error('[pushUnsubscribe] Ошибка:', err);
+    console.error(`[pushUnsubscribe][store ${req.storeId}] Ошибка:`, err);
     NotificationService.logServerError('user.pushUnsubscribe', err, {
+      storeId: req.storeId,
       userId: req.user?.id,
     });
     res.status(500).json({ error: err.message });
   }
 };
 
-/**
- * Сколько устройств пользователя подписано на Web Push (для UI профиля).
- */
 exports.getPushStatus = async (req, res) => {
   try {
     const count = await PushService.countForUser(req.user.id);
     res.json({ enabled: PushService.enabled, count });
   } catch (err) {
-    console.error('[getPushStatus] Ошибка:', err);
+    console.error(`[getPushStatus][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Получить список товаров без статистики для текущего пользователя (проверка)
+ * Товары без заполненной статистики среди активных заказов сотрудника.
  */
 exports.getMissingStats = async (req, res, next) => {
   try {
+    const storeId = req.storeId;
     const userId = req.user.id;
-    const activeOrders = await Assignment.getActiveOrders(userId);
+    const activeOrders = await Assignment.getActiveOrders(storeId, userId);
     const missingOffers = new Set();
+
     for (const order of activeOrders) {
-      const details = await OzonService.getOrderDetails(order.order_id);
+      const details = await OzonService.getOrderDetails(storeId, order.order_id);
       if (details && details.products) {
         for (const p of details.products) {
           if (!p.offer_id) continue;
-          const stat = await ProductStat.get(p.offer_id);
-          if (!stat) {
-            missingOffers.add(p.offer_id);
-          }
+          const stat = await ProductStat.get(storeId, p.offer_id);
+          if (!stat) missingOffers.add(p.offer_id);
         }
       }
     }
     res.json({ missingOffers: Array.from(missingOffers) });
   } catch (err) {
-    console.error('[getMissingStats] Ошибка:', err);
+    console.error(`[getMissingStats][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };

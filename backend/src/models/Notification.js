@@ -1,15 +1,8 @@
 const { getNotificationsDB } = require('../config/notificationsDatabase');
 
-/**
- * Разбирает JSON-поле строки (payload/context), не падая на битых данных.
- */
-function safeParse(value) {
+function safeParse(value) { 
   if (value === null || value === undefined) return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
+  try { return JSON.parse(value); } catch { return value; }
 }
 
 function parseNotificationRow(row) {
@@ -26,63 +19,57 @@ function placeholders(ids) {
   return ids.map(() => '?').join(', ');
 }
 
-// === Сериализация пакетных (транзакционных) записей ===
-// Соединение SQLite одно: если два пакета (например, два notifyStaff из
-// ModelService.issueForAssignment — «модели выданы» и «модель взята у
-// родителя») стартуют одновременно, второй BEGIN TRANSACTION падает с
-// «cannot start a transaction within a transaction», и его оповещения
-// теряются. Все пакетные записи выстраиваются в единую очередь.
-let writeChain = Promise.resolve();
+function escapeLike(value) {
+  return String(value).replace(/[\\%_]/g, '\\$&');
+}
 
-/**
- * Выполнить пакетную запись строго после завершения предыдущей.
- * @param {() => Promise<T>} task
- * @returns {Promise<T>}
- * @template T
- */
+// Очередь пакетных записей (см. комментарий в старом коде —
+// та же защита от параллельных транзакций)
+let writeChain = Promise.resolve();
 function serializeWrite(task) {
   const run = writeChain.then(task, task);
   writeChain = run.then(() => undefined, () => undefined);
   return run;
 }
 
-/**
- * Экранирует спецсимволы LIKE (% _ \), чтобы поиск работал как поиск подстроки.
- */
-function escapeLike(value) {
-  return String(value).replace(/[\\%_]/g, '\\$&');
-}
-
 class Notification {
   // =========================================================================
-  // ОПОВЕЩЕНИЯ (персональные строки для каждого получателя)
+  // ОПОВЕЩЕНИЯ (персональные)
   // =========================================================================
 
   /**
-   * Найти последнее оповещение пользователя данного типа по номеру заказа.
-   * Используется для проверки доступа к скачиванию отправленной этикетки
-   * (type = 'label_sent'): скачать PDF может только тот сотрудник,
-   * которому администратор отправлял этикетку этого заказа.
+   * Найти последнее оповещение получателя данного типа по заказу.
+   * Store-scoped: ищем только в оповещениях того же магазина.
    */
-  static async findLatestByTypeAndOrder(recipientId, type, orderId) {
+  static async findLatestByTypeAndOrder(recipientId, type, orderId, storeId = null) {
     const db = getNotificationsDB();
+    const where = ['recipient_id = ?', 'type = ?', 'order_id = ?'];
+    const params = [recipientId, type, orderId];
+
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
+    }
+
     const row = await db.get(
       `SELECT * FROM notifications
-       WHERE recipient_id = ? AND type = ? AND order_id = ?
+       WHERE ${where.join(' AND ')}
        ORDER BY created_at DESC, id DESC
        LIMIT 1`,
-      recipientId,
-      type,
-      orderId
+      ...params
     );
     return parseNotificationRow(row);
   }
 
   /**
-   * Создать одно оповещение. Возвращает id созданной записи.
+   * Создать одно оповещение.
+   * @param {object} data
+   *   • storeId — идентификатор магазина (string|number|null)
+   *   • остальные — как раньше
    */
   static async create({
     recipientId,
+    storeId = null,
     audience = 'user',
     type,
     title,
@@ -96,9 +83,12 @@ class Notification {
   }) {
     const db = getNotificationsDB();
     const result = await db.run(
-      `INSERT INTO notifications (recipient_id, audience, type, title, message, payload, order_id, user_name, offer_ids, is_read, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO notifications
+         (recipient_id, store_id, audience, type, title, message,
+          payload, order_id, user_name, offer_ids, is_read, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       recipientId,
+      storeId === null || storeId === undefined ? null : String(storeId),
       audience,
       type,
       title,
@@ -114,31 +104,27 @@ class Notification {
   }
 
   /**
-   * Создать пакет оповещений (например, копии журнала действий всем админам/модераторам).
-   * Возвращает массив id.
+   * Пакетная вставка (журнал действий всем админам/модераторам).
+   * Каждая запись может содержать свой storeId.
    */
   static async createMany(rows) {
     if (!rows.length) return [];
-    // Пакетные записи — строго по очереди (см. serializeWrite), иначе
-    // параллельные notifyStaff ломают транзакцию SQLite и теряют оповещения.
     return serializeWrite(() => Notification.writeMany(rows));
   }
 
-  /**
-   * Внутренний исполнитель пакетной вставки: одна транзакция на пакет.
-   * Вызывать только через createMany (сериализация записи).
-   */
   static async writeMany(rows) {
     const db = getNotificationsDB();
     const ids = [];
-
     await db.run('BEGIN TRANSACTION');
     try {
       for (const r of rows) {
         const result = await db.run(
-          `INSERT INTO notifications (recipient_id, audience, type, title, message, payload, order_id, user_name, offer_ids, is_read, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO notifications
+             (recipient_id, store_id, audience, type, title, message,
+              payload, order_id, user_name, offer_ids, is_read, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           r.recipientId,
+          r.storeId === null || r.storeId === undefined ? null : String(r.storeId),
           r.audience || 'user',
           r.type,
           r.title,
@@ -154,41 +140,44 @@ class Notification {
       }
       await db.run('COMMIT');
     } catch (err) {
-      try {
-        await db.run('ROLLBACK');
-      } catch {
-        // Транзакция уже закрыта (например, BEGIN не удался) — не маскируем
-        // исходную ошибку: наверх уходит именно причина сбоя пакета.
-      }
+      try { await db.run('ROLLBACK'); } catch { /* ignore */ }
       throw err;
     }
     return ids;
   }
 
   /**
-   * Удалить ВСЕ непрочитанные оповещения данного типа (для дедупликации:
-   * например, «новые заказы в очереди» должно существовать в единственном
-   * экземпляре — новое отправляется вместо старого). Прочитанные записи
-   * остаются в архиве. Возвращает число удалённых строк.
+   * Удалить непрочитанные оповещения типа (в рамках магазина).
    */
-  static async deleteUnreadByType(type, audience = 'staff') {
+  static async deleteUnreadByType(type, audience = 'staff', storeId = null) {
     const db = getNotificationsDB();
+    const where = ['type = ?', 'audience = ?', 'is_read = 0'];
+    const params = [type, audience];
+
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
+    }
+
     const result = await db.run(
-      `DELETE FROM notifications WHERE type = ? AND audience = ? AND is_read = 0`,
-      type,
-      audience
+      `DELETE FROM notifications WHERE ${where.join(' AND ')}`,
+      ...params
     );
     return result.changes;
   }
 
   /**
    * Список оповещений получателя с пагинацией.
-   * @param {number} recipientId
-   * @param {object} opts - audience: 'user'|'staff'|null, unreadOnly, limit, offset
+   * @param {object} opts
+   *   • storeId     — фильтр по магазину (null = все магазины)
+   *   • audience    — 'user' | 'staff' | null
+   *   • unreadOnly, limit, offset
+   *   • orderId, userName, offerId — подстрочный поиск
    */
   static async getByRecipient(
     recipientId,
     {
+      storeId = null,
       audience = null,
       unreadOnly = false,
       limit = 30,
@@ -202,15 +191,13 @@ class Notification {
 
     const where = ['recipient_id = ?'];
     const params = [recipientId];
-    if (audience) {
-      where.push('audience = ?');
-      params.push(audience);
+
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
     }
-    if (unreadOnly) {
-      where.push('is_read = 0');
-    }
-    // Поиск по номеру заказа / имени сотрудника / артикулу offer_id
-    // (подстрока, спецсимволы LIKE экранируются — ищем как обычный текст)
+    if (audience) { where.push('audience = ?'); params.push(audience); }
+    if (unreadOnly) where.push('is_read = 0');
     if (orderId) {
       where.push("order_id LIKE ? ESCAPE '\\'");
       params.push(`%${escapeLike(orderId)}%`);
@@ -247,15 +234,16 @@ class Notification {
   }
 
   /**
-   * Количество непрочитанных оповещений получателя.
+   * Количество непрочитанных (в рамках магазина).
    */
-  static async getUnreadCount(recipientId, { audience = null } = {}) {
+  static async getUnreadCount(recipientId, { audience = null, storeId = null } = {}) {
     const db = getNotificationsDB();
     const where = ['recipient_id = ?', 'is_read = 0'];
     const params = [recipientId];
-    if (audience) {
-      where.push('audience = ?');
-      params.push(audience);
+    if (audience) { where.push('audience = ?'); params.push(audience); }
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
     }
     const row = await db.get(
       `SELECT COUNT(*) as count FROM notifications WHERE ${where.join(' AND ')}`,
@@ -264,32 +252,25 @@ class Notification {
     return row ? row.count : 0;
   }
 
-  /**
-   * Отметить прочитанными конкретные оповещения получателя.
-   * Возвращает число изменённых строк.
-   */
   static async markRead(recipientId, ids) {
     if (!Array.isArray(ids) || !ids.length) return 0;
     const db = getNotificationsDB();
     const result = await db.run(
       `UPDATE notifications SET is_read = 1
        WHERE recipient_id = ? AND id IN (${placeholders(ids)})`,
-      recipientId,
-      ...ids
+      recipientId, ...ids
     );
     return result.changes;
   }
 
-  /**
-   * Отметить все оповещения получателя прочитанными (опционально — только одну аудиторию).
-   */
-  static async markAllRead(recipientId, { audience = null } = {}) {
+  static async markAllRead(recipientId, { audience = null, storeId = null } = {}) {
     const db = getNotificationsDB();
     const where = ['recipient_id = ?', 'is_read = 0'];
     const params = [recipientId];
-    if (audience) {
-      where.push('audience = ?');
-      params.push(audience);
+    if (audience) { where.push('audience = ?'); params.push(audience); }
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
     }
     const result = await db.run(
       `UPDATE notifications SET is_read = 1 WHERE ${where.join(' AND ')}`,
@@ -298,30 +279,24 @@ class Notification {
     return result.changes;
   }
 
-  /**
-   * Удалить конкретные оповещения получателя ("как в email").
-   */
   static async deleteByIds(recipientId, ids) {
     if (!Array.isArray(ids) || !ids.length) return 0;
     const db = getNotificationsDB();
     const result = await db.run(
       `DELETE FROM notifications WHERE recipient_id = ? AND id IN (${placeholders(ids)})`,
-      recipientId,
-      ...ids
+      recipientId, ...ids
     );
     return result.changes;
   }
 
-  /**
-   * Удалить все ПРОЧИТАННЫЕ оповещения получателя ("очистить прочитанные").
-   */
-  static async deleteRead(recipientId, { audience = null } = {}) {
+  static async deleteRead(recipientId, { audience = null, storeId = null } = {}) {
     const db = getNotificationsDB();
     const where = ['recipient_id = ?', 'is_read = 1'];
     const params = [recipientId];
-    if (audience) {
-      where.push('audience = ?');
-      params.push(audience);
+    if (audience) { where.push('audience = ?'); params.push(audience); }
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
     }
     const result = await db.run(
       `DELETE FROM notifications WHERE ${where.join(' AND ')}`,
@@ -331,48 +306,48 @@ class Notification {
   }
 
   // =========================================================================
-  // ОШИБКИ СЕРВЕРА (общий журнал)
+  // ОШИБКИ СЕРВЕРА (сквозной журнал с фильтром по store_id)
   // =========================================================================
 
-  /**
-   * Сохранить ошибку сервера. Возвращает id созданной записи.
-   */
-  static async addError({ level = 'error', source = '', message, stack = null, context = null }) {
+  static async addError({
+    storeId = null,
+    level = 'error',
+    source = '',
+    message,
+    stack = null,
+    context = null,
+  }) {
     const db = getNotificationsDB();
     const result = await db.run(
-      `INSERT INTO server_errors (level, source, message, stack, context, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      level,
-      source,
-      message,
-      stack,
+      `INSERT INTO server_errors
+         (store_id, level, source, message, stack, context, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      storeId === null || storeId === undefined ? null : String(storeId),
+      level, source, message, stack,
       context ? JSON.stringify(context) : null,
       Date.now()
     );
     return result.lastID;
   }
 
-  /**
-   * Список ошибок сервера с пагинацией (для админов/модераторов).
-   * @param {object} opts - level: 'error'|'warn'|null, unreadOnly, limit, offset
-   */
   static async getErrors({
+    storeId = null,
     level = null,
     unreadOnly = false,
     limit = 30,
     offset = 0,
   } = {}) {
     const db = getNotificationsDB();
-
     const where = [];
     const params = [];
-    if (level) {
-      where.push('level = ?');
-      params.push(level);
+
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
     }
-    if (unreadOnly) {
-      where.push('is_read = 0');
-    }
+    if (level) { where.push('level = ?'); params.push(level); }
+    if (unreadOnly) where.push('is_read = 0');
+
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const totalRow = await db.get(
@@ -383,9 +358,7 @@ class Notification {
       `SELECT * FROM server_errors ${whereSql}
        ORDER BY created_at DESC, id DESC
        LIMIT ? OFFSET ?`,
-      ...params,
-      limit,
-      offset
+      ...params, limit, offset
     );
 
     const total = totalRow ? totalRow.count : 0;
@@ -396,17 +369,15 @@ class Notification {
     };
   }
 
-  /**
-   * Количество ошибок сервера (опционально по уровню).
-   */
-  static async countErrors({ level = null } = {}) {
+  static async countErrors({ storeId = null, level = null } = {}) {
     const db = getNotificationsDB();
     const where = [];
     const params = [];
-    if (level) {
-      where.push('level = ?');
-      params.push(level);
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
     }
+    if (level) { where.push('level = ?'); params.push(level); }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const row = await db.get(
       `SELECT COUNT(*) as count FROM server_errors ${whereSql}`,
@@ -415,9 +386,6 @@ class Notification {
     return row ? row.count : 0;
   }
 
-  /**
-   * Удалить выбранные ошибки сервера.
-   */
   static async deleteErrorsByIds(ids) {
     if (!Array.isArray(ids) || !ids.length) return 0;
     const db = getNotificationsDB();
@@ -428,11 +396,6 @@ class Notification {
     return result.changes;
   }
 
-  /**
-   * Отметить выбранные ошибки сервера прочитанными.
-   * @param {number[]} ids
-   * @returns {Promise<number>} число изменённых строк.
-   */
   static async markErrorsRead(ids) {
     if (!Array.isArray(ids) || !ids.length) return 0;
     const db = getNotificationsDB();
@@ -444,29 +407,30 @@ class Notification {
     return result.changes;
   }
 
-  /**
-   * Отметить ВСЕ ошибки сервера прочитанными.
-   * @returns {Promise<number>} число изменённых строк.
-   */
-  static async markAllErrorsRead() {
+  static async markAllErrorsRead({ storeId = null } = {}) {
     const db = getNotificationsDB();
+    const where = ['is_read = 0'];
+    const params = [];
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
+    }
     const result = await db.run(
-      'UPDATE server_errors SET is_read = 1 WHERE is_read = 0'
+      `UPDATE server_errors SET is_read = 1 WHERE ${where.join(' AND ')}`,
+      ...params
     );
     return result.changes;
   }
 
-  /**
-   * Количество непрочитанных ошибок сервера (опционально по уровню).
-   */
-  static async getUnreadErrorsCount({ level = null } = {}) {
+  static async getUnreadErrorsCount({ storeId = null, level = null } = {}) {
     const db = getNotificationsDB();
     const where = ['is_read = 0'];
     const params = [];
-    if (level) {
-      where.push('level = ?');
-      params.push(level);
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
     }
+    if (level) { where.push('level = ?'); params.push(level); }
     const row = await db.get(
       `SELECT COUNT(*) as count FROM server_errors WHERE ${where.join(' AND ')}`,
       ...params
@@ -474,35 +438,33 @@ class Notification {
     return row ? row.count : 0;
   }
 
-  /**
-   * Очистить весь журнал ошибок сервера.
-   */
-  static async clearErrors() {
+  static async clearErrors({ storeId = null } = {}) {
     const db = getNotificationsDB();
-    const result = await db.run('DELETE FROM server_errors');
+    const where = [];
+    const params = [];
+    if (storeId !== null && storeId !== undefined) {
+      where.push('store_id = ?');
+      params.push(String(storeId));
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const result = await db.run(`DELETE FROM server_errors ${whereSql}`, ...params);
     return result.changes;
   }
 
   // =========================================================================
-  // РЕТЕНЦИЯ (очистка старых записей)
+  // РЕТЕНЦИЯ
   // =========================================================================
 
-  /**
-   * Удалить оповещения и ошибки старше указанного числа дней.
-   * Вызывается планировщиком раз в сутки.
-   */
   static async pruneOld(notificationDays = 7, errorDays = 14) {
     const db = getNotificationsDB();
     const notifCutoff = Date.now() - notificationDays * 24 * 60 * 60 * 1000;
     const errorCutoff = Date.now() - errorDays * 24 * 60 * 60 * 1000;
 
     const notifResult = await db.run(
-      'DELETE FROM notifications WHERE created_at < ?',
-      notifCutoff
+      'DELETE FROM notifications WHERE created_at < ?', notifCutoff
     );
     const errorResult = await db.run(
-      'DELETE FROM server_errors WHERE created_at < ?',
-      errorCutoff
+      'DELETE FROM server_errors WHERE created_at < ?', errorCutoff
     );
     return {
       notifications: notifResult.changes,

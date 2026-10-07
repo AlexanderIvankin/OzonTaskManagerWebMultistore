@@ -3,7 +3,8 @@ const jwt = require('jsonwebtoken');
 // uuid не нужен: токены генерируются встроенным crypto (randomBytes / randomInt)
 const config = require('../config');
 const User = require('../models/User');
-const { getDB } = require('../config/database');
+const { getUsersDB, getModelsDB, getStoreDB } = require('../config/database');
+const stores = require('../config/stores');
 const crypto = require('crypto');
 const EmailVerification = require('../models/EmailVerification');
 const PasswordReset = require('../models/PasswordReset');
@@ -187,44 +188,69 @@ class AuthService {
   }
 
   /**
-   * Регистрация аккаунта администратором — в обход подтверждения email:
-   * аккаунт создаётся сразу подтверждённым (email_verified = 1) и активным
-   * с выбранной ролью (по умолчанию 'employee'). Код не генерируется,
-   * письмо не отправляется.
+   * Регистрация аккаунта администратором — в обход подтверждения email.
+   * Создаёт User + UserStore для конкретного магазина.
+   *
+   * @param {object} data
+   *   storeId — магазин, в который добавляется сотрудник (обязателен);
+   *   role    — роль сотрудника в магазине ('employee' | 'moderator' | 'admin');
+   *   остальные поля — как раньше.
    */
   static async adminRegister(data) {
-    const { username, email, password, name, phone, capacity, earningsFactor, role } = data;
+    const {
+      username, email, password, name, phone, capacity, earningsFactor,
+      role, storeId,
+    } = data;
+
+    if (!storeId) {
+      throw new Error('adminRegister: storeId обязателен (multistore)');
+    }
+
     const saltRounds = 10;
     const passwordHash = await bcrypt.hash(password, saltRounds);
+
+    // Глобальная роль в users — 'user'. Сотруднические роли (employee/admin/
+    // moderator) живут в user_stores магазина.
     const created = await User.create({
       username: String(username).trim(),
       email: String(email).trim(),
       passwordHash,
-      // Имя для Персонала: если не указано — используем логин
       name: name && String(name).trim() ? String(name).trim() : String(username).trim(),
-      // Отображаемое имя для самого пользователя: по умолчанию логин,
-      // он сам сможет поменять его в Профиле
       displayName: String(username).trim(),
-      // Телефон храним в едином красивом формате +7 (999) 123-45-67;
-      // пусто/невалидно → ''
       phone: formatPhonePretty(phone) || '',
-      // Положительность capacity проверена в validateAdminRegisterData;
-      // пустое -> дефолт 1
       capacity:
         capacity === undefined || capacity === null || capacity === ''
           ? 1
           : Number(capacity),
-      // Коэффициент: положительное число, максимум 2 знака ('99,99' и '99.99');
-      // пустое/невалидное → 1.0
       earningsFactor: parseEarningsFactor(earningsFactor) ?? 1.0,
-      // 'god' не входит в белый список — роль по умолчанию 'employee'
-      role: role && ['user', 'employee', 'moderator', 'admin'].includes(role)
-        ? role
-        : 'employee',
+      role: 'user',
+      emailVerified: 1,
     });
-    // Сразу подтверждаем email, чтобы аккаунт был готов к входу без кода
+
+    // Сразу подтверждаем email (это admin-flow — код не нужен)
     await User.update(created.id, { email_verified: 1 });
-    return User.getById(created.id);
+
+    // Per-store: роль в магазине (по умолчанию 'employee'), was_employee=1
+    const UserStore = require('../models/UserStore');
+    const storeRole = role && ['employee', 'moderator', 'admin'].includes(role)
+      ? role
+      : 'employee';
+    await UserStore.upsert(created.id, storeId, {
+      role: storeRole,
+      was_employee: 1,
+      is_fired: 0,
+    });
+
+    // Возвращаем объединённый объект (глобальные поля + per-store роль)
+    const base = await User.getById(created.id);
+    const storeRecord = await UserStore.get(created.id, storeId);
+    return {
+      ...base,
+      role: storeRecord?.role || storeRole,
+      is_fired: storeRecord?.is_fired ? 1 : 0,
+      earnings_factor: storeRecord?.earnings_factor ?? 1.0,
+      was_employee: storeRecord?.was_employee ? 1 : 0,
+    };
   }
 
   static async register(data) {
@@ -509,70 +535,121 @@ class AuthService {
 
 
   /**
-   * Удаляет «зависшие» неподтверждённые аккаунты (роль 'guest') старше
-   * ttlHours вместе со всеми ссылающимися на них данными (коды подтверждения,
-   * refresh-токены, назначения, заработок, выданные модели, связи со складами
-   * и т.п.). Вызывается планировщиком (startGuestCleanupChecker,
-   * TTL — GUEST_TTL_HOURS, по умолчанию 24 ч).
-   * Заодно вычищает все просроченные коды подтверждения — в том числе
-   * «легаси»-строки аккаунтов, которые так и не подтвердили email.
+   * Удалить все «хвосты» пользователя во ВСЕХ БД приложения.
    *
-   * Список «хвостов» берётся из схемы БД (PRAGMA foreign_key_list), поэтому
-   * очистка автоматически покрывает и таблицы, добавленные позже — ручной
-   * перечень когда-то забыл earnings_active, и удаление падало с
-   * SQLITE_CONSTRAINT: FOREIGN KEY constraint failed.
+   * Порядок: store-N.db → models.db → users.db.
+   * Внешние (по отношению к users) БД чистим первыми, чтобы если что-то
+   * упадёт, гость не остался в users.db без рабочих данных — тогда следующая
+   * итерация снова попробует его удалить.
+   *
+   * Таблицы перечислены явно (схема БД зафиксирована в src/config/schema.js).
+   * product_stats и offer_models.uploaded_by — UPDATE ... = NULL:
+   * статистика товара и автор загрузки модели нужны и без автора (см.
+   * обоснование в старой версии cleanupGuestAccounts).
+   *
+   * @param {number} userId
+   * @throws если хотя бы одна БД не смогла удалить строки
+   */
+  static async deleteGuestRows(userId) {
+    // 1. store-N.db — рабочие данные магазинов
+    for (const storeId of stores.getStoreIds()) {
+      let db;
+      try {
+        db = getStoreDB(storeId);
+      } catch (err) {
+        // БД не подключена (initDB упал/магазин пропущен) — не критично
+        console.warn(`[Auth][store ${storeId}] store-N.db недоступна, пропускаем:`, err.message);
+        continue;
+      }
+      try {
+        await db.run('BEGIN IMMEDIATE');
+        await db.run('DELETE FROM assignments WHERE user_id = ?', userId);
+        await db.run('DELETE FROM user_stats WHERE user_id = ?', userId);
+        await db.run('DELETE FROM earnings_history WHERE user_id = ?', userId);
+        await db.run('DELETE FROM earnings_active WHERE user_id = ?', userId);
+        await db.run('DELETE FROM earnings_adjustments WHERE user_id = ?', userId);
+        await db.run('DELETE FROM earnings_adjustments_active WHERE user_id = ?', userId);
+        await db.run('DELETE FROM user_warehouses WHERE user_id = ?', userId);
+        await db.run('UPDATE product_stats SET user_id = NULL WHERE user_id = ?', userId);
+        await db.run('COMMIT');
+      } catch (err) {
+        try { await db.run('ROLLBACK'); } catch { /* не был в транзакции */ }
+        throw new Error(`store-${storeId}.db: ${err.message}`);
+      }
+    }
+
+    // 2. models.db — выдача моделей, одноразовые токены, автор загрузки
+    try {
+      const modelsDb = getModelsDB();
+      await modelsDb.run('BEGIN IMMEDIATE');
+      await modelsDb.run('DELETE FROM issued_models WHERE user_id = ?', userId);
+      // model_download_tokens может отсутствовать в старых БД — не падаем
+      try {
+        await modelsDb.run('DELETE FROM model_download_tokens WHERE user_id = ?', userId);
+      } catch (e) {
+        if (!/no such table/i.test(e.message)) throw e;
+      }
+      await modelsDb.run('UPDATE offer_models SET uploaded_by = NULL WHERE uploaded_by = ?', userId);
+      await modelsDb.run('COMMIT');
+    } catch (err) {
+      try { await getModelsDB().run('ROLLBACK'); } catch { /* ignore */ }
+      throw new Error(`models.db: ${err.message}`);
+    }
+
+    // 3. users.db — auth-хвосты, per-store записи, push, сам пользователь
+    try {
+      const usersDb = getUsersDB();
+      await usersDb.run('BEGIN IMMEDIATE');
+      await usersDb.run('DELETE FROM user_stores WHERE user_id = ?', userId);
+      await usersDb.run('DELETE FROM refresh_tokens WHERE user_id = ?', userId);
+      await usersDb.run('DELETE FROM email_verifications WHERE user_id = ?', userId);
+      await usersDb.run('DELETE FROM password_resets WHERE user_id = ?', userId);
+      await usersDb.run('DELETE FROM push_subscriptions WHERE user_id = ?', userId);
+      await usersDb.run('DELETE FROM users WHERE id = ?', userId);
+      await usersDb.run('COMMIT');
+    } catch (err) {
+      try { await getUsersDB().run('ROLLBACK'); } catch { /* ignore */ }
+      throw new Error(`users.db: ${err.message}`);
+    }
+  }
+
+  /**
+   * Удаляет «зависшие» неподтверждённые аккаунты (роль 'guest') старше
+   * ttlHours вместе со всеми ссылающимися на них данными во ВСЕХ БД:
+   *   • store-N.db: assignments, earnings*, user_stats, user_warehouses,
+   *     product_stats.user_id → NULL;
+   *   • models.db: issued_models, model_download_tokens, offer_models.uploaded_by → NULL;
+   *   • users.db: user_stores, refresh_tokens, email_verifications,
+   *     password_resets, push_subscriptions, users.
+   * Вызывается планировщиком (startGuestCleanupChecker, TTL — GUEST_TTL_HOURS).
+   * Заодно вычищает все просроченные коды подтверждения.
    *
    * @param {number} ttlHours
    * @returns {Promise<{deletedUsers: number, deletedCodes: number}>}
    */
   static async cleanupGuestAccounts(ttlHours = config.guestTtlHours) {
-    const db = getDB();
     const cutoff = Date.now() - ttlHours * 60 * 60 * 1000;
     const guests = await User.findGuestsOlderThan(cutoff);
 
-    // Все ссылки на users(id) в текущей схеме (один раз на прогон).
-    const refs = await findUserReferences(db);
     const deletedUsers = [];
 
     for (const guest of guests) {
       try {
-        await db.run('BEGIN IMMEDIATE');
-        // Проверку FK переносим на момент COMMIT: порядок удалений не важен,
-        // а для «легаси»-схем (где FK мог проверяться сразу) это безопаснее.
-        await db.run('PRAGMA defer_foreign_keys = ON');
-        for (const ref of refs) {
-          const table = quoteIdent(ref.table);
-          const column = quoteIdent(ref.column);
-          if (KEEP_ROWS_ON_USER_DELETE.has(ref.table)) {
-            // Строку сохраняем, ссылку на удаляемого пользователя обнуляем
-            // (product_stats — статистика товара, нужна и без автора)
-            await db.run(`UPDATE ${table} SET ${column} = NULL WHERE ${column} = ?`, guest.id);
-          } else {
-            await db.run(`DELETE FROM ${table} WHERE ${column} = ?`, guest.id);
-          }
-        }
-        await db.run('DELETE FROM users WHERE id = ?', guest.id);
-        await db.run('COMMIT');
+        await this.deleteGuestRows(guest.id);
         deletedUsers.push(guest.id);
         console.log(
           `[Auth] Неподтверждённый аккаунт #${guest.id} (${guest.username} / ${guest.email}) удалён: email не подтверждён более ${ttlHours} ч`
         );
       } catch (err) {
-        // Один проблемный гость не должен валиль всю очистку — откатываем
-        // его транзакцию и переходим к следующему, сбой журналируется.
-        try { await db.run('ROLLBACK'); } catch (e) { /* не был в транзакции */ }
-        // Диагностика: SQLite в ошибке FK не называет виновника — после
-        // ROLLBACK считаем, какие таблицы всё ещё держат ссылку на аккаунт.
-        const blockedBy = await describeUserReferences(db, refs, guest.id);
+        // Один проблемный гость не должен валить всю очистку — переходим
+        // к следующему. Ошибка фиксируется в журнале.
         console.error(
           `[Auth] Не удалось удалить неподтверждённый аккаунт #${guest.id}:`,
-          err.message,
-          blockedBy.length ? `| держат ссылки: ${blockedBy.join(', ')}` : ''
+          err.message
         );
         NotificationService.logServerError('auth.cleanupGuestAccounts', err, {
           guestId: guest.id,
           username: guest.username,
-          blockedBy: blockedBy.length ? blockedBy.join(', ') : null,
         });
       }
     }

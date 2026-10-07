@@ -1,8 +1,8 @@
-const { getDB } = require('../config/database');
+const { getUsersDB } = require('../config/database');
 
 class EmailVerification {
   static async create(userId, code, expiresInMinutes = 15) {
-    const db = getDB();
+    const db = getUsersDB();
     const now = Date.now();
     const expiresAt = now + expiresInMinutes * 60 * 1000;
     await db.run(
@@ -12,7 +12,7 @@ class EmailVerification {
   }
 
   static async findByCode(code) {
-    const db = getDB();
+    const db = getUsersDB();
     return db.get(
       `SELECT * FROM email_verifications WHERE code = ? AND expires_at > ?`,
       code, Date.now()
@@ -24,7 +24,7 @@ class EmailVerification {
    * отправки письма (не чаще, чем раз в RESEND_CODE_COOLDOWN_SEC секунд).
    */
   static async getLatestByUserId(userId) {
-    const db = getDB();
+    const db = getUsersDB();
     return db.get(
       `SELECT * FROM email_verifications
        WHERE user_id = ?
@@ -35,12 +35,12 @@ class EmailVerification {
   }
 
   static async deleteByUserId(userId) {
-    const db = getDB();
+    const db = getUsersDB();
     await db.run('DELETE FROM email_verifications WHERE user_id = ?', userId);
   }
 
   static async deleteByCode(code) {
-    const db = getDB();
+    const db = getUsersDB();
     await db.run('DELETE FROM email_verifications WHERE code = ?', code);
   }
 
@@ -49,7 +49,7 @@ class EmailVerification {
    * которые так и не подтвердили email. Возвращает число удалённых строк.
    */
   static async deleteExpired() {
-    const db = getDB();
+    const db = getUsersDB();
     const result = await db.run(
       'DELETE FROM email_verifications WHERE expires_at < ?',
       Date.now()

@@ -1,142 +1,165 @@
 const fs = require('fs');
 const path = require('path');
-const { getVersionedFileName } = require('../utils');
 
+/**
+ * Настройки материалов (materials-prices-<storeId>.json) — per-store.
+ *
+ * У каждого магазина свой файл: ассортимент, цены за грамм, спецпредложения,
+ * минимальный заработок, список цветов могут отличаться.
+ *
+ * Путь: backend/materials-prices-<storeId>.json
+ * Легаси-файл backend/materials-prices.json (общий, до мультистора) читается
+ * как fallback на первом запуске магазина — потом пишем всегда в свой файл.
+ *
+ * Кэш — Map<storeId, { materials, specialOffers, minEarnings, colors }>.
+ */
 class MaterialsService {
-  static #materials = null;
-  static #specialOffers = null;
-  static #minEarnings = 250;
-  static #colors = [];
-  // Легаси-файл (до введения BOT_VERSION): materials-prices.json
-  static #legacyFilePath = path.join(__dirname, '../../materials-prices.json');
-  // Активный файл с суффиксом версии, если задан BOT_VERSION:
-  // materials-prices-1.json | materials-prices.json
-  static #filePath = path.join(__dirname, '../../', getVersionedFileName('materials-prices', 'json'));
+  static #caches = new Map();
 
-  /**
-   * Файл для чтения настроек: версионированный, если существует,
-   * иначе легаси materials-prices.json (обратная совместимость).
-   */
-  static #resolveReadPath() {
-    if (fs.existsSync(this.#filePath)) return this.#filePath;
-    if (fs.existsSync(this.#legacyFilePath)) return this.#legacyFilePath;
-    return this.#filePath;
-  }
-
-  /**
-   * Загружает настройки из файла materials-prices[-версия].json
-   */
-  static loadMaterials() {
-    try {
-      const readPath = this.#resolveReadPath();
-      if (readPath === this.#legacyFilePath && this.#legacyFilePath !== this.#filePath) {
-        console.log('[MaterialsService] Версионированный файл не найден, читаю легаси materials-prices.json');
-      }
-      if (!fs.existsSync(readPath)) {
-        console.warn('[MaterialsService] Файл настроек материалов не найден, используются значения по умолчанию');
-        this.#setDefaults();
-        return;
-      }
-      const raw = fs.readFileSync(readPath, 'utf8');
-      const data = JSON.parse(raw);
-      this.#materials = data.materials || {};
-      this.#specialOffers = data.specialOffers || {};
-      this.#minEarnings = data.minEarnings || 250;
-      this.#colors = data.colors || [];
-      console.log('[MaterialsService] Настройки материалов загружены');
-    } catch (err) {
-      console.error('[MaterialsService] Ошибка загрузки материалов:', err);
-      this.#setDefaults();
+  static #filePathFor(storeId) {
+    if (storeId == null || storeId === '') {
+      throw new Error('MaterialsService: storeId обязателен');
     }
+    return path.join(__dirname, '../../', `materials-prices-${storeId}.json`);
   }
 
-  static #setDefaults() {
-    this.#materials = {
+  static #legacyPath() {
+    return path.join(__dirname, '../../', 'materials-prices.json');
+  }
+
+  static #getCache(storeId) {
+    const key = String(storeId);
+    if (!this.#caches.has(key)) {
+      this.#caches.set(key, {
+        materials: null,
+        specialOffers: null,
+        minEarnings: 250,
+        colors: [],
+      });
+    }
+    return this.#caches.get(key);
+  }
+
+  static #setDefaults(cache) {
+    cache.materials = {
       'Pet-G': 2.5,
       'ABS': 2.5,
       'Нейлон Pa-6': 2.5,
       'Нейлон Pa-12': 2.5,
       'НейлонАрмир': 2.5,
-      'ASA': 2.5
+      'ASA': 2.5,
     };
-    this.#specialOffers = {};
-    this.#minEarnings = 250;
-    this.#colors = ['Черный', 'Белый', 'Серый', 'Прозрачный', 'Красный', 'Желтый', 'Зеленый'];
-  }
-
-  static getMaterials() {
-    if (!this.#materials) this.loadMaterials();
-    return this.#materials;
-  }
-
-  static getSpecialOffers() {
-    if (!this.#specialOffers) this.loadMaterials();
-    return this.#specialOffers;
-  }
-
-  static getMinEarnings() {
-    if (this.#minEarnings === null) this.loadMaterials();
-    return this.#minEarnings;
-  }
-
-  static getColors() {
-    if (!this.#colors.length) this.loadMaterials();
-    return this.#colors;
+    cache.specialOffers = {};
+    cache.minEarnings = 250;
+    cache.colors = ['Черный', 'Белый', 'Серый', 'Прозрачный', 'Красный', 'Желтый', 'Зеленый'];
   }
 
   /**
-   * Путь к актуальному файлу настроек (для скачивания):
-   * версионированный, если существует, иначе легаси-файл.
+   * Файл для чтения: свой файл магазина, если есть; иначе легаси общий
+   * (одноразовая миграция — читаем, но при следующем updateMaterials уже
+   * пишем в свой).
    */
-  static getFilePath() {
-    return this.#resolveReadPath();
+  static #resolveReadPath(storeId) {
+    const own = this.#filePathFor(storeId);
+    if (fs.existsSync(own)) return own;
+    const legacy = this.#legacyPath();
+    if (fs.existsSync(legacy)) {
+      console.log(
+        `[MaterialsService][store ${storeId}] Свой файл не найден, читаю легаси materials-prices.json`
+      );
+      return legacy;
+    }
+    return own;
+  }
+
+  static loadMaterials(storeId) {
+    const cache = this.#getCache(storeId);
+    try {
+      const readPath = this.#resolveReadPath(storeId);
+      if (!fs.existsSync(readPath)) {
+        console.warn(
+          `[MaterialsService][store ${storeId}] Файл настроек не найден, используются значения по умолчанию`
+        );
+        this.#setDefaults(cache);
+        return;
+      }
+      const raw = fs.readFileSync(readPath, 'utf8');
+      const data = JSON.parse(raw);
+      cache.materials = data.materials || {};
+      cache.specialOffers = data.specialOffers || {};
+      cache.minEarnings = data.minEarnings || 250;
+      cache.colors = data.colors || [];
+      console.log(`[MaterialsService][store ${storeId}] Настройки загружены`);
+    } catch (err) {
+      console.error(`[MaterialsService][store ${storeId}] Ошибка загрузки:`, err);
+      this.#setDefaults(cache);
+    }
+  }
+
+  static getMaterials(storeId) {
+    const cache = this.#getCache(storeId);
+    if (!cache.materials) this.loadMaterials(storeId);
+    return cache.materials;
+  }
+
+  static getSpecialOffers(storeId) {
+    const cache = this.#getCache(storeId);
+    if (!cache.specialOffers) this.loadMaterials(storeId);
+    return cache.specialOffers;
+  }
+
+  static getMinEarnings(storeId) {
+    const cache = this.#getCache(storeId);
+    if (cache.minEarnings === null) this.loadMaterials(storeId);
+    return cache.minEarnings;
+  }
+
+  static getColors(storeId) {
+    const cache = this.#getCache(storeId);
+    if (!cache.colors.length) this.loadMaterials(storeId);
+    return cache.colors;
+  }
+
+  /** Путь к актуальному файлу настроек магазина (для скачивания). */
+  static getFilePath(storeId) {
+    return this.#resolveReadPath(storeId);
+  }
+
+  /** Каноничное имя файла для строгой проверки при загрузке. */
+  static getFileName(storeId) {
+    return path.basename(this.#filePathFor(storeId));
   }
 
   /**
-   * Каноничное имя файла настроек с учётом версии
-   * (materials-prices-1.json | materials-prices.json) —
-   * для строгой проверки имени файла при загрузке.
+   * Обновить настройки магазина и записать в ЕГО файл.
+   * @param {string|number} storeId
+   * @param {object} data — { materials, specialOffers, minEarnings, colors }
+   * @param {string|null} [customFilePath] — для тестов
    */
-  static getFileName() {
-    return path.basename(this.#filePath);
-  }
-
-  /**
-   * Обновляет настройки материалов и сохраняет в файл (всегда в постоянный путь)
-   */
-  static updateMaterials(data, customFilePath = null) {
+  static updateMaterials(storeId, data, customFilePath = null) {
     if (!data.materials || typeof data.materials !== 'object') {
       throw new Error('Invalid materials format');
     }
-    this.#materials = data.materials;
-    this.#specialOffers = data.specialOffers || {};
-    this.#minEarnings = data.minEarnings || 250;
-    this.#colors = data.colors || [];
+    const cache = this.#getCache(storeId);
+    cache.materials = data.materials;
+    cache.specialOffers = data.specialOffers || {};
+    cache.minEarnings = data.minEarnings || 250;
+    cache.colors = data.colors || [];
 
-    // Сохраняем в версионированный файл, если не передан кастомный (используется для тестов)
-    const targetPath = customFilePath || this.#filePath;
+    const targetPath = customFilePath || this.#filePathFor(storeId);
     fs.writeFileSync(targetPath, JSON.stringify(data, null, 2));
-    console.log('[MaterialsService] Настройки материалов сохранены в', targetPath);
+    console.log(`[MaterialsService][store ${storeId}] Настройки сохранены в ${targetPath}`);
   }
 
-  /**
-   * Получает цену материала за грамм
-   */
-  static getMaterialPrice(materialName) {
-    const materials = this.getMaterials();
+  static getMaterialPrice(storeId, materialName) {
+    const materials = this.getMaterials(storeId);
     return materials[materialName] || 0;
   }
 
-  /**
-   * Проверяет, есть ли специальное предложение для offer_id
-   */
-  static getSpecialOffer(offerId) {
-    const offers = this.getSpecialOffers();
+  static getSpecialOffer(storeId, offerId) {
+    const offers = this.getSpecialOffers(storeId);
     return offers[offerId] !== undefined ? offers[offerId] : null;
   }
 }
-
-// Автозагрузка при импорте
-MaterialsService.loadMaterials();
 
 module.exports = MaterialsService;

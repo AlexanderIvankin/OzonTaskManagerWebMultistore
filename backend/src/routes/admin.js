@@ -20,6 +20,7 @@ router.get('/users/:id', adminController.getUserById);
 router.post('/users', adminController.createUserByAdmin);
 router.put('/users/:id', adminController.updateUser);
 router.delete('/users/:id', adminController.fireUser);
+router.post('/users/:id/restore', adminController.restoreUser);
 
 // --- Статистика персонала (вкладка «Статистика», только персонал) ---
 router.get('/stats', adminController.getStaffStats);
@@ -36,7 +37,20 @@ router.get('/sync/expected-filename', adminController.getSyncExpectedFileName);
 // --- Экспорт данных ---
 router.get('/export/team-info', adminController.exportTeamInfo);
 router.get('/export/product-stats', adminController.exportProductStats);
-router.get('/export/database', authorize(...STAFF_ROLES), adminController.downloadDatabase); // персонал (admin/moderator/god)
+
+// --- Экспорт БД ---
+// Текущий магазин (store-N.db) — как раньше
+router.get('/export/database', authorize(...STAFF_ROLES), adminController.downloadDatabase);
+// Глобальные БД
+router.get('/export/database/users', authorize(...STAFF_ROLES), adminController.downloadUsersDb);
+router.get('/export/database/models', authorize(...STAFF_ROLES), adminController.downloadModelsDb);
+router.get('/export/database/notifications', authorize(...STAFF_ROLES), adminController.downloadNotificationsDb);
+// ZIP: контекст одного магазина (store-N + 3 глобальные)
+router.get('/export/database/store-all', authorize(...STAFF_ROLES), adminController.downloadStoreAllDatabases);
+// ZIP: всё приложение (все store-N + 3 глобальные)
+router.get('/export/database/all', authorize(...STAFF_ROLES), adminController.downloadAllDatabases);
+
+// --- Backup БД ---
 router.post('/backup', authorize(...STAFF_ROLES), adminController.createBackup); // ручной бэкап, персонал
 
 // --- Конфигурация materials-prices.json ---

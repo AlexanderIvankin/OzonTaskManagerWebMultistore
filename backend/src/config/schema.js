@@ -139,6 +139,20 @@ async function createModelsSchema(db) {
     )
   `);
   await db.exec('CREATE INDEX IF NOT EXISTS idx_issued_models_user_offer ON issued_models(user_id, offer_id)');
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS model_download_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      offer_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      token TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER,
+      created_at INTEGER NOT NULL
+    )
+  `);
+  await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_model_tokens_token ON model_download_tokens(token)');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_model_tokens_expires ON model_download_tokens(expires_at)');
 }
 
 /**

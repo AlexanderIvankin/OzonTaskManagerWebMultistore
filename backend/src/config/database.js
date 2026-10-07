@@ -25,10 +25,6 @@ const storeDbInstances = new Map(); // storeId → connection
 //  ХЕЛПЕРЫ
 // ============================================================================
 
-/**
- * Преобразует относительный путь к БД (из .env: './users.db')
- * в абсолютный, относительно корня backend/.
- */
 function resolveDbPath(dbPath) {
   if (typeof dbPath !== 'string' || !dbPath) {
     throw new Error(`resolveDbPath: ожидается непустая строка, получено: ${dbPath}`);
@@ -39,10 +35,16 @@ function resolveDbPath(dbPath) {
 }
 
 /**
- * Открывает БД и применяет схему. Создаёт файл, если его нет.
- * @returns {Promise<{ db, absolutePath }>}
+ * Открывает БД, применяет схему и (опционально) ATTACH'ит users.db
+ * под схемой 'usersdb' — чтобы store-модели могли делать
+ * JOIN usersdb.users ...
+ *
+ * ATTACH работает на уровне СOEDINENIЯ, а не файла. При открытии store-1.db
+ * в нём появляется дополнительная схема 'usersdb', указывающая на users.db.
+ * FK через неё работать не будет (SQLite не умеет междокументные FK), но
+ * JOIN и SELECT — работают.
  */
-async function _openAndInit(dbPath, schemaFn, label) {
+async function _openAndInit(dbPath, schemaFn, label, { attachUsersDb = false } = {}) {
   const absolutePath = resolveDbPath(dbPath);
 
   const dir = path.dirname(absolutePath);
@@ -55,15 +57,27 @@ async function _openAndInit(dbPath, schemaFn, label) {
     driver: sqlite3.Database,
   });
 
-  // Foreign keys — важно для консистентности
   await db.exec('PRAGMA foreign_keys = ON');
-  // Ждать до 5 секунд снятия блокировки вместо мгновенного SQLITE_BUSY
   await db.exec('PRAGMA busy_timeout = 5000');
-  // WAL — устойчивее к конкурентной записи (API + планировщик + сокеты)
   await db.exec('PRAGMA journal_mode = WAL');
 
-  await schemaFn(db);
+  // ATTACH users.db как схема 'usersdb'
+  if (attachUsersDb) {
+    const usersPath = resolveDbPath(config.usersDbPath);
+    if (!fs.existsSync(usersPath)) {
+      throw new Error(
+        `ATTACH users.db: файл не найден (${usersPath}). ` +
+        `Сначала должна быть инициализирована users.db.`
+      );
+    }
+    // Идемпотентность: если уже ATTACH'нут — пропускаем
+    const attached = await db.all('PRAGMA database_list');
+    if (!attached.some((d) => d.name === 'usersdb')) {
+      await db.run('ATTACH DATABASE ? AS usersdb', usersPath);
+    }
+  }
 
+  await schemaFn(db);
   return { db, absolutePath };
 }
 
@@ -72,26 +86,27 @@ async function _openAndInit(dbPath, schemaFn, label) {
 // ============================================================================
 
 async function initDB() {
-  // Идемпотентность
+  // Идемпотентность: не переоткрываем соединения, если уже готовы
   if (usersDbInstance && modelsDbInstance && storeDbInstances.size > 0) {
     return getStatus();
   }
 
   const startTime = Date.now();
 
-  // --- users.db (единый для всех магазинов) ---
+  // --- 1. users.db (единый для всех магазинов) ---
   const usersResult = await _openAndInit(
     config.usersDbPath, createUsersSchema, 'users'
   );
   usersDbInstance = usersResult.db;
 
-  // --- models.db (единый для всех магазинов) ---
+  // --- 2. models.db (единый, с ATTACH users.db для uploaded_by) ---
   const modelsResult = await _openAndInit(
-    config.modelsDbPath, createModelsSchema, 'models'
+    config.modelsDbPath, createModelsSchema, 'models',
+    { attachUsersDb: true }
   );
   modelsDbInstance = modelsResult.db;
 
-  // --- store-N.db (по одной на каждый магазин из реестра) ---
+  // --- 3. store-N.db (по одной на каждый магазин, с ATTACH users.db) ---
   for (const storeId of Object.keys(stores)) {
     const store = stores[storeId];
     if (!store || typeof store !== 'object' || !store.dbPath) {
@@ -100,7 +115,8 @@ async function initDB() {
     }
     try {
       const result = await _openAndInit(
-        store.dbPath, createStoreSchema, `store-${storeId}`
+        store.dbPath, createStoreSchema, `store-${storeId}`,
+        { attachUsersDb: true }
       );
       storeDbInstances.set(String(storeId), result.db);
     } catch (err) {
@@ -119,24 +135,17 @@ function _logInit(startTime) {
   const elapsed = Date.now() - startTime;
   console.log('✅ Все БД инициализированы:');
   console.log(`   users.db:      ${resolveDbPath(config.usersDbPath)}`);
-  console.log(`   models.db:     ${resolveDbPath(config.modelsDbPath)}`);
+  console.log(`   models.db:     ${resolveDbPath(config.modelsDbPath)}  [ATTACH usersdb]`);
   for (const storeId of storeDbInstances.keys()) {
     const store = stores[storeId];
-    console.log(`   store-${storeId}.db:  ${resolveDbPath(store.dbPath)}`);
+    console.log(`   store-${storeId}.db:  ${resolveDbPath(store.dbPath)}  [ATTACH usersdb]`);
   }
   console.log(`   ⏱  ${elapsed} мс`);
 }
 
-/**
- * Проверяет наличие legacy-файла (bot_web-N.db со старой схемой).
- * Если есть — печатает заметный warning с подсказкой о миграции.
- * Legacy-файл НЕ удаляем, оставляем как резервную копию.
- */
 function _checkLegacyFile() {
-  const legacyPath = config.legacyDbPath || './bot_web.db';
-  const absoluteLegacy = resolveDbPath(legacyPath);
-
-  if (!fs.existsSync(absoluteLegacy)) return;
+  const legacyPath = resolveDbPath(config.legacyDbPath || './bot_web.db');
+  if (!fs.existsSync(legacyPath)) return;
 
   console.warn(
     '\n' +
@@ -152,7 +161,7 @@ function _checkLegacyFile() {
     '│ Если миграция ещё НЕ выполнена:                                 │\n' +
     '│   1. Остановить backend                                         │\n' +
     '│   2. cd migration && node split.js                              │\n' +
-    '│   3. Проверить output/ и скопировать *.db рядом с backend/      │\n' +
+    '│   3. Скопировать output/*.db рядом с backend/                   │\n' +
     '│   4. Перезапустить backend                                      │\n' +
     '│                                                                │\n' +
     '│ Legacy-файл НЕ удаляем — он остаётся как резервная копия.       │\n' +
@@ -193,9 +202,7 @@ function getStoreDB(storeId) {
 }
 
 /**
- * @deprecated Используйте getUsersDB / getModelsDB / getStoreDB(storeId).
- * Метод оставлен, чтобы старый код падал с понятным сообщением,
- * а не с непонятной ошибкой.
+ * @deprecated — единого getDB() в multi-store нет.
  */
 function getDB() {
   throw new Error(
@@ -214,23 +221,29 @@ function getDB() {
 async function closeAll() {
   let closed = 0;
 
-  if (usersDbInstance) {
-    await usersDbInstance.close();
-    usersDbInstance = null;
-    closed++;
-  }
-  if (modelsDbInstance) {
-    await modelsDbInstance.close();
-    modelsDbInstance = null;
-    closed++;
-  }
-  for (const [, db] of storeDbInstances) {
+  const tryClose = async (db, label) => {
+    if (!db) return;
+    try {
+      await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (err) {
+      console.warn(`[DB] wal_checkpoint для ${label}:`, err.message);
+    }
     try {
       await db.close();
       closed++;
     } catch (err) {
-      console.warn('[DB] Ошибка закрытия store-соединения:', err.message);
+      console.warn(`[DB] Ошибка закрытия ${label}:`, err.message);
     }
+  };
+
+  await tryClose(usersDbInstance, 'users.db');
+  usersDbInstance = null;
+
+  await tryClose(modelsDbInstance, 'models.db');
+  modelsDbInstance = null;
+
+  for (const [storeId, db] of storeDbInstances) {
+    await tryClose(db, `store-${storeId}.db`);
   }
   storeDbInstances.clear();
 
@@ -248,6 +261,7 @@ function getStatus() {
     modelsDb: {
       path: resolveDbPath(config.modelsDbPath),
       connected: !!modelsDbInstance,
+      attachUsers: true, // ← добавляется в _openAndInit
     },
     storeDbs: {},
     legacy: {
@@ -258,10 +272,11 @@ function getStatus() {
 
   for (const storeId of Object.keys(stores)) {
     const store = stores[storeId];
-    const db = storeDbInstances.get(storeId);
+    const db = storeDbInstances.get(String(storeId));
     status.storeDbs[storeId] = {
       path: resolveDbPath(store.dbPath),
       connected: !!db,
+      attachUsers: true,
     };
   }
 
@@ -273,19 +288,14 @@ function getStatus() {
 // ============================================================================
 
 module.exports = {
-  // Инициализация / закрытие
   initDB,
   closeAll,
 
-  // Геттеры
   getUsersDB,
   getModelsDB,
   getStoreDB,
   getDB,       // deprecated
 
-  // Информация
   getStatus,
-
-  // Хелперы
   resolveDbPath,
 };

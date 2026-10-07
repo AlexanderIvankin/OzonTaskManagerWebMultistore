@@ -10,11 +10,12 @@ const { formatDateDDMMYYYY, getVersionedFileName } = require('../utils');
  */
 class ProductStatsService {
   /**
-   * Экспортирует всю статистику товаров в Excel.
-   * @returns {Promise<string>} - путь к созданному файлу
+   * Экспорт статистики товаров магазина в Excel.
+   * @param {string|number} storeId
+   * @returns {Promise<string>}
    */
-  static async exportProductStatsXlsx() {
-    const stats = await ProductStat.getAll();
+  static async exportProductStatsXlsx(storeId) {
+    const stats = await ProductStat.getAll(storeId);
     if (!stats.length) {
       throw new Error('Нет данных о статистике товаров.');
     }
@@ -22,7 +23,6 @@ class ProductStatsService {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Статистика');
 
-    // Заголовки (как в бот-версии)
     const headers = ['Артикул', 'Материал', 'Цвет', 'Вес (г)', 'Кто заполнил', 'Дата'];
     const headerRow = worksheet.addRow(headers);
     headerRow.eachCell((cell) => {
@@ -30,7 +30,6 @@ class ProductStatsService {
       cell.font = { bold: true };
     });
 
-    // Данные
     for (const s of stats) {
       const rowData = [
         s.offer_id,
@@ -46,21 +45,19 @@ class ProductStatsService {
       });
     }
 
-    // Ширина столбцов
     const columnWidths = [20, 20, 20, 15, 40, 20];
     worksheet.columns.forEach((col, index) => {
       col.width = columnWidths[index] || 20;
     });
 
     const buffer = await workbook.xlsx.writeBuffer();
-    const outputDir = path.join(__dirname, '../../outputs');
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-    // product-stats-1.xlsx | product-stats.xlsx (как в бот-версии)
+
+    // Файл per-store: outputs/store-<id>/product-stats.xlsx
+    const outputDir = path.join(__dirname, '../../outputs', `store-${storeId}`);
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
     const outputPath = path.join(outputDir, getVersionedFileName('product-stats', 'xlsx'));
     fs.writeFileSync(outputPath, buffer);
-    console.log(`[ProductStatsService] Экспорт статистики товаров сохранён: ${outputPath}`);
+    console.log(`[ProductStatsService][store ${storeId}] Экспорт сохранён: ${outputPath}`);
     return outputPath;
   }
 }

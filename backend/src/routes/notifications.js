@@ -63,6 +63,7 @@ router.get('/', async (req, res) => {
         : null;
 
     const result = await Notification.getByRecipient(req.user.id, {
+      storeId: req.storeId,
       audience: box === 'staff' ? 'staff' : 'user',
       unreadOnly,
       limit,
@@ -86,6 +87,7 @@ router.get('/unread-count', async (req, res) => {
     if (!box) return res.status(403).json({ error: 'Forbidden' });
 
     const count = await Notification.getUnreadCount(req.user.id, {
+      storeId: req.storeId,
       audience: box === 'staff' ? 'staff' : 'user',
     });
     res.json({ count });
@@ -105,7 +107,10 @@ router.post('/read', async (req, res) => {
 
     let changed = 0;
     if (req.body.all) {
-      changed = await Notification.markAllRead(req.user.id, { audience });
+      changed = await Notification.markAllRead(req.user.id, {
+        storeId: req.storeId,
+        audience,
+      });
     } else {
       changed = await Notification.markRead(req.user.id, parseIds(req.body.ids));
     }
@@ -146,6 +151,7 @@ router.post('/clear-read', async (req, res) => {
     if (!box) return res.status(403).json({ error: 'Forbidden' });
 
     const changed = await Notification.deleteRead(req.user.id, {
+      storeId: req.storeId,
       audience: box === 'staff' ? 'staff' : 'user',
     });
 
@@ -173,10 +179,8 @@ router.get('/errors', authorize(...STAFF_ROLES), async (req, res) => {
     const unreadOnly = req.query.unread === '1' || req.query.unread === 'true';
 
     const result = await Notification.getErrors({
-      level,
-      unreadOnly,
-      limit,
-      offset,
+      storeId: req.storeId,
+      level, unreadOnly, limit, offset,
     });
     res.json(result);
   } catch (err) {
@@ -192,7 +196,7 @@ router.get('/errors/count', authorize(...STAFF_ROLES), async (req, res) => {
       req.query.level === 'error' || req.query.level === 'warn'
         ? req.query.level
         : null;
-    const count = await Notification.countErrors({ level });
+    const count = await Notification.countErrors({ storeId: req.storeId, level });
     res.json({ count });
   } catch (err) {
     console.error('[notifications] errors/count:', err);
@@ -210,7 +214,7 @@ router.get(
         req.query.level === 'error' || req.query.level === 'warn'
           ? req.query.level
           : null;
-      const count = await Notification.getUnreadErrorsCount({ level });
+      const count = await Notification.getUnreadErrorsCount({ storeId: req.storeId, level });
       res.json({ count });
     } catch (err) {
       console.error('[notifications] errors/unread-count:', err);
@@ -225,7 +229,7 @@ router.post('/errors/read', authorize(...STAFF_ROLES), async (req, res) => {
   try {
     let changed;
     if (req.body.all) {
-      changed = await Notification.markAllErrorsRead();
+      changed = await Notification.markAllErrorsRead({ storeId: req.storeId });
     } else {
       changed = await Notification.markErrorsRead(parseIds(req.body.ids));
     }
@@ -250,7 +254,7 @@ router.post('/errors/delete', authorize(...STAFF_ROLES), async (req, res) => {
 // Очистить весь журнал ошибок
 router.post('/errors/clear', authorize(...STAFF_ROLES), async (req, res) => {
   try {
-    const changed = await Notification.clearErrors();
+    const changed = await Notification.clearErrors({ storeId: req.storeId });
     res.json({ changed });
   } catch (err) {
     console.error('[notifications] errors/clear:', err);

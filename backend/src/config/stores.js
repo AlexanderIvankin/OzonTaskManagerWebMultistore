@@ -9,13 +9,12 @@ const globalConfig = require('./index');
  *   • глобального .env (через envLoader)
  *   • .env.store<N> (переопределяет/дополняет)
  *
- * Per-store в этом файле — только то, что РЕАЛЬНО отличается
- * от магазина к магазину:
- *   • идентификатор и пути к БД (store-N.db, notifications-N.db)
- *   • CORS origin (свой поддомен)
- *   • Ozon-ключи (разные аккаунты продавцов)
+ * Per-store здесь — только то, что РЕАЛЬНО отличается от магазина к магазину:
+ *   • путь к БД магазина (store-N.db)
+ *   • CORS origin (свой поддомен) + SUBDOMAIN для резолва по Host
+ *   • Ozon-ключи (разные аккаунты продавцов) + суффикс фильтрации заказов
  *   • VAPID subject (контакт для push-сервисов своего поддомена)
- *   • флаг включения очистки акций
+ *   • флаги: очистка акций, отключение работы с 3D-моделями
  *
  * Всё остальное (SMTP, S3, JWT, GOD, timezone, интервалы планировщиков
  * и т.п.) — глобально в src/config/index.js.
@@ -44,24 +43,34 @@ function buildStore(storeId) {
     );
   }
 
+  // FILTER_ORDER_SUFFIX может прийти как "" (пустая строка в .env) — тогда
+  // фильтра нет. trim() на всякий случай (пробелы в .env).
+  const filterOrderSuffix = String(env.FILTER_ORDER_SUFFIX || '').trim();
+
   return {
     id: storeIdFinal,
 
-    // Пути к БД этого магазина
-    dbPath: env.DB_PATH || `./store-${storeIdFinal}.db`,
-    notificationsDbPath:
-      env.NOTIFICATIONS_DB_PATH || `./notifications-${storeIdFinal}.db`,
+    // Поддомен для резолва магазина по Host (см. middlewares/storeResolver.js).
+    // shop1.example.com -> 'shop1'. Если SUBDOMAIN не задан — берётся STORE_ID.
+    // Храним в нижнем регистре: Host приходит в нижнем регистре.
+    subdomain: String(env.SUBDOMAIN || storeIdFinal).toLowerCase(),
 
-    // CORS origin
+    // Путь к БД этого магазина
+    dbPath: env.DB_PATH || `./store-${storeIdFinal}.db`,
+
+    // CORS origin (свой поддомен)
     clientOrigin: env.CLIENT_ORIGIN,
 
     // Ozon (свой аккаунт продавца)
     ozon: {
       clientId: env.OZON_CLIENT_ID,
       apiKey: env.OZON_API_KEY,
-      // shipIdentifier — глобальный, оставлен здесь для удобства
-      // (значение подтягивается из globalConfig при использовании)
     },
+
+    // Фильтрация заказов по суффиксу offer_id (per-store, т.к. ассортимент
+    // магазинов различается). Пусто / не задан -> null (без фильтра).
+    // Используется в OzonService.fetchAwaitingOrders.
+    filterOrderSuffix: filterOrderSuffix || null,
 
     // Web Push subject (уникальный mailto на поддомен)
     push: {
@@ -72,8 +81,11 @@ function buildStore(storeId) {
 
     // Флаги, которые могут отличаться между магазинами
     features: {
-      cleanPromotions:
-        (env.CLEAN_PROMOTIONS || 'false') === 'true',
+      // Ежедневная очистка акций этого магазина
+      cleanPromotions: (env.CLEAN_PROMOTIONS || 'false') === 'true',
+      // Отключение работы с 3D-моделями для магазина (если модели не нужны):
+      // выдача при назначении заказа, кнопки скачивания, раздел «Модели».
+      disableModels: (env.DISABLE_MODELS || 'false') === 'true',
     },
   };
 }
@@ -84,7 +96,6 @@ for (const storeId of getAvailableStoreIds()) {
     stores[storeId] = buildStore(storeId);
   } catch (err) {
     console.error(`[stores] Не удалось собрать конфиг магазина ${storeId}:`, err.message);
-    // В production лучше падать сразу, но на этапе отладки — пропускаем магазин
     if (process.env.NODE_ENV === 'production') process.exit(1);
   }
 }
@@ -100,12 +111,10 @@ console.log(
   `[stores] Загружены магазины: ${Object.keys(stores).join(', ')}`
 );
 
-// Удобный хелпер: получить список ID всех магазинов
 function getStoreIds() {
   return Object.keys(stores);
 }
 
-// Удобный хелпер: получить конфиг магазина (с бросанием, если нет)
 function getStore(storeId) {
   const s = stores[String(storeId)];
   if (!s) {
@@ -116,10 +125,7 @@ function getStore(storeId) {
 
 module.exports = stores;
 
-// Экспортируем хелперы как НЕперечислимые свойства.
-// Иначе Object.keys(stores) вернёт не только ID магазинов ('1', '2', ...),
-// но и 'getStoreIds' / 'getStore', и циклы по магазинам будут
-// пытаться обработать функции как конфиги.
+// Хелперы — НЕперечислимые, чтобы цикл по магазинам видел только ID.
 Object.defineProperty(module.exports, 'getStoreIds', {
   value: getStoreIds,
   enumerable: false,

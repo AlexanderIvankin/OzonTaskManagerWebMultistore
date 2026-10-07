@@ -1,5 +1,6 @@
 const AuthService = require('../services/AuthService');
 const User = require('../models/User');
+const UserStore = require('../models/UserStore');
 // Роли персонала живут в отдельном модуле без зависимостей — иначе socket.js
 // (который берёт отсюда STAFF_ROLES) тянул бы AuthService и замыкал цикл
 // require: NotificationService -> socket -> middlewares/auth -> AuthService ->
@@ -20,7 +21,51 @@ async function authenticate(req, res, next) {
   if (!user) {
     return res.status(401).json({ error: 'User not found' });
   }
-  req.user = user;
+
+  // Роль в ТЕКУЩЕМ магазине — из user_stores (глобальная users.role тут
+  // только 'god' | 'user' | 'guest'). Именно per-store роль определяет
+  // права: сотрудник магазина 1 может быть обычным пользователем магазина 2.
+  let storeRole = null;
+  let isFired = 0;
+  let earningsFactor = 1.0;
+  let wasEmployee = 0;
+
+  if (req.storeId) {
+    const storeRecord = await UserStore.get(user.id, req.storeId);
+    if (storeRecord) {
+      storeRole = storeRecord.role;
+      isFired = storeRecord.is_fired ? 1 : 0;
+      earningsFactor = storeRecord.earnings_factor ?? 1.0;
+      wasEmployee = storeRecord.was_employee ? 1 : 0;
+    }
+  }
+
+  // Эффективная роль для authorize/requireEmployee:
+  //   • 'god'   — глобальная (Создатель один на всю систему, его профиль
+  //               защищён и в любом магазине он остаётся god);
+  //   • 'guest' — глобальная (email не подтверждён, до ввода кода из письма);
+  //   • иначе   — из user_stores; нет записи или уволен → 'user'.
+  let effectiveRole;
+  if (user.role === 'god') {
+    effectiveRole = 'god';
+  } else if (user.role === 'guest') {
+    effectiveRole = 'guest';
+  } else if (storeRole && !isFired) {
+    effectiveRole = storeRole;
+  } else {
+    effectiveRole = 'user';
+  }
+
+  // Отдаём контроллерам «плоский» объект: глобальные поля users + per-store
+  // (role/is_fired/earnings_factor/was_employee) + store_id.
+  req.user = {
+    ...user,
+    role: effectiveRole,
+    is_fired: isFired,
+    earnings_factor: earningsFactor,
+    was_employee: wasEmployee,
+    store_id: req.storeId || null,
+  };
   next();
 }
 
@@ -30,7 +75,10 @@ async function authenticate(req, res, next) {
 
 function requireEmployee(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-  if (req.user.role === 'user') {
+  // 'user' и 'guest' не имеют доступа к сотрудническим эндпоинтам.
+  // 'guest' — email не подтверждён (обычно и до сюда не доходит, но
+  // проверка защищает от гонок после удаления user_stores).
+  if (req.user.role === 'user' || req.user.role === 'guest') {
     return res.status(403).json({ error: 'Access denied. Employee role required.' });
   }
   next();

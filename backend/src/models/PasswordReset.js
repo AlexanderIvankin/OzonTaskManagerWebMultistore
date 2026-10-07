@@ -1,8 +1,8 @@
-const { getDB } = require('../config/database');
+const { getUsersDB } = require('../config/database');
 
 class PasswordReset {
   static async create(userId, code, expiresInMinutes = 15) {
-    const db = getDB();
+    const db = getUsersDB();
     const now = Date.now();
     const expiresAt = now + expiresInMinutes * 60 * 1000;
     await db.run(
@@ -12,7 +12,7 @@ class PasswordReset {
   }
 
   static async findByCode(code) {
-    const db = getDB();
+    const db = getUsersDB();
     return db.get(
       `SELECT * FROM password_resets WHERE code = ? AND expires_at > ? ORDER BY id DESC LIMIT 1`,
       code, Date.now()
@@ -20,7 +20,7 @@ class PasswordReset {
   }
 
   static async getLatestByUserId(userId) {
-    const db = getDB();
+    const db = getUsersDB();
     return db.get(
       `SELECT * FROM password_resets
        WHERE user_id = ?
@@ -31,17 +31,17 @@ class PasswordReset {
   }
 
   static async deleteByUserId(userId) {
-    const db = getDB();
+    const db = getUsersDB();
     await db.run('DELETE FROM password_resets WHERE user_id = ?', userId);
   }
 
   static async deleteByCode(code) {
-    const db = getDB();
+    const db = getUsersDB();
     await db.run('DELETE FROM password_resets WHERE code = ?', code);
   }
 
   static async deleteExpired() {
-    const db = getDB();
+    const db = getUsersDB();
     const result = await db.run(
       'DELETE FROM password_resets WHERE expires_at < ?',
       Date.now()

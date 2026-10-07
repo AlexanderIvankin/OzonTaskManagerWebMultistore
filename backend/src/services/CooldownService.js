@@ -7,9 +7,12 @@
  *   • refreshOrders — страница «Мои заказы»: 1 минута после успешной
  *                     синхронизации статусов (кнопка «Обновить»).
  *
- * Хранение — в памяти процесса (Map: String(userId) -> timestamp срабатывания).
+ * Хранение — в памяти процесса (Map: 'storeId:userId' -> timestamp).
  * Кулдаун ставится ТОЛЬКО после успешного выполнения (как в боте).
  * Устаревшие записи вычищает планировщик: scheduler.startCooldownCleaner (раз в час).
+ *
+ * MULTISTORE: ключ включает storeId — иначе один и тот же сотрудник,
+ * работающий в двух магазинах, «съедал» бы кулдаун в обоих сразу.
  */
 
 const LABEL_COOLDOWN_MS = 60 * 1000; // 1 минута
@@ -65,18 +68,24 @@ const DEFINITIONS = {
   ],
 };
 
+/** Составной ключ 'storeId:userId' — один пользователь, разные магазины. */
+function makeKey(storeId, userId) {
+  return `${storeId}:${userId}`;
+}
+
 /**
  * Проверка кулдауна для команды.
- * @param {string} kind - 'label' | 'allLabels' | 'toggleOrders'
+ * @param {string} kind - 'label' | 'allLabels' | 'toggleOrders' | 'refreshOrders'
+ * @param {string|number} storeId
  * @param {number|string} userId
  * @param {number} [now] - метка времени (для тестов)
  * @returns {{blocked: false}
  *          | {blocked: true, retryAfterSec: number, message: string}}
  */
-function check(kind, userId, now = Date.now()) {
+function check(kind, storeId, userId, now = Date.now()) {
   const stores = DEFINITIONS[kind];
   if (!stores) return { blocked: false };
-  const key = String(userId);
+  const key = makeKey(storeId, userId);
   for (const store of stores) {
     const last = store.map.get(key);
     if (last === undefined) continue;
@@ -91,16 +100,17 @@ function check(kind, userId, now = Date.now()) {
 
 /**
  * Зафиксировать срабатывание кулдауна (после УСПЕШНОГО выполнения команды).
- * @param {string} kind - 'label' | 'allLabels' | 'toggleOrders'
+ * @param {string} kind - 'label' | 'allLabels' | 'toggleOrders' | 'refreshOrders'
+ * @param {string|number} storeId
  * @param {number|string} userId
  * @param {number} [storeIndex] - индекс хранилища внутри kind (у allLabels:
  *   0 — длинный «успех», 1 — короткий «пусто/ошибка»)
  * @param {number} [now] - метка времени (для тестов)
  */
-function touch(kind, userId, storeIndex = 0, now = Date.now()) {
+function touch(kind, storeId, userId, storeIndex = 0, now = Date.now()) {
   const stores = DEFINITIONS[kind];
   if (!stores || !stores[storeIndex]) return;
-  stores[storeIndex].map.set(String(userId), now);
+  stores[storeIndex].map.set(makeKey(storeId, userId), now);
 }
 
 /**
@@ -144,6 +154,7 @@ module.exports = {
   SEND_ALL_LABELS_EMPTY_COOLDOWN_MS,
   TOGGLE_ORDERS_COOLDOWN_MS,
   REFRESH_ORDERS_COOLDOWN_MS,
+  makeKey,
   check,
   touch,
   cleanCooldowns,

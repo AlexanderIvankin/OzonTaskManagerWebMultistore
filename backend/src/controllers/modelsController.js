@@ -18,7 +18,7 @@ const { disableCache } = require('../utils');
 exports.requestDownload = async (req, res) => {
   try {
     const { offerId } = req.params;
-    const grant = await ModelService.requestToken(offerId, req.user);
+    const grant = await ModelService.requestToken(offerId, req.user, { storeId: req.storeId });
     res.json({
       token: grant.token,
       expiresAt: grant.expiresAt,
@@ -61,7 +61,7 @@ exports.downloadByToken = async (req, res) => {
       return res.status(403).json({ error: 'Токен выдан другому пользователю' });
     }
 
-    const info = await ModelService.getDownloadInfo(offerId);
+    const info = await ModelService.getDownloadInfo(offerId, { storeId: req.storeId });
     if (!fs.existsSync(info.path)) {
       return res.status(404).json({ error: 'Файл модели не найден в хранилище' });
     }

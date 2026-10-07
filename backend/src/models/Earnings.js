@@ -1,19 +1,17 @@
-const { getDB } = require('../config/database');
+const { getStoreDB } = require('../config/database');
 
 /**
- * Управление заработком пользователей
- * - История заработка (все заказы)
- * - Активный заработок (с момента последнего расчёта)
- * - Корректировки (история и активные)
+ * Заработок сотрудников (store-N.db).
+ *
+ * История (earnings_history) + активный расчёт (earnings_active) +
+ * корректировки (earnings_adjustments + earnings_adjustments_active).
+ * Все методы принимают storeId первым аргументом.
  */
 class Earnings {
-  // -------------------- ИСТОРИЯ ЗАРАБОТКА (навсегда) --------------------
+  // -------------------- ИСТОРИЯ --------------------
 
-  /**
-   * Сохранить заработок за заказ в историю
-   */
-  static async saveHistory(userId, orderId, amount) {
-    const db = getDB();
+  static async saveHistory(storeId, userId, orderId, amount) {
+    const db = getStoreDB(storeId);
     await db.run(
       `INSERT INTO earnings_history (user_id, order_id, amount, calculated_at)
        VALUES (?, ?, ?, ?)`,
@@ -21,11 +19,8 @@ class Earnings {
     );
   }
 
-  /**
-   * Получить историю заработка пользователя за период (для отчётов)
-   */
-  static async getHistory(userId, fromDate, toDate) {
-    const db = getDB();
+  static async getHistory(storeId, userId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
     return db.all(
       `SELECT order_id, amount, calculated_at
        FROM earnings_history
@@ -35,27 +30,21 @@ class Earnings {
     );
   }
 
-  /**
-   * Получить историю всех пользователей за период (для экспорта)
-   */
-  static async getAllHistoryForPeriod(fromDate, toDate) {
-    const db = getDB();
+  static async getAllHistoryForPeriod(storeId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
     return db.all(`
       SELECT u.id, u.name, eh.order_id, eh.amount, eh.calculated_at
       FROM earnings_history eh
-      JOIN users u ON eh.user_id = u.id
+      LEFT JOIN usersdb.users u ON u.id = eh.user_id
       WHERE eh.calculated_at >= ? AND eh.calculated_at <= ?
-      ORDER BY u.id, eh.calculated_at
+      ORDER BY eh.user_id, eh.calculated_at
     `, fromDate, toDate);
   }
 
-  /**
-   * Получить сумму заработка за период (для статистики)
-   */
-  static async getSumHistory(userId, fromDate, toDate) {
-    const db = getDB();
+  static async getSumHistory(storeId, userId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
     const row = await db.get(
-      `SELECT COALESCE(SUM(amount), 0) as total
+      `SELECT COALESCE(SUM(amount), 0) AS total
        FROM earnings_history
        WHERE user_id = ? AND calculated_at >= ? AND calculated_at <= ?`,
       userId, fromDate, toDate
@@ -63,16 +52,8 @@ class Earnings {
     return row ? row.total : 0;
   }
 
-  /**
-* Получить историю заработка пользователя с деталями (для формирования сообщения)
-*/
-  /**
-   * Сумма заработка, начисленного за КОНКРЕТНЫЙ заказ пользователя.
-   * Используется при сторнировании заработка за отменённый / вовремя не
-   * отправленный заказ: корректировка делается на -эту сумму.
-   */
-  static async getOrderEarningsSum(userId, orderId) {
-    const db = getDB();
+  static async getOrderEarningsSum(storeId, userId, orderId) {
+    const db = getStoreDB(storeId);
     const row = await db.get(
       `SELECT COALESCE(SUM(amount), 0) AS total
        FROM earnings_history
@@ -82,24 +63,14 @@ class Earnings {
     return row ? Number(row.total) || 0 : 0;
   }
 
-  static async getHistoryWithDetails(userId, fromDate, toDate) {
-    const db = getDB();
-    return db.all(
-      `SELECT order_id, amount, calculated_at
-     FROM earnings_history
-     WHERE user_id = ? AND calculated_at >= ? AND calculated_at <= ?
-     ORDER BY calculated_at`,
-      userId, fromDate, toDate
-    );
+  static async getHistoryWithDetails(storeId, userId, fromDate, toDate) {
+    return this.getHistory(storeId, userId, fromDate, toDate);
   }
 
-  // -------------------- АКТИВНЫЙ ЗАРАБОТОК (до расчёта) --------------------
+  // -------------------- АКТИВНЫЙ ЗАРАБОТОК --------------------
 
-  /**
-   * Сохранить заработок в активную таблицу (при завершении заказа)
-   */
-  static async saveActive(userId, orderId, amount) {
-    const db = getDB();
+  static async saveActive(storeId, userId, orderId, amount) {
+    const db = getStoreDB(storeId);
     await db.run(
       `INSERT INTO earnings_active (user_id, order_id, amount, calculated_at)
        VALUES (?, ?, ?, ?)`,
@@ -107,11 +78,8 @@ class Earnings {
     );
   }
 
-  /**
-   * Получить активные заработки пользователя за период (или все)
-   */
-  static async getActive(userId, fromDate, toDate) {
-    const db = getDB();
+  static async getActive(storeId, userId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
     return db.all(
       `SELECT order_id, amount, calculated_at
        FROM earnings_active
@@ -121,13 +89,10 @@ class Earnings {
     );
   }
 
-  /**
-   * Получить сумму активного заработка пользователя за период
-   */
-  static async getActiveSum(userId, fromDate, toDate) {
-    const db = getDB();
+  static async getActiveSum(storeId, userId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
     const row = await db.get(
-      `SELECT COALESCE(SUM(amount), 0) as total
+      `SELECT COALESCE(SUM(amount), 0) AS total
        FROM earnings_active
        WHERE user_id = ? AND calculated_at >= ? AND calculated_at <= ?`,
       userId, fromDate, toDate
@@ -135,21 +100,29 @@ class Earnings {
     return row ? row.total : 0;
   }
 
-  /**
-   * Очистить активный заработок пользователя (после расчёта)
-   */
-  static async clearActive(userId) {
-    const db = getDB();
+  static async clearActive(storeId, userId) {
+    const db = getStoreDB(storeId);
     await db.run('DELETE FROM earnings_active WHERE user_id = ?', userId);
   }
 
-  // -------------------- КОРРЕКТИРОВКИ ЗАРАБОТКА --------------------
-
   /**
-   * Добавить корректировку в историю
+   * Все активные заработки магазина (для экспорта).
    */
-  static async addAdjustment(userId, amount, reason = '') {
-    const db = getDB();
+  static async getAllActiveForPeriod(storeId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
+    return db.all(`
+      SELECT u.id, u.name, ea.order_id, ea.amount, ea.calculated_at
+      FROM earnings_active ea
+      LEFT JOIN usersdb.users u ON u.id = ea.user_id
+      WHERE ea.calculated_at >= ? AND ea.calculated_at <= ?
+      ORDER BY ea.user_id, ea.calculated_at
+    `, fromDate, toDate);
+  }
+
+  // -------------------- КОРРЕКТИРОВКИ --------------------
+
+  static async addAdjustment(storeId, userId, amount, reason = '') {
+    const db = getStoreDB(storeId);
     await db.run(
       `INSERT INTO earnings_adjustments (user_id, amount, reason, adjusted_at)
        VALUES (?, ?, ?, ?)`,
@@ -157,13 +130,10 @@ class Earnings {
     );
   }
 
-  /**
-   * Получить сумму корректировок за период для пользователя
-   */
-  static async getAdjustmentsSum(userId, fromDate, toDate) {
-    const db = getDB();
+  static async getAdjustmentsSum(storeId, userId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
     const row = await db.get(
-      `SELECT COALESCE(SUM(amount), 0) as total
+      `SELECT COALESCE(SUM(amount), 0) AS total
        FROM earnings_adjustments
        WHERE user_id = ? AND adjusted_at >= ? AND adjusted_at <= ?`,
       userId, fromDate, toDate
@@ -171,27 +141,21 @@ class Earnings {
     return row ? row.total : 0;
   }
 
-  /**
-   * Получить все корректировки за период для всех пользователей
-   */
-  static async getAllAdjustmentsForPeriod(fromDate, toDate) {
-    const db = getDB();
+  static async getAllAdjustmentsForPeriod(storeId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
     return db.all(`
       SELECT u.id, u.name, ea.amount, ea.reason, ea.adjusted_at
       FROM earnings_adjustments ea
-      JOIN users u ON ea.user_id = u.id
+      LEFT JOIN usersdb.users u ON u.id = ea.user_id
       WHERE ea.adjusted_at >= ? AND ea.adjusted_at <= ?
-      ORDER BY u.id, ea.adjusted_at
+      ORDER BY ea.user_id, ea.adjusted_at
     `, fromDate, toDate);
   }
 
   // -------------------- АКТИВНЫЕ КОРРЕКТИРОВКИ --------------------
 
-  /**
-   * Сохранить корректировку в активную таблицу
-   */
-  static async addActiveAdjustment(userId, amount, reason = '') {
-    const db = getDB();
+  static async addActiveAdjustment(storeId, userId, amount, reason = '') {
+    const db = getStoreDB(storeId);
     await db.run(
       `INSERT INTO earnings_adjustments_active (user_id, amount, reason, adjusted_at)
        VALUES (?, ?, ?, ?)`,
@@ -199,13 +163,10 @@ class Earnings {
     );
   }
 
-  /**
-   * Получить сумму активных корректировок для пользователя
-   */
-  static async getActiveAdjustmentsSum(userId, fromDate, toDate) {
-    const db = getDB();
+  static async getActiveAdjustmentsSum(storeId, userId, fromDate, toDate) {
+    const db = getStoreDB(storeId);
     const row = await db.get(
-      `SELECT COALESCE(SUM(amount), 0) as total
+      `SELECT COALESCE(SUM(amount), 0) AS total
        FROM earnings_adjustments_active
        WHERE user_id = ? AND adjusted_at >= ? AND adjusted_at <= ?`,
       userId, fromDate, toDate
@@ -213,11 +174,8 @@ class Earnings {
     return row ? row.total : 0;
   }
 
-  /**
-   * Очистить активные корректировки для пользователя (после расчёта)
-   */
-  static async clearActiveAdjustments(userId) {
-    const db = getDB();
+  static async clearActiveAdjustments(storeId, userId) {
+    const db = getStoreDB(storeId);
     await db.run('DELETE FROM earnings_adjustments_active WHERE user_id = ?', userId);
   }
 }

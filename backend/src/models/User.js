@@ -1,24 +1,38 @@
-const { getDB } = require('../config/database');
+// src/models/User.js
+const { getUsersDB } = require('../config/database');
 
+/**
+ * Пользователь (users.db).
+ *
+ * Глобальные поля:
+ *   • role          — 'god' | 'user' | 'guest'
+ *   • capacity      — число принтеров (сквозное)
+ *   • taking_orders — принимает ли заказы вообще (сквозное)
+ *
+ * Per-store данные (роль в магазине, is_fired, earnings_factor,
+ * was_employee) — в модели UserStore (таблица user_stores).
+ */
 class User {
+  // ==========================================================================
+  //  CRUD
+  // ==========================================================================
+
   /**
-   * Создаёт нового пользователя
+   * Создать пользователя.
+   * @param {Object} data
+   *   • role — 'god' | 'user' | 'guest' (по умолчанию 'user')
+   *   • остальные поля таблицы users
    */
   static async create(data) {
-    const db = getDB();
+    const db = getUsersDB();
     const {
-      username, email, passwordHash, name,
-      displayName = null,
-      phone = '', capacity = 1, earningsFactor = 1.0, role = 'user',
-      // Гость (неподтверждённый email) не состоит в команде: сразу
-      // is_fired = 1, приём заказов выключен — он не попадает ни в один
-      // список активных сотрудников (подтверждение восстанавливает флаги,
-      // см. AuthService.verifyEmail).
-      isFired = 0, takingOrders = 1,
-      tgUserId = null
+      username, email, passwordHash,
+      name = '', displayName = null, phone = '',
+      capacity = 1, takingOrders = 1,
+      role = 'user', tgUserId = null,
+      emailVerified = 0,
     } = data;
 
-    // Проверяем уникальность username и email
     const existing = await db.get(
       'SELECT id, username, email FROM users WHERE username = ? OR email = ?',
       username, email
@@ -28,75 +42,77 @@ class User {
       throw new Error(`${conflict} already taken`);
     }
 
+    const now = Date.now();
     const result = await db.run(
-      `INSERT INTO users (username, email, password_hash, name, display_name, phone, capacity, earnings_factor, role, is_fired, taking_orders, tg_user_id, was_employee, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      username, email, passwordHash, name, displayName, phone, capacity, earningsFactor, role, isFired, takingOrders, tgUserId || null,
-      // Staff-роль (employee/moderator/admin/god) — сразу был сотрудником
-      ['employee', 'moderator', 'admin', 'god'].includes(role) ? 1 : 0,
-      Date.now(), Date.now()
+      `INSERT INTO users
+         (username, email, password_hash, name, display_name, phone,
+          capacity, taking_orders, role, tg_user_id, email_verified,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      username, email, passwordHash, name, displayName, phone,
+      capacity, takingOrders, role, tgUserId, emailVerified, now, now
     );
-    const id = result.lastID;
-    return this.getById(id);
+    return this.getById(result.lastID);
   }
 
   static async getById(id) {
-    const db = getDB();
-    const user = await db.get(
-      `SELECT id, username, email, name, display_name, phone, capacity, earnings_factor, role, is_fired, taking_orders, tg_user_id, email_verified, was_employee, created_at, updated_at
+    const db = getUsersDB();
+    return (await db.get(
+      `SELECT id, username, email, name, display_name, phone, capacity,
+              taking_orders, role, tg_user_id, email_verified,
+              created_at, updated_at
        FROM users WHERE id = ?`,
       id
-    );
-    return user || null;
+    )) || null;
   }
 
   static async getByUsername(username) {
-    const db = getDB();
-    const user = await db.get(
-      `SELECT id, username, email, password_hash, name, display_name, phone, capacity, earnings_factor, role, is_fired, taking_orders, tg_user_id, email_verified, was_employee
+    const db = getUsersDB();
+    return (await db.get(
+      `SELECT id, username, email, password_hash, name, display_name, phone,
+              capacity, taking_orders, role, tg_user_id, email_verified,
+              created_at, updated_at
        FROM users WHERE username = ?`,
       username
-    );
-    return user || null;
+    )) || null;
   }
 
   static async getByEmail(email) {
-    const db = getDB();
-    const user = await db.get(
-      `SELECT id, username, email, password_hash, name, display_name, phone, capacity, earnings_factor, role, is_fired, taking_orders, tg_user_id, email_verified, was_employee
-       FROM users WHERE email = ?`,
+    const db = getUsersDB();
+    return (await db.get(
+      `SELECT id, username, email, password_hash, name, display_name, phone,
+              capacity, taking_orders, role, tg_user_id, email_verified,
+              created_at, updated_at
+       FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))`,
       email
-    );
-    return user || null;
+    )) || null;
   }
 
   static async findByTgId(tgUserId) {
-    const db = getDB();
-    return db.get('SELECT * FROM users WHERE tg_user_id = ?', tgUserId);
+    const db = getUsersDB();
+    return db.get('SELECT * FROM users WHERE tg_user_id = ?', String(tgUserId));
   }
 
+  /**
+   * Обновление полей users. Per-store поля (is_fired, earnings_factor,
+   * роль в магазине) — через UserStore.
+   */
   static async update(id, fields) {
-    const db = getDB();
-    const allowed = ['name', 'display_name', 'phone', 'capacity', 'earnings_factor', 'role', 'is_fired', 'taking_orders', 'email_verified', 'tg_user_id'];
+    const db = getUsersDB();
+    const allowed = [
+      'username', 'email', 'name', 'display_name', 'phone',
+      'capacity', 'taking_orders', 'role', 'tg_user_id', 'email_verified',
+    ];
     const setClauses = [];
     const values = [];
     for (const [key, val] of Object.entries(fields)) {
-      // Пропускаем undefined, чтобы частичные обновления не затирали остальные поля
       if (allowed.includes(key) && val !== undefined) {
         setClauses.push(`${key} = ?`);
         values.push(val);
       }
     }
-    // was_employee выставляется АВТОМАТИЧЕСКИ: выдача staff-роли
-    // (employee/moderator/admin/god) означает «стал сотрудником».
-    // Флаг НЕ входит в allowed — клиент не может менять его напрямую.
-    if (['employee', 'moderator', 'admin', 'god'].includes(fields.role)) {
-      setClauses.push('was_employee = ?');
-      values.push(1);
-    }
-    if (setClauses.length === 0) return;
-    values.push(Date.now()); // updated_at
-    values.push(id);
+    if (!setClauses.length) return this.getById(id);
+    values.push(Date.now(), id);
     await db.run(
       `UPDATE users SET ${setClauses.join(', ')}, updated_at = ? WHERE id = ?`,
       values
@@ -104,21 +120,16 @@ class User {
     return this.getById(id);
   }
 
-  /**
-   * Удаляет пользователя (используется для отката регистрации,
-   * если письмо с кодом подтверждения отправить не удалось)
-   */
   static async deleteById(id) {
-    const db = getDB();
+    const db = getUsersDB();
     await db.run('DELETE FROM users WHERE id = ?', id);
   }
 
   /**
-   * Гости (неподтверждённые аккаунты), созданные раньше cutoffMs —
-   * кандидаты на удаление планировщиком (GUEST_TTL_HOURS).
+   * Гости (неподтверждённые аккаунты), созданные раньше cutoffMs.
    */
   static async findGuestsOlderThan(cutoffMs) {
-    const db = getDB();
+    const db = getUsersDB();
     return db.all(
       `SELECT id, username, email, created_at FROM users
        WHERE role = 'guest' AND created_at < ?
@@ -128,133 +139,189 @@ class User {
   }
 
   static async setPasswordHash(id, hash) {
-    const db = getDB();
-    await db.run('UPDATE users SET password_hash = ? WHERE id = ?', hash, id);
+    const db = getUsersDB();
+    await db.run(
+      'UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?',
+      hash, Date.now(), id
+    );
   }
 
   static async setTelegramId(id, tgUserId) {
-    const db = getDB();
-    await db.run('UPDATE users SET tg_user_id = ? WHERE id = ?', tgUserId, id);
-  }
-
-  static async updateByTgId(tgUserId, updates) {
-    const db = getDB();
-    const user = await this.findUserByTgId(tgUserId);
-    if (!user) return null;
-    // Обновляем поля
-    const allowed = ['name', 'phone', 'capacity', 'earnings_factor'];
-    const setClauses = [];
-    const values = [];
-    for (const [key, val] of Object.entries(updates)) {
-      // Пропускаем undefined, чтобы частичные обновления не затирали остальные поля
-      if (allowed.includes(key) && val !== undefined) {
-        setClauses.push(`${key} = ?`);
-        values.push(val);
-      }
-    }
-    if (setClauses.length === 0) return user;
-    values.push(Date.now());
-    values.push(user.id);
+    const db = getUsersDB();
     await db.run(
-      `UPDATE users SET ${setClauses.join(', ')}, updated_at = ? WHERE id = ?`,
-      values
+      'UPDATE users SET tg_user_id = ?, updated_at = ? WHERE id = ?',
+      tgUserId, Date.now(), id
     );
-    return this.getById(user.id);
+  }
+
+  static async setRole(id, role) {
+    const db = getUsersDB();
+    await db.run(
+      'UPDATE users SET role = ?, updated_at = ? WHERE id = ?',
+      role, Date.now(), id
+    );
   }
 
   /**
- * Получить пользователя с расширенной информацией (активные заказы, статистика)
- */
-  static async getWithDetails(id) {
-    const db = getDB();
-    const user = await this.getById(id);
-    if (!user) return null;
-
-    // Активные заказы
-    const activeOrders = await db.all(
-      'SELECT order_id, assigned_at FROM assignments WHERE user_id = ? AND status = "assigned"',
-      id
-    );
-    // Статистика
-    const stats = await db.get(
-      'SELECT total_orders, total_amount, canceled_orders FROM user_stats WHERE user_id = ?',
-      id
-    );
-
-    return {
-      ...user,
-      activeOrders: activeOrders || [],
-      stats: stats || { total_orders: 0, total_amount: 0, canceled_orders: 0 },
-    };
-  }
-
-  /**
-   * Получить всех пользователей с фильтрацией (для админа).
-   * @param {Object} opts
-   * @param {boolean} opts.includeFired - включать уволенных
-   * @param {boolean} opts.includeAll - не фильтровать по taking_orders
-   * @param {string|null} opts.role - фильтр по роли
-   * @param {string|null} opts.cohort - когорта пользователей:
-   *   'staff' — только сотрудники и ex-сотрудники (в т.ч. уволенные с
-   *   пониженной до 'user' ролью) + все staff-роли;
-   *   'users' — «обычные пользователи» (role='user', ещё НИКОГДА не были
-   *   сотрудниками — was_employee=0) + гости (неподтверждённые регистрации,
-   *   чтобы админ видел попытки и мог помочь: создать аккаунт вручную и т.п.);
-   *   null/не задан — прежнее поведение (все, кроме гостей).
+   * Обновление по tg_user_id (используется старой синхронизацией).
+   * Здесь оставлен для совместимости, но в новой архитектуре
+   * per-store поля НЕ обновляются через User.
    */
-  static async getAll({ includeFired = false, includeAll = false, role = null, cohort = null } = {}) {
-    const db = getDB();
-    let sql = `SELECT id, username, email, name, display_name, phone, capacity, earnings_factor, role, is_fired, taking_orders, tg_user_id, email_verified, was_employee, created_at, updated_at FROM users`;
+  static async updateByTgId(tgUserId, updates) {
+    const user = await this.findByTgId(tgUserId);
+    if (!user) return null;
+    const allowed = ['name', 'phone', 'capacity'];
+    const filtered = {};
+    for (const [k, v] of Object.entries(updates)) {
+      if (allowed.includes(k) && v !== undefined) filtered[k] = v;
+    }
+    if (!Object.keys(filtered).length) return user;
+    return this.update(user.id, filtered);
+  }
+
+  // ==========================================================================
+  //  СПИСКИ И ФИЛЬТРЫ
+  // ==========================================================================
+
+  /**
+   * Глобальный список пользователей (для админки верхнего уровня).
+   * @param {Object} opts
+   *   • includeGuests — включать role='guest' (неподтверждённые)
+   *   • role          — фильтр по глобальной роли
+   *   • search        — поиск по username/email/name/phone
+   */
+  static async getAll({
+    includeGuests = false,
+    role = null,
+    search = null,
+  } = {}) {
+    const db = getUsersDB();
     const conditions = [];
     const params = [];
 
-    // Фильтрация по когортам. Гости (зарегистрировались, но не подтвердили
-    // email) НЕ показываются в когорте «staff» и в прежнем (без cohort)
-    // списке; в когорту «users» они ВКЛЮЧЕНЫ намеренно: админ видит
-    // незавершённые регистрации (например, код не пришёл) и может вручную
-    // создать аккаунт или принять человека в сотрудники. Гостей, не
-    // подтвердивших email более GUEST_TTL_HOURS часов, удаляет
-    // startGuestCleanupChecker, поэтому список не «замусоривается».
-    if (cohort === 'staff') {
-      // Сотрудники и ex-сотрудники: текущие staff-роли + пониженные до 'user'
-      // (уволенные/выведенные из состава — у них was_employee=1)
-      conditions.push("role <> 'guest'");
-      conditions.push("(role <> 'user' OR was_employee = 1)");
-    } else if (cohort === 'users') {
-      // Никогда-не-сотрудники (role='user', was_employee=0) + гости
-      // (неподтверждённые регистрации — админ видит попытки регистрации)
-      conditions.push("((role = 'user' AND was_employee = 0) OR role = 'guest')");
-    } else {
-      // Прежнее поведение (без cohort): все, кроме гостей
-      conditions.push("role <> 'guest'");
+    if (!includeGuests) conditions.push("role != 'guest'");
+    if (role) { conditions.push('role = ?'); params.push(role); }
+    if (search) {
+      const s = `%${search}%`;
+      conditions.push('(username LIKE ? OR email LIKE ? OR name LIKE ? OR phone LIKE ?)');
+      params.push(s, s, s, s);
     }
 
-    if (!includeFired) {
-      // Гость всегда is_fired = 1 (вне команды, пока email не подтверждён),
-      // поэтому в когорте «users» фильтр is_fired к гостям не применяем —
-      // иначе они никогда не попали бы в список. «Обычные пользователи»
-      // этой когорты уволенными быть не могут (уволенный = ex-сотрудник,
-      // was_employee=1 → уходит в когорту staff)
-      if (cohort === 'users') {
-        conditions.push("(is_fired = 0 OR role = 'guest')");
-      } else {
-        conditions.push('is_fired = 0');
-      }
+    const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+    return db.all(
+      `SELECT id, username, email, name, display_name, phone, capacity,
+              taking_orders, role, tg_user_id, email_verified,
+              created_at, updated_at
+       FROM users${where}
+       ORDER BY id`,
+      params
+    );
+  }
+
+  /**
+   * Пользователь + его роль/статус в конкретном магазине.
+   * @returns {Object|null} { ...user, store: {role,is_fired,...} | null }
+   */
+  static async getWithStoreDetails(userId, storeId) {
+    const user = await this.getById(userId);
+    if (!user) return null;
+
+    const UserStore = require('./UserStore');
+    const store = await UserStore.get(userId, storeId);
+    return { ...user, store };
+  }
+
+  /**
+   * Все пользователи, имеющие запись в user_stores для магазина.
+   *
+   * @param {string|number} storeId
+   * @param {Object} filters
+   *   • includeFired     — включать уволенных (default: false)
+   *   • roles            — массив ролей в магазине (['employee','moderator','admin','god'])
+   *   • excludeRole      — исключить роль (например, 'god')
+   *   • onlyTakingOrders — только принимающие заказы (u.taking_orders=1)
+   *   • search           — поиск по имени/email/phone/username
+   *
+   * Возвращает сотрудников С role из user_stores:
+   *   { ..., role, is_fired, earnings_factor, was_employee, global_role }
+   */
+  static async getAllInStore(storeId, filters = {}) {
+    const db = getUsersDB();
+    const conditions = ['us.store_id = ?'];
+    const params = [String(storeId)];
+
+    if (!filters.includeFired) {
+      conditions.push('us.is_fired = 0');
     }
-    if (!includeAll) {
-      conditions.push('taking_orders = 1');
+    if (filters.roles && filters.roles.length) {
+      const ph = filters.roles.map(() => '?').join(', ');
+      conditions.push(`us.role IN (${ph})`);
+      params.push(...filters.roles);
     }
-    if (role) {
-      conditions.push('role = ?');
-      params.push(role);
+    if (filters.excludeRole) {
+      conditions.push('us.role != ?');
+      params.push(filters.excludeRole);
+    }
+    if (filters.onlyTakingOrders) {
+      conditions.push('u.taking_orders = 1');
+    }
+    if (filters.search) {
+      const s = `%${filters.search}%`;
+      conditions.push(
+        '(u.name LIKE ? OR u.username LIKE ? OR u.email LIKE ? OR u.phone LIKE ?)'
+      );
+      params.push(s, s, s, s);
     }
 
-    if (conditions.length) {
-      sql += ' WHERE ' + conditions.join(' AND ');
-    }
-    sql += ' ORDER BY id';
+    const rows = await db.all(
+      `SELECT
+         u.id, u.username, u.email, u.name, u.display_name, u.phone,
+         u.capacity, u.taking_orders, u.role AS global_role,
+         u.tg_user_id, u.email_verified, u.created_at, u.updated_at,
+         us.role          AS store_role,
+         us.is_fired      AS is_fired,
+         us.earnings_factor,
+         us.was_employee
+       FROM users u
+       INNER JOIN user_stores us ON us.user_id = u.id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY u.id`,
+      params
+    );
 
-    return db.all(sql, params);
+    return rows.map((r) => ({
+      id: r.id,
+      username: r.username,
+      email: r.email,
+      name: r.name,
+      display_name: r.display_name,
+      phone: r.phone,
+      capacity: r.capacity,
+      taking_orders: r.taking_orders,
+      // ВАЖНО: role для магазина (из user_stores)
+      role: r.store_role,
+      global_role: r.global_role,
+      tg_user_id: r.tg_user_id,
+      email_verified: r.email_verified,
+      is_fired: r.is_fired,
+      earnings_factor: r.earnings_factor,
+      was_employee: r.was_employee,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    }));
+  }
+
+  /**
+   * @deprecated — это был старый getAll с cohort-логикой.
+   * В multistore используйте getAllInStore(storeId, filters)
+   * для сотрудников магазина и getAll() для глобального списка.
+   */
+  static async getAllCohort() {
+    throw new Error(
+      'User.getAllCohort() устарел. Используйте:\n' +
+      '  User.getAll({includeGuests, role, search}) — глобальный список\n' +
+      '  User.getAllInStore(storeId, {includeFired, excludeRole, ...}) — сотрудники магазина'
+    );
   }
 }
 

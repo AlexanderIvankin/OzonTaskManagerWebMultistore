@@ -5,79 +5,71 @@ const fs = require('fs');
 require('dotenv').config();
 
 // ============================================================================
-// ОТДЕЛЬНАЯ БАЗА ОПОВЕЩЕНИЙ (notifications.db)
+//  ЕДИНАЯ БАЗА ОПОВЕЩЕНИЙ (notifications.db)
 //
-// Оповещения НЕ хранятся в основной БД bot_web.db — они живут в собственном
-// файле, чтобы:
-//  1) не раздувать основную базу историей событий;
-//  2) можно было независимо настраивать ретенцию (срок хранения) и бэкапы;
-//  3) журнал ошибок сервера был доступен даже при проблемах с основной БД.
+//  Одна на всё приложение. Все оповещения и ошибки сервера для всех
+//  магазинов лежат в одной БД, разделяются колонкой store_id:
+//    • notifications.store_id — какой магазин породил оповещение
+//      (NULL для системных, не привязанных к конкретному магазину)
+//    • server_errors.store_id — какой магазин породил ошибку
+//
+//  Плюсы единой БД:
+//    • один файл вместо N (меньше бэкапов, меньше путаницы);
+//    • сквозной журнал серверных ошибок — админ видит все сразу,
+//      фильтрует по магазину;
+//    • легко считать сводную статистику.
+//
+//  Ретенция и бэкапы настраиваются для всей БД целиком.
 // ============================================================================
 
-// Базовый путь к БД оповещений: из NOTIFICATIONS_DB_PATH или по умолчанию рядом с backend/
-const NOTIF_DB_BASE_PATH =
-  process.env.NOTIFICATIONS_DB_PATH || path.join(__dirname, '../../notifications.db');
-
-// Суффикс версии из BOT_VERSION — как у основной БД:
-// BOT_VERSION=1 -> notifications.db -> notifications-1.db
-const DB_VERSION = (process.env.BOT_VERSION || '').trim();
-
-/**
- * Вставляет суффикс версии в имя файла: './notifications.db' -> './notifications-1.db'.
- * Уже существующий суффикс "-<число>" заменяется актуальной версией.
- */
-function withVersionSuffix(dbPath) {
-  if (!DB_VERSION) return dbPath;
-  const dir = path.dirname(dbPath);
-  const ext = path.extname(dbPath);
-  const base = path.basename(dbPath, ext).replace(/-\d+$/, '') || 'notifications';
-  return path.join(dir, `${base}-${DB_VERSION}${ext}`);
-}
-
-const NOTIF_DB_PATH = withVersionSuffix(NOTIF_DB_BASE_PATH);
+// Единая БД оповещений (одна на всё приложение).
+// Путь задаётся через NOTIFICATIONS_DB_PATH (глобальный .env),
+// по умолчанию './notifications.db'.
+const NOTIFICATIONS_DB_PATH = process.env.NOTIFICATIONS_DB_PATH || './notifications.db';
 
 let dbInstance = null;
 
 async function initNotificationsDB() {
   if (dbInstance) return dbInstance;
 
-  const dir = path.dirname(NOTIF_DB_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  const absolutePath = path.isAbsolute(NOTIFICATIONS_DB_PATH)
+    ? NOTIFICATIONS_DB_PATH
+    : path.resolve(__dirname, '../..', NOTIFICATIONS_DB_PATH);
+
+  const dir = path.dirname(absolutePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   dbInstance = await open({
-    filename: NOTIF_DB_PATH,
+    filename: absolutePath,
     driver: sqlite3.Database,
   });
 
-  // WAL — безопаснее при параллельной записи из API и планировщика
   await dbInstance.exec('PRAGMA journal_mode = WAL;');
+  await dbInstance.exec('PRAGMA busy_timeout = 5000;');
   await createTables(dbInstance);
   await ensureSearchColumns(dbInstance);
 
-  console.log(`✅ База оповещений инициализирована: ${NOTIF_DB_PATH}`);
+  console.log(`✅ База оповещений инициализирована: ${absolutePath}`);
   return dbInstance;
 }
 
 async function createTables(db) {
   // --- Оповещения ---
-  // Каждое оповещение создаётся ПЕРСОНАЛЬНО для каждого получателя
-  // ("как в email"): сотрудник — свои, каждый админ/модератор — свои копии
-  // из журнала действий. Поэтому «прочитано/удалено» у каждого независимо.
-  //
-  // audience:
-  //   'user'  — личные оповещения (назначение заказа, корректировка заработка, ...)
-  //   'staff' — журнал действий сотрудников (для админов/модераторов)
+  // store_id: '1', '2', ... — идентификатор магазина.
+  // Для системных (не привязанных к магазину) — NULL.
   await db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       recipient_id INTEGER NOT NULL,
+      store_id TEXT,
       audience TEXT NOT NULL DEFAULT 'user',
       type TEXT NOT NULL,
       title TEXT NOT NULL,
       message TEXT DEFAULT '',
       payload TEXT,
+      order_id TEXT,
+      user_name TEXT,
+      offer_ids TEXT,
       is_read INTEGER DEFAULT 0,
       created_at INTEGER NOT NULL
     )
@@ -86,16 +78,21 @@ async function createTables(db) {
     'CREATE INDEX IF NOT EXISTS idx_notifications_recipient_created ON notifications(recipient_id, created_at DESC);'
   );
   await db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_notifications_recipient_store ON notifications(recipient_id, store_id, created_at DESC);'
+  );
+  await db.exec(
     'CREATE INDEX IF NOT EXISTS idx_notifications_recipient_audience ON notifications(recipient_id, audience, created_at DESC);'
   );
   await db.exec(
     'CREATE INDEX IF NOT EXISTS idx_notifications_recipient_read ON notifications(recipient_id, is_read);'
   );
 
-  // --- Ошибки сервера (общий журнал, доступен админам/модераторам) ---
+  // --- Ошибки сервера ---
+  // store_id: тот же смысл. NULL для глобальных ошибок (auth, initDB и т.п.).
   await db.exec(`
     CREATE TABLE IF NOT EXISTS server_errors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_id TEXT,
       level TEXT NOT NULL DEFAULT 'error',
       source TEXT DEFAULT '',
       message TEXT NOT NULL,
@@ -108,54 +105,87 @@ async function createTables(db) {
   await db.exec(
     'CREATE INDEX IF NOT EXISTS idx_server_errors_created ON server_errors(created_at DESC);'
   );
+  await db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_server_errors_store ON server_errors(store_id, created_at DESC);'
+  );
 
   console.log('✅ Таблицы оповещений созданы/проверены');
 }
 
 /**
- * Лёгкая миграция для существующих БД: колонки для быстрого поиска
- * (номер заказа, имя сотрудника). Добавляются безопасно, только если их ещё нет.
+ * Лёгкая миграция для существующих БД: добавляем колонки, которых
+ * может не быть (order_id, user_name, offer_ids, store_id, is_read).
  */
 async function ensureSearchColumns(db) {
   const columns = await db.all('PRAGMA table_info(notifications)');
   const names = columns.map((c) => c.name);
+
   if (!names.includes('order_id')) {
     await db.exec('ALTER TABLE notifications ADD COLUMN order_id TEXT');
-    console.log('✅ notifications: добавлена колонка order_id (поиск по заказу)');
+    console.log('✅ notifications: добавлена колонка order_id');
   }
   if (!names.includes('user_name')) {
     await db.exec('ALTER TABLE notifications ADD COLUMN user_name TEXT');
-    console.log('✅ notifications: добавлена колонка user_name (поиск по сотруднику)');
+    console.log('✅ notifications: добавлена колонка user_name');
   }
   if (!names.includes('offer_ids')) {
     await db.exec('ALTER TABLE notifications ADD COLUMN offer_ids TEXT');
-    console.log('✅ notifications: добавлена колонка offer_ids (поиск по артикулу)');
+    console.log('✅ notifications: добавлена колонка offer_ids');
+  }
+  // НОВОЕ: store_id
+  if (!names.includes('store_id')) {
+    await db.exec('ALTER TABLE notifications ADD COLUMN store_id TEXT');
+    await db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_notifications_recipient_store ON notifications(recipient_id, store_id, created_at DESC);'
+    );
+    console.log('✅ notifications: добавлена колонка store_id (multi-store)');
   }
 
-  // Колонка «прочитано» в журнале ошибок сервера (для вкладки «Ошибки сервера»:
-  // «Прочитать выбранные / всё», фильтр «Только непрочитанные»).
+  // server_errors
   const errColumns = await db.all('PRAGMA table_info(server_errors)');
   const errNames = errColumns.map((c) => c.name);
+
   if (!errNames.includes('is_read')) {
     await db.exec('ALTER TABLE server_errors ADD COLUMN is_read INTEGER DEFAULT 0');
-    console.log('✅ server_errors: добавлена колонка is_read (отметка прочитанности)');
+    console.log('✅ server_errors: добавлена колонка is_read');
+  }
+  if (!errNames.includes('store_id')) {
+    await db.exec('ALTER TABLE server_errors ADD COLUMN store_id TEXT');
+    await db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_server_errors_store ON server_errors(store_id, created_at DESC);'
+    );
+    console.log('✅ server_errors: добавлена колонка store_id (multi-store)');
   }
 }
 
 function getNotificationsDB() {
   if (!dbInstance) {
     throw new Error(
-      'База оповещений не инициализирована. Сначала вызовите initNotificationsDB()'
+      'База оповещений не инициализирована. Сначала вызовите initNotificationsDB().'
     );
   }
   return dbInstance;
 }
 
-/**
- * Путь к файлу базы оповещений (для бэкапа/диагностики)
- */
 function getNotificationsDBPath() {
-  return NOTIF_DB_PATH;
+  return NOTIFICATIONS_DB_PATH;
 }
 
-module.exports = { initNotificationsDB, getNotificationsDB, getNotificationsDBPath };
+async function closeNotificationsDB() {
+  if (!dbInstance) return;
+  try {
+    await dbInstance.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  } catch (err) {
+    console.warn('[NotifDB] wal_checkpoint:', err.message);
+  }
+  await dbInstance.close();
+  dbInstance = null;
+  console.log('[NotifDB] Соединение закрыто');
+}
+
+module.exports = {
+  initNotificationsDB,
+  getNotificationsDB,
+  getNotificationsDBPath,
+  closeNotificationsDB,
+};

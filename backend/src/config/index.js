@@ -1,4 +1,3 @@
-// src/config/index.js
 require('dotenv').config();
 
 function int(name, fallback) {
@@ -24,6 +23,12 @@ module.exports = {
   trustProxy: bool('TRUST_PROXY', false),
   debugOrdersMode: bool('DEBUG_ORDERS_MODE', false),
   ozonMockMode: bool('OZON_MOCK_MODE', false),
+
+  // --- Пути к общим БД ---
+  usersDbPath: str('USERS_DB_PATH', './users.db'),
+  modelsDbPath: str('MODELS_DB_PATH', './models.db'),
+  notificationsDbPath: str('NOTIFICATIONS_DB_PATH', './notifications.db'),
+  legacyDbPath: str('DB_PATH', './bot_web.db'),
 
   // --- JWT ---
   jwtSecret: str('JWT_SECRET'),
@@ -101,9 +106,4 @@ module.exports = {
     cleanHour: int('PROMOTION_CLEAN_HOUR', 3),
     cleanMinute: int('PROMOTION_CLEAN_MINUTE', 0),
   },
-
-  // --- Пути к общим БД ---
-  usersDbPath: str('USERS_DB_PATH', './users.db'),
-  modelsDbPath: str('MODELS_DB_PATH', './models.db'),
-  legacyDbPath: str('DB_PATH', './bot_web.db'),
 };

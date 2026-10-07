@@ -1,11 +1,15 @@
 // Проверка кулдаунов команд (паритет с ботом, BOTFILES/commands.js):
-// перед обработчиком смотрим, не срабатывал ли кулдаун для этого пользователя.
-// При срабатывании уходят ДВА сообщения:
+// перед обработчиком смотрим, не срабатывал ли кулдаун для этого пользователя
+// В ЭТОМ МАГАЗИНЕ. При срабатывании уходят ДВА сообщения:
 //   1) live-тост через WebSocket (NotificationService.notifyUser c persist: false —
 //      в историю «Оповещений» запись НЕ создаётся, как у model_upload_rejected);
 //   2) ответ 429 { error, retryAfterSec, cooldown: true } — фронт не дублирует
 //      локальный тост при признаке cooldown.
-// Сам кулдаун ставится в контроллерах ПОСЛЕ успешного выполнения (CooldownService.touch).
+// Сам кулдаун ставится в контроллерах ПОСЛЕ успешного выполнения
+// (CooldownService.touch(kind, storeId, userId)).
+//
+// ВАЖНО (multistore): storeId передаётся ВЕЗДЕ — из req.storeId. Составной ключ
+// 'storeId:userId' не даёт одному сотруднику в разных магазинах делить кулдаун.
 const CooldownService = require('../services/CooldownService');
 const NotificationService = require('../services/NotificationService');
 
@@ -16,20 +20,24 @@ const NotificationService = require('../services/NotificationService');
 function cooldown(kind, commandLabel) {
   return (req, res, next) => {
     try {
-      const result = CooldownService.check(kind, req.user?.id);
+      const storeId = req.storeId;
+      const result = CooldownService.check(kind, storeId, req.user?.id);
       if (!result.blocked) return next();
 
-      // Live-оповещение: WebSocket -> тост в Layout (не блокируем ответ)
+      // Live-оповещение: WebSocket -> тост в Layout (не блокируем ответ).
+      // storeId кладём в payload — NotificationService (следующий батч)
+      // берёт его оттуда при persist.
       NotificationService.notifyUser(
         req.user.id,
         'command_cooldown',
         {
+          storeId,
           command: commandLabel,
           retryAfterSec: result.retryAfterSec,
           message: result.message,
         },
         { persist: false }
-      ).catch(() => {});
+      ).catch(() => { });
 
       return res.status(429).json({
         error: result.message,
