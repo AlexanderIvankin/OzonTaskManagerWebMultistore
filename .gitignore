@@ -40,6 +40,6 @@ backend/.env.store*
 !backend/.env.example
 !backend/.env.store*.example
 
-# Локальный .env workspace для REST Client (с токенами)
-/.env
+# Токены для REST Client
+tests/http/.env
 
