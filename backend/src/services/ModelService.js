@@ -152,7 +152,7 @@ function validateUploadFile(fileName, buffer) {
     if (baseName && !baseName.toLowerCase().endsWith('.zip')) {
       const err = new Error(
         `Допускается только zip-архив: получен «${baseName}». ` +
-        `Модель на артикул — один архив, назовите файл «{offer_id}.zip» (например, ARD000003-N.zip)`
+        `Модель на артикул — один архив, назовите файл «{offer_id}.zip» (например, ARD000001-N.zip)`
       );
       err.validation = true;
       throw err;

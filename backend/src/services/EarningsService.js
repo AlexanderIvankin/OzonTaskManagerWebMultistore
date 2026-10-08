@@ -168,8 +168,7 @@ class EarningsService {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
     // store-1_monthly_earnings_2026-09.xlsx
-    const baseName = `store-${storeId}_monthly_earnings`;
-    const fileName = getVersionedDatedFileName(baseName, 'xlsx', monthLabel);
+    const fileName = getVersionedDatedFileName('monthly_earnings', 'xlsx', monthLabel, storeId);
     const outputPath = path.join(outputDir, fileName);
     fs.writeFileSync(outputPath, buffer);
     console.log(`[EarningsService][store ${storeId}] Файл сохранён: ${outputPath}`);

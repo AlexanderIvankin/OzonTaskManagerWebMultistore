@@ -148,20 +148,20 @@ function assert(cond, label) {
     console.log(`Созданы: emp #${emp.id}, mod #${mod.id}, str #${str.id} (магазин ${STORE_ID})`);
 
     // 2. Утилиты
-    assert(ModelService.getParentOfferId('ARD000003-NR') === 'ARD000003-N', 'getParentOfferId: -NR -> -N');
-    assert(ModelService.getParentOfferId('ARD000003-NL') === 'ARD000003-N', 'getParentOfferId: -NL -> -N');
-    assert(ModelService.getParentOfferId('ARD000003-N') === null, 'getParentOfferId: без суффикса -> null');
-    assert(ModelService.normalizeOfferId(' ARD000003-N.zip ') === 'ARD000003-N', 'normalizeOfferId: обрезает .zip');
+    assert(ModelService.getParentOfferId('ARD000001-NR') === 'ARD000001-N', 'getParentOfferId: -NR -> -N');
+    assert(ModelService.getParentOfferId('ARD000001-NL') === 'ARD000001-N', 'getParentOfferId: -NL -> -N');
+    assert(ModelService.getParentOfferId('ARD000001-N') === null, 'getParentOfferId: без суффикса -> null');
+    assert(ModelService.normalizeOfferId(' ARD000001-N.zip ') === 'ARD000001-N', 'normalizeOfferId: обрезает .zip');
     assert(ModelService.normalizeOfferId('../evil') === null, 'normalizeOfferId: traversal отклонён');
 
     // 3. Валидация zip
     const goodZip = buildZip([
-      { name: 'ARD000003-N.stl', content: 'fake stl data' },
+      { name: 'ARD000001-N.stl', content: 'fake stl data' },
       { name: 'readme.txt', content: 'инструкция' },
     ]);
     const okV = ModelService.validateZipBuffer(goodZip);
-    assert(okV.entries.includes('ARD000003-N.stl'), 'validateZipBuffer: .stl + .txt проходят');
-    assert(okV.hasModelFiles && okV.modelFiles.includes('ARD000003-N.stl'), 'validateZipBuffer: modelFiles');
+    assert(okV.entries.includes('ARD000001-N.stl'), 'validateZipBuffer: .stl + .txt проходят');
+    assert(okV.hasModelFiles && okV.modelFiles.includes('ARD000001-N.stl'), 'validateZipBuffer: modelFiles');
 
     const mustFail = (zip, label) => {
       try { ModelService.validateZipBuffer(zip); throw new Error(`Ожидалась ошибка: ${label}`); }
@@ -183,9 +183,9 @@ function assert(cond, label) {
         assert(err.validation === true, `${label}: помечена validation`);
       }
     };
-    mustRejUp('ARD000003-N.rar', goodZip, 'validateUploadFile: не-zip имя отклонено');
-    mustRejUp('ARD000003-N.zip', Buffer.from('не zip'), 'validateUploadFile: не-zip содержимое');
-    assert(ModelService.validateUploadFile('ARD000003-N.zip', goodZip).hasModelFiles, 'validateUploadFile: правильный .zip проходит');
+    mustRejUp('ARD000001-N.rar', goodZip, 'validateUploadFile: не-zip имя отклонено');
+    mustRejUp('ARD000001-N.zip', Buffer.from('не zip'), 'validateUploadFile: не-zip содержимое');
+    assert(ModelService.validateUploadFile('ARD000001-N.zip', goodZip).hasModelFiles, 'validateUploadFile: правильный .zip проходит');
 
     // 4. Загрузка модели
     const uploaded = await ModelService.uploadModel(
@@ -317,7 +317,7 @@ function assert(cond, label) {
     const etagBefore = (await modelsDb.get('SELECT s3_etag FROM offer_models WHERE offer_id = ?', TEST_OFFER)).s3_etag;
     assert(!!etagBefore && fs.existsSync(oobBefore.path), 'OOB: версия известна, кэш прогрет');
 
-    const newZip = buildZip([{ name: 'ARD000003-N.stl', content: 'updated stl data' }]);
+    const newZip = buildZip([{ name: 'ARD000001-N.stl', content: 'updated stl data' }]);
     fakeS3Objects.set(`${TEST_OFFER}.zip`, newZip);
 
     const syncRes2 = await ModelService.syncFromStorage();

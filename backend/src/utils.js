@@ -1,3 +1,16 @@
+// Общие утилиты проекта: PDF, даты/время, парсинг полей, файловые суффиксы,
+// SQL-литералы, отключение кэша.
+//
+// В МУЛЬТИСТОРЕ:
+//   • TIMEZONE — глобальный (в .env проекта, не в .env.storeN);
+//   • getVersionedFileName / getVersionedDatedFileName принимают storeId
+//     третьим/четвёртым аргументом → 'team-info-1.xlsx', 'monthly_earnings-1_2025-01.xlsx';
+//   • getAppVersion / getDbBaseName — legacy, оставлены для обратной
+//     совместимости, но в мультисторе не используются.
+//
+// Функции парсинга (parsePhone, parseEmail, parseTgUserId, parseCapacity,
+// parseEarningsFactor) применяются и в AuthService, и в SyncService, и в
+// adminController — единый формат полей во всех слоях.
 const { PDFDocument } = require('pdf-lib');
 require('dotenv').config();
 
@@ -118,8 +131,13 @@ function getLocalTimestamp() {
 }
 
 /**
- * Возвращает версию приложения из переменной окружения BOT_VERSION.
- * @returns {string|null} - версия или null, если не задана
+ * Возвращает версию приложения из BOT_VERSION.
+ *
+ * ЛЕГАСИ (одномагазинный режим). В мультисторе BOT_VERSION не используется —
+ * файлы разделяются суффиксом магазина (см. getVersionedFileName).
+ * Оставлено как fallback, если storeId не передан.
+ *
+ * @returns {string|null}
  */
 function getAppVersion() {
   const version = (process.env.BOT_VERSION || '').trim();
@@ -144,26 +162,28 @@ function getDbBaseName() {
 }
 
 /**
- * Формирует имя файла с версией (если BOT_VERSION задан в .env).
- * getVersionedFileName('team-info', 'xlsx') -> 'team-info-1.xlsx' | 'team-info.xlsx'
- * @param {string} base - базовое имя без расширения
- * @param {string} ext - расширение без точки
- * @returns {string}
+ * Имя файла с суффиксом магазина:
+ *   getVersionedFileName('team-info', 'xlsx', '1') → 'team-info-1.xlsx'
+ * Без storeId — откатываемся на BOT_VERSION (legacy; в мультисторе пусто,
+ * поэтому получится просто 'team-info.xlsx').
  */
-function getVersionedFileName(base, ext) {
+function getVersionedFileName(base, ext, storeId = null) {
+  if (storeId != null && String(storeId) !== '') {
+    return `${base}-${storeId}.${ext}`;
+  }
   const version = getAppVersion();
   return version ? `${base}-${version}.${ext}` : `${base}.${ext}`;
 }
 
 /**
- * Формирует имя файла с версией (если BOT_VERSION задан) и датой/периодом.
- * getVersionedDatedFileName('bot_web', 'db', '2026-09-04') -> 'bot_web-1_2026-09-04.db' | 'bot_web_2026-09-04.db'
- * @param {string} base - базовое имя без расширения
- * @param {string} ext - расширение без точки
- * @param {string} datePart - часть с датой/временем (вставляется через '_')
- * @returns {string}
+ * Имя файла с суффиксом магазина и датой:
+ *   getVersionedDatedFileName('monthly_earnings', 'xlsx', '2025-01', '1')
+ *     → 'monthly_earnings-1_2025-01.xlsx'
  */
-function getVersionedDatedFileName(base, ext, datePart) {
+function getVersionedDatedFileName(base, ext, datePart, storeId = null) {
+  if (storeId != null && String(storeId) !== '') {
+    return `${base}-${storeId}_${datePart}.${ext}`;
+  }
   const version = getAppVersion();
   return version ? `${base}-${version}_${datePart}.${ext}` : `${base}_${datePart}.${ext}`;
 }
@@ -300,23 +320,28 @@ function disableCache(res) {
 }
 
 module.exports = {
+  // PDF
   mergePdfs,
+  // Дата/время
   formatLocalTimestamp,
   formatDateDDMMYYYY,
   getLocalDate,
   getLocalTime,
   getLocalTimestamp,
-  escapeHtml,
+  // Файловые суффиксы
   getAppVersion,
   getDbBaseName,
   getVersionedFileName,
   getVersionedDatedFileName,
+  // Парсинг полей
   parsePhone,
   formatPhonePretty,
   parseEmail,
   parseTgUserId,
   parseCapacity,
   parseEarningsFactor,
+  // HTML / SQL / headers
+  escapeHtml,
   toSqliteLiteral,
   disableCache,
 };

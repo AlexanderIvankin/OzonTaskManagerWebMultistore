@@ -38,7 +38,7 @@ class StorageService {
   }
 
   /**
-   * Имя файла, отдаваемое клиенту: ARD000003-N.zip
+   * Имя файла, отдаваемое клиенту: ARD000001-N.zip
    */
   static fileNameFor(offerId) {
     return `${offerId}.zip`;

@@ -32,7 +32,11 @@ const UserStore = require('../src/models/UserStore');
 const SyncService = require('../src/services/SyncService');
 
 const XLSX_PATH = path.join(__dirname, '..', 'tests', 'tmp', 'smoke-sync-team-info.xlsx');
-const TEAM_INFO_PATH = path.join(__dirname, '..', 'outputs', `store-${STORE_ID}`, 'team-info.xlsx');
+const { getVersionedFileName } = require('../src/utils');
+const TEAM_INFO_PATH = path.join(
+  __dirname, '..', 'outputs', `store-${STORE_ID}`,
+  getVersionedFileName('team-info', 'xlsx', STORE_ID)
+);
 
 function assert(cond, message) { if (!cond) throw new Error(message); }
 

@@ -55,7 +55,7 @@ class ProductStatsService {
     // Файл per-store: outputs/store-<id>/product-stats.xlsx
     const outputDir = path.join(__dirname, '../../outputs', `store-${storeId}`);
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-    const outputPath = path.join(outputDir, getVersionedFileName('product-stats', 'xlsx'));
+    const outputPath = path.join(outputDir, getVersionedFileName('product-stats', 'xlsx', storeId));
     fs.writeFileSync(outputPath, buffer);
     console.log(`[ProductStatsService][store ${storeId}] Экспорт сохранён: ${outputPath}`);
     return outputPath;

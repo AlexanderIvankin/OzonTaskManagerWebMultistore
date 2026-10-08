@@ -88,7 +88,7 @@ export const Models = () => {
   }, []);
 
   // Фильтр по артикулу: подстрока в offer_id или в имени файла архива.
-  // «ARD000003-N.zip» в поиске тоже найдёт модель ARD000003-N.
+  // «ARD000001-N.zip» в поиске тоже найдёт модель ARD000001-N.
   // Плюс фильтр по статусу «в работе» (фильтрация клиентская — список грузится целиком).
   const query = search.trim().toLowerCase();
   const offerQuery = query.replace(/\.zip$/, "") || query;
@@ -213,7 +213,7 @@ export const Models = () => {
             <code>
               s3://{"{bucket}"}/{"{offer_id}"}.zip
             </code>{" "}
-            (например, <code>ARD000003-N.zip</code>). При обновлении файлов
+            (например, <code>ARD000001-N.zip</code>). При обновлении файлов
             просто залейте новый архив — старый перезапишется, локальный кэш
             сбросится, а сотрудники с выданной моделью получат оповещение.
             Принимается только <strong>.zip</strong> (до 1 ГБ); содержимое
@@ -232,7 +232,7 @@ export const Models = () => {
               </Label>
               <Input
                 id="model-offer-id"
-                placeholder="ARD000003-N"
+                placeholder="ARD000001-N"
                 value={offerId}
                 onChange={(e) => setOfferId(e.target.value)}
               />

@@ -5,6 +5,8 @@
 ### Модели/оповещения/S3 — глобальные, но действия админа магазина
 ### логируются в его store_id.
 
+@storeId = 1
+
 @baseUrl = http://localhost:5000
 
 ### Токен админа из .env (см. scripts/http-login.js)
@@ -15,7 +17,7 @@
 
 @userId = 1
 @orderId = TEST-ORDER-001
-@offerId = ARD000003-N
+@offerId = ARD000001-N
 
 ### Если получили 401 — токен устарел. Обновите из корня проекта:
 ###     node scripts/http-login.js
@@ -122,6 +124,7 @@ Content-Type: application/json
 ### ---------- Синхронизация из Excel ----------
 
 ### Ожидаемое имя файла сотрудников (для проверки на клиенте)
+### При storeId=1 вернёт: { "fileName": "team-info-1.xlsx" }
 GET {{baseUrl}}/api/admin/sync/expected-filename
 Authorization: Bearer {{adminToken}}
 
@@ -131,10 +134,10 @@ Authorization: Bearer {{adminToken}}
 Content-Type: multipart/form-data; boundary=----Boundary
 
 ------Boundary
-Content-Disposition: form-data; name="file"; filename="team-info.xlsx"
+Content-Disposition: form-data; name="file"; filename="team-info-1.xlsx"
 Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 
-< ../team-info.xlsx
+< ./fixtures/team-info-1.xlsx
 ------Boundary--
 
 ### Синхронизация из серверного team-info.xlsx (allowPromotion=false)
@@ -147,7 +150,7 @@ Authorization: Bearer {{adminToken}}
 GET {{baseUrl}}/api/admin/export/team-info
 Authorization: Bearer {{adminToken}}
 
-### Экспорт team-info.xlsx с уволенными (employees-db.xlsx)
+### Экспорт employees-db.xlsx (с уволенными)
 GET {{baseUrl}}/api/admin/export/team-info?includeFired=true
 Authorization: Bearer {{adminToken}}
 
@@ -187,7 +190,7 @@ Authorization: Bearer {{adminToken}}
 
 ### ---------- Materials (per-store) ----------
 
-### Текущие настройки магазина (materials-prices-store-1.json)
+### Текущие настройки магазина (materials-prices-1.json)
 GET {{baseUrl}}/api/admin/materials
 Authorization: Bearer {{adminToken}}
 
@@ -195,16 +198,16 @@ Authorization: Bearer {{adminToken}}
 GET {{baseUrl}}/api/admin/materials/download
 Authorization: Bearer {{adminToken}}
 
-### Загрузить файл настроек (имя обязательно = materials-prices-store-1.json)
+### Загрузить файл настроек (имя обязательно = materials-prices-1.json)
 POST {{baseUrl}}/api/admin/materials/upload
 Authorization: Bearer {{adminToken}}
 Content-Type: multipart/form-data; boundary=----Boundary
 
 ------Boundary
-Content-Disposition: form-data; name="file"; filename="materials-prices-store-1.json"
+Content-Disposition: form-data; name="file"; filename="materials-prices-1.json"
 Content-Type: application/json
 
-< ../materials-prices-store-1.json
+< ./fixtures/materials-prices-1.json
 ------Boundary--
 
 ### ---------- Склады ----------
@@ -336,10 +339,10 @@ Authorization: Bearer {{adminToken}}
 Content-Type: multipart/form-data; boundary=----Boundary
 
 ------Boundary
-Content-Disposition: form-data; name="file"; filename="ARD000003-N.zip"
+Content-Disposition: form-data; name="file"; filename="ARD000001-N.zip"
 Content-Type: application/zip
 
-< ../ARD000003-N.zip
+< ./fixtures/ARD000001-N.zip
 ------Boundary--
 
 ### Скачать модель себе (персонал, обходит токены)

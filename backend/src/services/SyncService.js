@@ -684,7 +684,7 @@ class SyncService {
 
     // Путь: outputs/store-<id>/<имя>.xlsx
     const baseName = outputFileName.replace(/\.xlsx$/i, '');
-    const finalFileName = getVersionedFileName(baseName, 'xlsx');
+    const finalFileName = getVersionedFileName(baseName, 'xlsx', storeId);
     const outputPath = storeOutputPath(storeId, finalFileName);
     await workbook.xlsx.writeFile(outputPath);
     console.log(`[SyncService][store ${storeId}] Экспорт в ${finalFileName} выполнен`);

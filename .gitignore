@@ -43,3 +43,8 @@ backend/.env.store*
 # Токены для REST Client
 tests/http/.env
 
+# Fixtures — образцы файлов для .http-запросов.
+# .gitkeep оставляем, сами файлы — не коммитим (могут содержать реальные данные).
+/tests/http/fixtures/*
+!/tests/http/fixtures/.gitkeep
+

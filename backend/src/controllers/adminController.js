@@ -487,7 +487,7 @@ exports.syncEmployees = async (req, res, next) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    const expectedName = getVersionedFileName('team-info', 'xlsx');
+    const expectedName = getVersionedFileName('team-info', 'xlsx', storeId);
     if (req.file.originalname !== expectedName) {
       try { fs.unlinkSync(req.file.path); } catch { }
       return res.status(400).json({
@@ -521,7 +521,7 @@ exports.syncEmployees = async (req, res, next) => {
 
 exports.getSyncExpectedFileName = async (req, res, next) => {
   try {
-    res.json({ fileName: getVersionedFileName('team-info', 'xlsx') });
+    res.json({ fileName: getVersionedFileName('team-info', 'xlsx', req.storeId) });
   } catch (err) {
     next(err);
   }
@@ -530,7 +530,7 @@ exports.getSyncExpectedFileName = async (req, res, next) => {
 exports.syncEmployeesServerFile = async (req, res, next) => {
   try {
     const storeId = req.storeId;
-    const fileName = getVersionedFileName('team-info', 'xlsx');
+    const fileName = getVersionedFileName('team-info', 'xlsx', storeId);
     const filePath = path.join(__dirname, '../../', fileName);
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({
@@ -559,7 +559,10 @@ exports.exportTeamInfo = async (req, res, next) => {
       { storeId }
     );
     disableCache(res);
-    res.download(filePath);
+    // Явно передаём имя — клиент получит корректный Content-Disposition
+    const { getVersionedFileName } = require('../utils');
+    const baseName = outputFileName.replace(/\.xlsx$/i, '');
+    res.download(filePath, getVersionedFileName(baseName, 'xlsx', storeId));
   } catch (err) {
     console.error(`[exportTeamInfo][store ${req.storeId}] Ошибка:`, err);
     next(err);
@@ -806,7 +809,7 @@ exports.exportProductStats = async (req, res, next) => {
     const storeId = req.storeId;
     const filePath = await ProductStatsService.exportProductStatsXlsx(storeId);
     disableCache(res);
-    res.download(filePath, getVersionedFileName('product-stats', 'xlsx'));
+    res.download(filePath, getVersionedFileName('product-stats', 'xlsx', storeId));
   } catch (err) {
     console.error(`[exportProductStats][store ${req.storeId}] Ошибка:`, err);
     if (err.message && err.message.includes('Нет данных')) {
@@ -1134,11 +1137,20 @@ exports.deleteProductStats = async (req, res, next) => {
 exports.downloadMaterials = async (req, res, next) => {
   try {
     const storeId = req.storeId;
+    const filePath = MaterialsService.getFilePath(storeId);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        error:
+          `Файл настроек материалов для магазина ${storeId} не найден. ` +
+          `Ожидается ${MaterialsService.getFileName(storeId)} в папке backend/. ` +
+          `Загрузите его через POST /api/admin/materials/upload или посмотрите ` +
+          `текущие (дефолтные) значения в GET /api/admin/materials.`,
+      });
+    }
+
     disableCache(res);
-    res.download(
-      MaterialsService.getFilePath(storeId),
-      MaterialsService.getFileName(storeId)
-    );
+    res.download(filePath, MaterialsService.getFileName(storeId));
   } catch (err) {
     console.error(`[downloadMaterials][store ${req.storeId}] Ошибка:`, err);
     next(err);

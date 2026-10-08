@@ -57,7 +57,7 @@ type ListMode = "priority" | "all";
 // === Индикатор наличия 3D-моделей у сотрудника по заказу ===
 // Как в боте: 🟢 — все модели заказа уже выданы сотруднику, 🟡 — частично,
 // 🔴 — ничего не выдано. Данные — issued_models (issued_offer_ids в getUsers).
-// Родительские артикулы учитываются: выдача ARD000003-N покрывает -NR/-NL.
+// Родительские артикулы учитываются: выдача ARD000001-N покрывает -NR/-NL.
 const modelCoverage = (emp: EmployeeOption, order: AwaitingOrder) => {
   const offers = (order.products || [])
     .map((p) => p.offer_id)

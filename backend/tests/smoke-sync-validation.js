@@ -30,7 +30,11 @@ const {
 } = require('../src/utils');
 
 const XLSX_PATH = path.join(__dirname, '..', 'tests', 'tmp', 'smoke-val-team-info.xlsx');
-const TEAM_INFO_PATH = path.join(__dirname, '..', 'outputs', `store-${STORE_ID}`, 'team-info.xlsx');
+const { getVersionedFileName } = require('../src/utils');
+const TEAM_INFO_PATH = path.join(
+  __dirname, '..', 'outputs', `store-${STORE_ID}`,
+  getVersionedFileName('team-info', 'xlsx', STORE_ID)
+);
 
 function writeTeamInfoXlsx(employees) {
   const header1 = ['Сотрудник', 'E-mail', 'Telegram ID', 'Телефон', 'Число принтеров', 'Коэффициент Заработка', ''];

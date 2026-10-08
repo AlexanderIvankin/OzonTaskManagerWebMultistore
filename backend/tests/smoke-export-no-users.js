@@ -26,8 +26,9 @@ const SyncService = require('../src/services/SyncService');
 
 const TMP_XLSX_PATH = path.join(__dirname, '..', 'tests', 'tmp', 'smoke-export-team-info.xlsx');
 const OUTPUT_DIR = path.join(__dirname, '..', 'outputs', `store-${STORE_ID}`);
-const TEAM_INFO_PATH = path.join(OUTPUT_DIR, 'team-info.xlsx');
-const EMPLOYEES_DB_PATH = path.join(OUTPUT_DIR, 'employees-db.xlsx');
+const { getVersionedFileName } = require('../src/utils');
+const TEAM_INFO_PATH = path.join(OUTPUT_DIR, getVersionedFileName('team-info', 'xlsx', STORE_ID));
+const EMPLOYEES_DB_PATH = path.join(OUTPUT_DIR, getVersionedFileName('employees-db', 'xlsx', STORE_ID));
 
 function writeTeamInfoXlsx(employees) {
   const header1 = ['Сотрудник', 'E-mail', 'Telegram ID', 'Телефон', 'Число принтеров', 'Коэффициент Заработка', ''];
