@@ -1,7 +1,23 @@
-### Переменные
+### ============================================================
+###  AUTH — регистрация, подтверждение email, сброс пароля, вход
+### ============================================================
 @baseUrl = http://localhost:5000
+# Для прода: @baseUrl = https://shop1.your-domain.ru
 
-### Регистрация нового пользователя
+### ============================================================
+###  ПЕРЕД ЗАПУСКОМ ЭТОГО ФАЙЛА:
+###    cd backend && node seed.js    # создаст admin/moderator/employee/user
+###    node scripts/http-login.js    # (из корня проекта) — заполнит
+###                                  # .env токенами всех 4 ролей.
+###  После этого {{$dotenv HTTP_*_TOKEN}} доступны во всех .http-файлах.
+### ============================================================
+
+@adminToken     = {{$dotenv HTTP_ADMIN_TOKEN}}
+@moderatorToken = {{$dotenv HTTP_MODERATOR_TOKEN}}
+@employeeToken  = {{$dotenv HTTP_EMPLOYEE_TOKEN}}
+@userToken      = {{$dotenv HTTP_USER_TOKEN}}
+
+### ---------- Регистрация нового пользователя (создаёт гостя) ----------
 POST {{baseUrl}}/api/auth/register
 Content-Type: application/json
 
@@ -12,57 +28,88 @@ Content-Type: application/json
   "name": "Тестовый Пользователь"
 }
 
-### Попытка регистрации с уже существующим email (должна вернуть 409)
-POST {{baseUrl}}/api/auth/register
+### Подтвердить email по коду из письма (guest → user)
+POST {{baseUrl}}/api/auth/verify-email
 Content-Type: application/json
 
-{
-  "username": "testuser2",
-  "email": "test@example.com",
-  "password": "password123",
-  "name": "Дубликат"
-}
+{ "code": "123456" }
 
-### Логин Admin (получаем accessToken и refreshToken)
-# @name login
+### Повторно отправить код
+POST {{baseUrl}}/api/auth/resend-code
+Content-Type: application/json
+
+{ "email": "test@example.com" }
+
+### Запрос сброса пароля
+POST {{baseUrl}}/api/auth/forgot-password
+Content-Type: application/json
+
+{ "email": "test@example.com" }
+
+### Установить новый пароль
+POST {{baseUrl}}/api/auth/reset-password
+Content-Type: application/json
+
+{ "code": "123456", "newPassword": "newpassword123" }
+
+### ============================================================
+###  ЛОГИН — 4 роли
+### ============================================================
+### Эти запросы логинятся «на лету» и подставляют свежий токен в свою
+### response-переменную. Обычно НЕ НУЖНЫ — токены уже в .env (см. выше).
+### Используйте, если хотите перелогиниться вручную.
+
+### Логин: обычный пользователь
+# @name loginUser
 POST {{baseUrl}}/api/auth/login
 Content-Type: application/json
 
-{
-  "usernameOrEmail": "admin",
-  "password": "admin123"
-}
+{ "usernameOrEmail": "user", "password": "user123" }
 
-### Логин (получаем accessToken и refreshToken)
-# @name login
+### Логин: сотрудник
+# @name loginEmployee
 POST {{baseUrl}}/api/auth/login
 Content-Type: application/json
 
-{
-  "usernameOrEmail": "testuser",
-  "password": "password123"
-}
+{ "usernameOrEmail": "employee", "password": "employee123" }
 
-### Сохраняем токены в переменные
-@accessToken = {{login.response.body.accessToken}}
-@refreshToken = {{login.response.body.refreshToken}}
+### Логин: модератор
+# @name loginModerator
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
 
-### Получить профиль (требуется accessToken)
-GET {{baseUrl}}/api/user/profile
-Authorization: Bearer {{accessToken}}
+{ "usernameOrEmail": "moderator", "password": "moderator123" }
+
+### Логин: админ
+# @name loginAdmin
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{ "usernameOrEmail": "admin", "password": "admin123" }
+
+### ---------- Профиль в контексте магазина ----------
+### Под обычным user: store = null
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{userToken}}
+
+### Под сотрудником: store = { role: 'employee', ... }
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{employeeToken}}
+
+### Под админом: store = { role: 'admin', ... }
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{adminToken}}
+
+### ---------- Обновление токена и выход ----------
 
 ### Обновить accessToken
 POST {{baseUrl}}/api/auth/refresh
 Content-Type: application/json
 
-{
-  "refreshToken": "{{refreshToken}}"
-}
+{ "refreshToken": "{{$dotenv HTTP_ADMIN_REFRESH}}" }
 
-### Выйти (удалить refreshToken)
+### Выйти
 POST {{baseUrl}}/api/auth/logout
 Content-Type: application/json
 
-{
-  "refreshToken": "{{refreshToken}}"
-}
+{ "refreshToken": "{{$dotenv HTTP_ADMIN_REFRESH}}" }

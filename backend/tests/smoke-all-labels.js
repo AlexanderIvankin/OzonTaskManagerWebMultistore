@@ -1,6 +1,10 @@
 /**
  * Smoke-тест: склейка всех этикеток одним вызовом Ozon
  * (запуск: node tests/smoke-all-labels.js из папки backend/).
+ *
+ * MULTISTORE: OrderService.getAllLabels(storeId, userId) — метод работает
+ * в контексте магазина, читает assignments из store-N.db.
+ *
  * Реальных запросов к Ozon нет: fetchAwaitingDeliverOrders и getPackageLabel
  * подменяются стабами. Проверяет OrderService.getAllLabels:
  *   1) в create уходит пересечение completed-заказов сотрудника со списком
@@ -8,12 +12,14 @@
  *   2) пустое пересечение -> null (контроллер отдаст 404 с текстом);
  *   3) без завершённых заказов список Ozon вообще не запрашивается.
  */
-process.env.OZON_MOCK_MODE = 'false';
 require('dotenv').config();
+const { setup, cleanup } = require('./helpers/setupTestEnv');
+const STORE_ID = setup('1').storeId;
 
 const assert = require('assert');
-const { initDB, getDB } = require('../src/config/database');
-const { User } = require('../src/models');
+const { initDB, closeAll, getStoreDB, getUsersDB } = require('../src/config/database');
+const { initNotificationsDB, closeNotificationsDB } = require('../src/config/notificationsDatabase');
+const { User, UserStore } = require('../src/models');
 const OzonService = require('../src/services/OzonService');
 const OrderService = require('../src/services/OrderService');
 
@@ -26,27 +32,31 @@ const PDF_BYTES = Buffer.from('%PDF-1.4 combined-labels\n%EOF');
 
 (async () => {
   console.log('=== Smoke-тест: OrderService.getAllLabels (склейка) ===');
-  let db;
+  let storeDb;
   const createdUserIds = [];
   const originalFetch = OzonService.fetchAwaitingDeliverOrders;
   const originalGetPackageLabel = OzonService.getPackageLabel;
 
-  // Стабы Ozon: список awaiting_deliver + готовый «склеенный» PDF
   const labelCalls = [];
-  OzonService.fetchAwaitingDeliverOrders = async () => [
-    { posting_number: ORDER_IN_AWAITING },
-    { posting_number: FOREIGN_ORDER },
-  ];
-  OzonService.getPackageLabel = async (postingNumbers) => {
+  OzonService.fetchAwaitingDeliverOrders = async (storeId) => {
+    assert.strictEqual(storeId, STORE_ID, 'fetchAwaitingDeliverOrders: storeId проброшен');
+    return [
+      { posting_number: ORDER_IN_AWAITING },
+      { posting_number: FOREIGN_ORDER },
+    ];
+  };
+  OzonService.getPackageLabel = async (storeId, postingNumbers) => {
+    assert.strictEqual(storeId, STORE_ID, 'getPackageLabel: storeId проброшен');
     labelCalls.push(postingNumbers);
     return PDF_BYTES;
   };
 
   try {
     await initDB();
-    db = getDB();
+    await initNotificationsDB();
+    storeDb = getStoreDB(STORE_ID);
 
-    // Два сотрудника: у первого два завершённых заказа, у второго нет
+    // Два сотрудника магазина: у первого два завершённых заказа, у второго нет
     const emp = await User.create({
       username: `${TEST_MARK}_emp_${stamp}`,
       email: `${TEST_MARK}_emp_${stamp}@smoke.local`,
@@ -63,9 +73,13 @@ const PDF_BYTES = Buffer.from('%PDF-1.4 combined-labels\n%EOF');
     });
     createdUserIds.push(emp.id, emptyEmp.id);
 
+    // В магазине — сотрудники
+    await UserStore.upsert(emp.id, STORE_ID, { role: 'employee', was_employee: 1 });
+    await UserStore.upsert(emptyEmp.id, STORE_ID, { role: 'employee', was_employee: 1 });
+
     const now = Date.now();
     for (const orderId of [ORDER_IN_AWAITING, ORDER_OUT_OF_STATUS]) {
-      await db.run(
+      await storeDb.run(
         `INSERT INTO assignments (order_id, user_id, assigned_at, completed_at, status)
          VALUES (?, ?, ?, ?, 'completed')`,
         orderId, emp.id, now, now
@@ -76,7 +90,7 @@ const PDF_BYTES = Buffer.from('%PDF-1.4 combined-labels\n%EOF');
     //    ORDER_OUT_OF_STATUS завершён, но уже не в awaiting_deliver -> не попадает;
     //    FOREIGN_ORDER из списка Ozon, но не завершён сотрудником -> не попадает.
     labelCalls.length = 0;
-    const pdf = await OrderService.getAllLabels(emp.id);
+    const pdf = await OrderService.getAllLabels(STORE_ID, emp.id);
     assert(Buffer.isBuffer(pdf), 'Должен вернуться Buffer PDF');
     assert.strictEqual(pdf, PDF_BYTES, 'PDF должен прийти как есть из getPackageLabel');
     assert.strictEqual(labelCalls.length, 1, 'getPackageLabel должен вызваться ровно один раз');
@@ -85,15 +99,15 @@ const PDF_BYTES = Buffer.from('%PDF-1.4 combined-labels\n%EOF');
       [ORDER_IN_AWAITING],
       'В create должен уйти один номер из пересечения completed ∩ awaiting_deliver'
     );
-    console.log('1. Пересечение completed ∩ awaiting_deliver уходит одним массивом');
+    console.log('1. Пересечение completed ∩ awaiting_deliver уходит одним массивом ✅');
 
     // 2. Сотрудник есть в completed, но Ozon не вернул ни одного его заказа
     OzonService.fetchAwaitingDeliverOrders = async () => [{ posting_number: FOREIGN_ORDER }];
     labelCalls.length = 0;
-    const noIntersection = await OrderService.getAllLabels(emp.id);
+    const noIntersection = await OrderService.getAllLabels(STORE_ID, emp.id);
     assert.strictEqual(noIntersection, null, 'Без пересечения должен вернуться null');
     assert.strictEqual(labelCalls.length, 0, 'getPackageLabel не должен вызываться');
-    console.log('2. Пустое пересечение -> null (HTTP 404 с текстом), без create');
+    console.log('2. Пустое пересечение -> null (HTTP 404 с текстом), без create ✅');
 
     // 3. У сотрудника нет завершённых заказов -> список Ozon не запрашивается
     let fetchCalls = 0;
@@ -101,31 +115,35 @@ const PDF_BYTES = Buffer.from('%PDF-1.4 combined-labels\n%EOF');
       fetchCalls += 1;
       return [];
     };
-    const empty = await OrderService.getAllLabels(emptyEmp.id);
+    const empty = await OrderService.getAllLabels(STORE_ID, emptyEmp.id);
     assert.strictEqual(empty, null, 'Без завершённых заказов должен вернуться null');
     assert.strictEqual(fetchCalls, 0, 'fetchAwaitingDeliverOrders не должен вызываться');
-    console.log('3. Нет завершённых заказов -> null без запроса к Ozon');
+    console.log('3. Нет завершённых заказов -> null без запроса к Ozon ✅');
 
     console.log('✅ Все проверки пройдены');
   } catch (err) {
     console.error('❌ Smoke-тест провален:', err.message);
     process.exitCode = 1;
   } finally {
-    // Восстанавливаем подменённые методы и чистим тестовые данные
     OzonService.fetchAwaitingDeliverOrders = originalFetch;
     OzonService.getPackageLabel = originalGetPackageLabel;
     try {
-      if (db) {
+      if (storeDb) {
         for (const userId of createdUserIds) {
-          await db.run('DELETE FROM assignments WHERE user_id = ?', userId);
+          await storeDb.run('DELETE FROM assignments WHERE user_id = ?', userId);
         }
       }
+      const usersDb = getUsersDB();
       for (const userId of createdUserIds) {
-        await db.run('DELETE FROM users WHERE id = ?', userId);
+        await usersDb.run('DELETE FROM user_stores WHERE user_id = ?', userId);
+        await usersDb.run('DELETE FROM users WHERE id = ?', userId);
       }
       console.log('Тестовые данные удалены');
     } catch (cleanupErr) {
       console.error('Ошибка очистки:', cleanupErr.message);
     }
+    try { await closeNotificationsDB(); } catch { /* ignore */ }
+    try { await closeAll(); } catch { /* ignore */ }
+    cleanup();
   }
 })();

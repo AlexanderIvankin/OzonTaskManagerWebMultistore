@@ -17,7 +17,12 @@ const {
   toSqliteLiteral,
 } = require('../utils');
 
-const BACKUP_DIR = path.join(__dirname, '../../backups');
+// BACKUP_DIR можно переопределить через .env — нужно для тестов, чтобы они
+// не трогали реальную папку backups/ и не удаляли прод-бэкапы. По умолчанию —
+// backend/backups.
+const BACKUP_DIR = process.env.BACKUP_DIR
+  ? path.resolve(process.env.BACKUP_DIR)
+  : path.join(__dirname, '../../backups');
 
 /**
  * Проверяет, что созданный файл — читаемая БД SQLite (PRAGMA quick_check).

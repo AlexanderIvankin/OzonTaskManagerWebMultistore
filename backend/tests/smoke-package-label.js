@@ -1,12 +1,20 @@
 /**
  * Smoke-тест: получение этикетки через асинхронную пару Ozon API
  * (запуск: node tests/smoke-package-label.js из папки backend/).
+ *
+ * MULTISTORE: OzonService.getPackageLabel(storeId, postings, opts) использует
+ * per-store клиент. В тесте подменяем его через OzonService._setTestClient.
+ *
  * Реальных запросов к Ozon нет: HTTP-клиент и скачивание PDF подменяются
  * стабами. Проверяет пару create/get, включая пакетный вызов по массиву
  * номеров отправлений (см. проверки 7-9 в конце файла).
  */
-
-process.env.OZON_MOCK_MODE = 'false';
+require('dotenv').config();
+const { setup, cleanup } = require('./helpers/setupTestEnv');
+// mock=false: тест проверяет реальную пару create/get OzonService, downloader
+// подменяется стабом. С MOCK_MODE=true getPackageLabel вернёт заглушку раньше,
+// чем вызовет downloader — и проверка file_url провалится.
+const STORE_ID = setup('1', { ozonMock: false }).storeId;
 
 const assert = require('assert');
 const OzonService = require('../src/services/OzonService');
@@ -36,13 +44,27 @@ function makeApiStub({ createPayload, getPayloads }) {
   };
 }
 
-async function withStub(apiStub, fn) {
-  const real = OzonService.apiClient;
-  OzonService.apiClient = apiStub;
+async function withStub(client, fn) {
+  // Подменяем ОБА возможных пути к клиенту:
+  //   • OzonService.apiClient — если getPackageLabel ещё на старом коде;
+  //   • clients (через _setTestClient) — если getPackageLabel уже на
+  //     per-store getClient(storeId).
+  // Так тест не зависит от того, отрефакторен ли уже конкретный метод.
+  //
+  // ВАЖНО: параметр — это САМ клиент (объект с .post), а не обёртка вокруг
+  // него; в вызовах передаём `okStub.client` — то есть клиент напрямую.
+  const originalApiClient = OzonService.apiClient;
+  OzonService.apiClient = client;
+  if (typeof OzonService._setTestClient === 'function') {
+    OzonService._setTestClient(STORE_ID, client);
+  }
   try {
     return await fn();
   } finally {
-    OzonService.apiClient = real;
+    OzonService.apiClient = originalApiClient;
+    if (typeof OzonService._resetClients === 'function') {
+      OzonService._resetClients();
+    }
   }
 }
 
@@ -62,7 +84,7 @@ async function withStub(apiStub, fn) {
     return { data: PDF_BYTES };
   };
   const label = await withStub(okStub.client, () =>
-    OzonService.getPackageLabel(POSTING, { pollDelays: [0, 0], downloader })
+    OzonService.getPackageLabel(STORE_ID, POSTING, { pollDelays: [0, 0], downloader })
   );
   assert(Buffer.isBuffer(label), 'Этикетка должна вернуться Buffer');
   assert.strictEqual(label.slice(0, 4).toString(), '%PDF', 'Скачанный файл — не PDF');
@@ -82,7 +104,7 @@ async function withStub(apiStub, fn) {
   let downloadCalled = false;
   const noDownload = async () => { downloadCalled = true; return { data: PDF_BYTES }; };
   const errorLabel = await withStub(errorStub.client, () =>
-    OzonService.getPackageLabel(POSTING, { pollDelays: [], downloader: noDownload })
+    OzonService.getPackageLabel(STORE_ID, POSTING, { pollDelays: [], downloader: noDownload })
   );
   assert.strictEqual(errorLabel, null, 'При payload.error должен вернуться null');
   assert.strictEqual(downloadCalled, false, 'При ошибке задачи скачивание не вызывается');
@@ -98,7 +120,7 @@ async function withStub(apiStub, fn) {
   });
   downloadCalled = false;
   const rejectedLabel = await withStub(rejectedStub.client, () =>
-    OzonService.getPackageLabel(POSTING, { pollDelays: [], downloader: noDownload })
+    OzonService.getPackageLabel(STORE_ID, POSTING, { pollDelays: [], downloader: noDownload })
   );
   assert.strictEqual(rejectedLabel, null, 'При unprinted_postings должен вернуться null');
   assert.strictEqual(downloadCalled, false, 'При отказе скачивание не вызывается');
@@ -110,7 +132,7 @@ async function withStub(apiStub, fn) {
     getPayloads: [preparing],
   });
   const pendingLabel = await withStub(pendingStub.client, () =>
-    OzonService.getPackageLabel(POSTING, {
+    OzonService.getPackageLabel(STORE_ID, POSTING, {
       pollDelays: [0, 0],
       downloader: async () => { throw new Error('Скачивание не должно вызываться'); },
     })
@@ -131,7 +153,7 @@ async function withStub(apiStub, fn) {
     return { data: PDF_BYTES };
   };
   const batchLabel = await withStub(batchStub.client, () =>
-    OzonService.getPackageLabel(['P-1', 'P-2'], { pollDelays: [], downloader: batchDownloader })
+    OzonService.getPackageLabel(STORE_ID, ['P-1', 'P-2'], { pollDelays: [], downloader: batchDownloader })
   );
   assert(Buffer.isBuffer(batchLabel), 'Пакетный вызов должен вернуть Buffer');
   const creates = batchStub.calls.filter((c) => c.url === '/v3/posting/fbs/package-label/create');
@@ -150,7 +172,7 @@ async function withStub(apiStub, fn) {
   });
   downloadCalled = false;
   const partialLabel = await withStub(partialStub.client, () =>
-    OzonService.getPackageLabel(['P-1', 'P-2'], { pollDelays: [], downloader: noDownload })
+    OzonService.getPackageLabel(STORE_ID, ['P-1', 'P-2'], { pollDelays: [], downloader: noDownload })
   );
   assert(Buffer.isBuffer(partialLabel), 'Частичный отказ не должен обнулять PDF');
   assert.strictEqual(downloadCalled, true, 'PDF по напечатанным должен скачиваться');
@@ -171,14 +193,16 @@ async function withStub(apiStub, fn) {
   });
   downloadCalled = false;
   const allRejectedLabel = await withStub(allRejectedStub.client, () =>
-    OzonService.getPackageLabel(['P-1', 'P-2'], { pollDelays: [], downloader: noDownload })
+    OzonService.getPackageLabel(STORE_ID, ['P-1', 'P-2'], { pollDelays: [], downloader: noDownload })
   );
   assert.strictEqual(allRejectedLabel, null, 'Полный отказ по всем -> null');
   assert.strictEqual(downloadCalled, false, 'При полном отказе скачивание не вызывается');
   console.log('9. Все номера в unprinted_postings -> null, скачивания нет');
 
   console.log('✅ Все проверки пройдены');
+  cleanup();
 })().catch((err) => {
   console.error('❌ Smoke-тест провален:', err.message);
+  cleanup();
   process.exit(1);
 });

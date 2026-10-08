@@ -366,14 +366,34 @@ class SyncService {
           continue;
         }
 
-        // --- Первое назначение Создателя ---
-        // Строка совпала с GOD_EMAIL/GOD_ID из .env, но глобально 'god' ещё
-        // нет — назначаем: users.role='god' + user_stores.role='god' во всех
-        // магазинах. С этого момента аккаунт никем не редактируется.
-        if (isGodIdentity(data, godEnv)) {
-          await this.ensureGodStatus(user.id);
-          updated++;
-          continue;
+        if (user) {
+          // --- Создатель уже назначен глобально ---
+          if (user.role === 'god') {
+            console.log(
+              `[SyncService][store ${storeId}] Строка Создателя (#${user.id}) пропущена: уже 'god'`
+            );
+            continue;
+          }
+
+          // --- Первое назначение Создателя ---
+          if (isGodIdentity(data, godEnv)) {
+            await this.ensureGodStatus(user.id);
+            updated++;
+            continue;
+          }
+
+          // --- Гость (email не подтверждён) ---
+          // Пропускаем полностью: не создаём запись в user_stores и не трогаем
+          // users. Гость станет пользователем только после подтверждения email
+          // (AuthService.verifyEmail), тогда следующая синхронизация обработает
+          // его нормально.
+          if (user.role === 'guest') {
+            console.log(
+              `[SyncService][store ${storeId}] Пользователь #${user.id} (${data.name}) — гость (email не подтверждён), пропускаем`
+            );
+            skipped++;
+            continue;
+          }
         }
 
         // --- Глобальные поля users ---
@@ -506,6 +526,10 @@ class SyncService {
     const excelEmails = new Set(usersData.map((d) => d.email).filter(Boolean));
     const excelTgIds = new Set(usersData.map((d) => d.tgUserId).filter(Boolean));
 
+    // Увольняем ТОЛЬКО сотрудников магазина (us.role = 'employee'), а не
+    // admin/moderator/god. Логика паритетна старой версии (users.role =
+    // 'employee'): у админов/модераторов членство в Excel не обязательно,
+    // их роль назначается вручную и не должна слетать при синхронизации.
     const activeEmployees = await usersDb.all(
       `SELECT u.id, u.username, u.name, u.email, u.tg_user_id, us.role AS store_role
        FROM users u
@@ -513,7 +537,7 @@ class SyncService {
        WHERE us.store_id = ?
          AND us.is_fired = 0
          AND us.was_employee = 1
-         AND us.role != 'god'
+         AND us.role = 'employee'
          AND u.role != 'god'`,
       String(storeId)
     );

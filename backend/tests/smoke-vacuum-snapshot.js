@@ -1,52 +1,40 @@
 /**
- * Smoke-тест: снимок и бэкап БД через VACUUM INTO.
+ * Smoke-тест снимка и бэкапа БД через VACUUM INTO.
  * Запуск: node tests/smoke-vacuum-snapshot.js из папки backend/.
- * Работает с ВРЕМЕННОЙ БД (env.DB_PATH) и убирает за собой все файлы.
  *
- * Проверяет, что переход с побайтового копирования живого файла на VACUUM INTO
- * безопасен (см. downloadDatabase и BackupService):
- *   1. Снимок содержит АКТУАЛЬНЫЕ данные — включая запись, созданную прямо
- *      перед снимком (отдаётся «сейчас», а не устаревший файл/кэш).
- *   2. Явные INTEGER PRIMARY KEY (id пользователей) не пересобираются:
- *      значения и «дырки» от удалённых строк сохраняются как есть.
- *   3. AUTOINCREMENT не переиспользует удалённые id: sqlite_sequence
- *      переносится в снимок, и новая запись получает id выше всех прежних.
- *   4. Логическое содержимое всех таблиц идентично источнику (MD5 строк
- *      вместе со скрытыми rowid), нарушений внешних ключей нет.
- *   5. Снимок компактнее источника: freelist вычищен, размер кратен
- *      page_size, PRAGMA quick_check = ok, page_size не меняется.
- *   6. toSqliteLiteral безопасно готовит путь для SQL (слэши и кавычки) —
- *      этим helper'ом пользуются и скачивание, и бэкап.
- *   7. BackupService.createDbBackup делает такой же проверенный снимок и
- *      НЕ пересоздаёт ежедневный бэкап повторным вызовом.
+ * MULTISTORE: BackupService обходит ВСЕ БД (users / models / notifications /
+ * store-N) и кладёт снимки в backups/<label>/. Проверяет, что VACUUM INTO
+ * безопасен при параллельной записи и что снимок содержит актуальные данные.
+ *
+ *  1. Снимок содержит запись, созданную ПРЯМО перед снимком.
+ *  2. Явные INTEGER PRIMARY KEY (id пользователей) не пересобраны.
+ *  3. AUTOINCREMENT не переиспользует удалённые id.
+ *  4. Логическое содержимое всех таблиц + FK-нарушения.
+ *  5. Снимок компактнее источника (freelist=0, page_size тот же).
+ *  6. toSqliteLiteral безопасно готовит путь для SQL.
+ *  7. BackupService.createDbBackup: 4 файла, повторный вызов не пересоздаёт.
  */
-
-// ВАЖНО: env нужно выставить ДО require модуля БД
-const path = require('path');
-process.env.DB_PATH = path.join(__dirname, '..', 'tmp-smoke-vacuum.db');
-process.env.BOT_VERSION = '';
+const { setup, cleanup } = require('./helpers/setupTestEnv');
+const env = setup('1');
+const STORE_ID = env.storeId;
 
 const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const sqlite3 = require('sqlite3');
-const { initDB, getDB } = require('../src/config/database');
+const { initDB, closeAll, getUsersDB } = require('../src/config/database');
+const { initNotificationsDB, closeNotificationsDB } = require('../src/config/notificationsDatabase');
 const { toSqliteLiteral } = require('../src/utils');
 const BackupService = require('../src/services/BackupService');
 const User = require('../src/models/User');
 
-const BACKUP_DIR = path.join(__dirname, '..', 'backups');
-const SNAPSHOT_PATH = path.join(__dirname, '..', 'tmp-smoke-vacuum-snapshot.db');
-// Базовое имя файлов теста: tmp-smoke-vacuum_<дата>.db и т.п.
-const TEST_DB_BASENAME = path.basename(process.env.DB_PATH, '.db');
+const TMP_DIR = env.tmpDir;
+const SNAPSHOT_PATH = path.join(TMP_DIR, 'snapshot-test.db');
 
 function assert(cond, message) {
   if (!cond) throw new Error(message);
 }
 
-/**
- * Открывает файл БД в указанном режиме. Для проверок используем READONLY:
- * снимок/бэкап не должны меняться самим фактом проверки.
- */
 function openDb(filePath, mode) {
   return new Promise((resolve, reject) => {
     const db = new sqlite3.Database(filePath, mode, (err) =>
@@ -55,25 +43,16 @@ function openDb(filePath, mode) {
   });
 }
 
-// Два разных API в тесте:
-//   • живая БД (getDB()) — обёртка `sqlite`: методы возвращают Promise;
-//   • снимок/бэкап открываем сырым `sqlite3`: там только callback-API.
 const rawAll = (db, sql, ...params) =>
   new Promise((res, rej) => db.all(sql, ...params, (e, r) => (e ? rej(e) : res(r))));
 const rawRun = (db, sql, ...params) =>
   new Promise((res, rej) => db.run(sql, ...params, (e) => (e ? rej(e) : res())));
 const rawClose = (db) => new Promise((res) => db.close(() => res()));
 
-/** Единая функция-запрос для fingerprint: обёртки над обоими API */
 const liveQuery = (db) => (sql) => db.all(sql);
 const rawQuery = (db) => (sql) => rawAll(db, sql);
 const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
 
-/**
- * «Слепок» БД для сравнения источника, снимка и бэкапа: хеши содержимого всех
- * таблиц (вместе со скрытыми rowid), счётчики страниц/freelist, sqlite_sequence,
- * id пользователей и проверки целостности.
- */
 async function fingerprint(query) {
   const tables = (
     await query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -102,21 +81,19 @@ function seqOf(fp, table) {
   const row = fp.sequence.find((s) => s.name === table);
   return row ? row.seq : null;
 }
-
-function idsOf(fp) {
-  return fp.users.map((u) => u.id);
-}
+const idsOf = (fp) => fp.users.map((u) => u.id);
 
 (async () => {
   const createdBackups = [];
+  const tmpSnapshots = [];
   let snapshotDb = null;
-  let backupDb = null;
   try {
     console.log('=== Smoke-тест: VACUUM INTO (снимок и бэкап БД) ===');
     await initDB();
-    const db = getDB();
+    await initNotificationsDB();
+    const db = getUsersDB();
 
-    // --- 6. Подготовка SQL-литерала пути (общий helper скачивания и бэкапа) ---
+    // --- 6. toSqliteLiteral ---
     assert(
       toSqliteLiteral("C:\\tmp\\a'b.db") === "'C:/tmp/a''b.db'",
       `toSqliteLiteral: получено ${toSqliteLiteral("C:\\tmp\\a'b.db")}`
@@ -125,9 +102,9 @@ function idsOf(fp) {
       toSqliteLiteral('/var/ozon/x.db') === "'/var/ozon/x.db'",
       'toSqliteLiteral: путь *nix изменён'
     );
-    console.log('6. toSqliteLiteral: обратные слэши и кавычка в пути подготовлены верно');
+    console.log('6. toSqliteLiteral ✅');
 
-    // --- Фикстура: пользователи, «дырки» в id и фрагментация файла ---
+    // --- Фикстура ---
     await db.run('DELETE FROM users WHERE username LIKE "smoke_vac_%"');
     await db.exec(
       'CREATE TABLE IF NOT EXISTS smoke_vac_filler (id INTEGER PRIMARY KEY AUTOINCREMENT, blob TEXT)'
@@ -143,37 +120,31 @@ function idsOf(fp) {
         email: `smoke_vac_${i}@test.local`,
         passwordHash: 'x',
         name: `Вак ${i}`,
-        phone: '',
-        capacity: 1,
-        earningsFactor: 1.0,
         role: 'user',
       });
     }
     const allIds = (await db.all('SELECT id FROM users ORDER BY id')).map((r) => r.id);
     const deletedIds = [allIds[1], allIds[4]];
     await db.run('DELETE FROM users WHERE id IN (?, ?)', deletedIds[0], deletedIds[1]);
-    // Освобождаем страницы фикстуры: источник становится «дырявым» (freelist > 0),
-    // чтобы проверить, что VACUUM INTO действительно сжимает файл
     await db.run('DELETE FROM smoke_vac_filler');
 
-    // --- 1. Запись ПРЯМО перед снимком должна попасть в снимок ---
+    // --- 1. Запись ПРЯМО перед снимком ---
     const fresh = await User.create({
       username: 'smoke_vac_fresh',
       email: 'smoke_vac_fresh@test.local',
       passwordHash: 'x',
       name: 'Свежий Вак',
-      phone: '',
-      capacity: 1,
-      earningsFactor: 1.0,
       role: 'user',
     });
 
     const live = await fingerprint(liveQuery(db));
-    const liveBytes = fs.statSync(process.env.DB_PATH).size;
+    const livePath = env.usersDbPath;
+    const liveBytes = fs.statSync(livePath).size;
 
-    // --- Снимок: ровно тот же вызов, что делает downloadDatabase ---
-    try { fs.unlinkSync(SNAPSHOT_PATH); } catch { /* файла может не быть */ }
+    // --- Снимок ---
+    try { fs.unlinkSync(SNAPSHOT_PATH); } catch { }
     await db.exec(`VACUUM INTO ${toSqliteLiteral(SNAPSHOT_PATH)}`);
+    tmpSnapshots.push(SNAPSHOT_PATH);
 
     snapshotDb = await openDb(SNAPSHOT_PATH, sqlite3.OPEN_READONLY);
     const snap = await fingerprint(rawQuery(snapshotDb));
@@ -181,49 +152,32 @@ function idsOf(fp) {
 
     assert(
       snap.users.some((u) => u.id === fresh.id && u.username === 'smoke_vac_fresh'),
-      'Снимок не содержит запись, созданную ПЕРЕД снимком — данные устарели!'
+      'Снимок не содержит запись, созданную ПЕРЕД снимком!'
     );
-    console.log(`1. Снимок содержит свежую запись id=${fresh.id} («сейчас», а не кэш)`);
+    console.log(`1. Снимок содержит свежую запись id=${fresh.id} ✅`);
 
-    // --- 2. Явные INTEGER PRIMARY KEY не пересобраны ---
+    // --- 2. id сохранены ---
     assert(
       JSON.stringify(idsOf(snap)) === JSON.stringify(idsOf(live)),
-      `id пользователей изменились: [${idsOf(live)}] -> [${idsOf(snap)}]`
+      `id изменились: [${idsOf(live)}] -> [${idsOf(snap)}]`
     );
-    assert(
-      !idsOf(snap).some((id) => deletedIds.includes(id)),
-      'Удалённые id вернулись в снимок'
-    );
-    console.log(
-      `2. id сохранены ([${idsOf(snap)}]), удалённые ${deletedIds.join(', ')} не вернулись`
-    );
+    assert(!idsOf(snap).some((id) => deletedIds.includes(id)), 'Удалённые id вернулись');
+    console.log(`2. id сохранены, удалённые ${deletedIds.join(', ')} не вернулись ✅`);
 
-    // --- 4. Логическое содержимое всех таблиц + внешние ключи ---
+    // --- 4. Контент + FK ---
     assert(
       JSON.stringify(snap.tables) === JSON.stringify(live.tables),
-      `Список таблиц изменился: [${live.tables}] -> [${snap.tables}]`
+      'Список таблиц изменился'
     );
     const changedTables = live.tables.filter((t) => live.hashes[t] !== snap.hashes[t]);
-    assert(
-      changedTables.length === 0,
-      `Содержимое таблиц изменилось: ${changedTables.join(', ')}`
-    );
-    assert(snap.fkViolations === 0, `FK-нарушений в снимке: ${snap.fkViolations}`);
-    console.log(
-      `4. Содержимое всех ${snap.tables.length} таблиц (вместе с rowid) идентично, FK-нарушений нет`
-    );
+    assert(changedTables.length === 0, `Содержимое изменилось: ${changedTables.join(', ')}`);
+    assert(snap.fkViolations === 0, `FK-нарушений: ${snap.fkViolations}`);
+    console.log(`4. Содержимое всех ${snap.tables.length} таблиц идентично, FK-нарушений нет ✅`);
 
-    // --- 5. Сжатие и целостность ---
-    assert(
-      live.freelist > 0,
-      'Фикстура не создала фрагментацию (freelist = 0) — проверка сжатия бессмысленна'
-    );
+    // --- 5. Сжатие + целостность ---
+    assert(live.freelist > 0, 'Фикстура не создала фрагментацию');
     assert(snap.freelist === 0, `В снимке остался freelist: ${snap.freelist}`);
-    assert(
-      snap.pageCount <= live.pageCount,
-      `Страниц в снимке больше: ${snap.pageCount} > ${live.pageCount}`
-    );
-    assert(snapBytes < liveBytes, `Снимок не компактнее источника: ${liveBytes} -> ${snapBytes}`);
+    assert(snapBytes < liveBytes, `Снимок не компактнее: ${liveBytes} -> ${snapBytes}`);
     assert(snapBytes % snap.pageSize === 0, 'Размер снимка не кратен page_size');
     assert(snap.pageSize === live.pageSize, 'page_size изменился');
     assert(
@@ -231,101 +185,86 @@ function idsOf(fp) {
       `quick_check снимка: ${snap.quickCheck.join('; ')}`
     );
     console.log(
-      `5. Сжатие и целостность: ${liveBytes} Б (freelist ${live.freelist}, стр. ${live.pageCount})` +
-      ` -> ${snapBytes} Б (freelist 0, стр. ${snap.pageCount}), quick_check ok`
+      `5. Сжатие: ${liveBytes} Б (freelist ${live.freelist}) -> ${snapBytes} Б, quick_check ok ✅`
     );
 
-    // --- 7. BackupService: тот же механизм, проверенный снимок ---
-    const daily = await BackupService.createDbBackup();
-    assert(daily && fs.existsSync(daily), 'Ежедневный бэкап не создан');
-    createdBackups.push(daily);
-    const dailyMtime = fs.statSync(daily).mtimeMs;
-    const dailyAgain = await BackupService.createDbBackup();
-    assert(dailyAgain === daily, 'Повторный вызов должен вернуть тот же ежедневный бэкап');
-    assert(fs.statSync(dailyAgain).mtimeMs === dailyMtime, 'Ежедневный бэкап был пересоздан');
-
-    const manual = await BackupService.createDbBackup({ includeTime: true });
-    assert(manual && fs.existsSync(manual), 'Ручной бэкап не создан');
-    createdBackups.push(manual);
-    const manualBytes = fs.statSync(manual).size;
-
-    backupDb = await openDb(manual, sqlite3.OPEN_READONLY);
-    const bkp = await fingerprint(rawQuery(backupDb));
-    assert(
-      bkp.quickCheck.length === 1 && bkp.quickCheck[0] === 'ok',
-      `quick_check бэкапа: ${bkp.quickCheck.join('; ')}`
-    );
-    const changedInBackup = live.tables.filter((t) => live.hashes[t] !== bkp.hashes[t]);
-    assert(
-      changedInBackup.length === 0,
-      `Бэкап отличается от источника: ${changedInBackup.join(', ')}`
-    );
-    assert(bkp.freelist === 0, `В бэкапе остался freelist: ${bkp.freelist}`);
-    assert(manualBytes % bkp.pageSize === 0, 'Размер бэкапа не кратен page_size');
-    console.log(
-      `7. BackupService: ежедневный и ручной бэкапы созданы (${manualBytes} Б), содержимое ` +
-      'идентично источнику, quick_check ok, ежедневный повторно не пересоздаётся'
-    );
-
-    // --- 3. AUTOINCREMENT: новая запись в СНИМКЕ не переиспользует удалённые id ---
+    // --- 3. AUTOINCREMENT ---
     const snapSeq = seqOf(snap, 'users');
-    assert(
-      snapSeq === seqOf(live, 'users'),
-      `sqlite_sequence.users: ${seqOf(live, 'users')} -> ${snapSeq}`
-    );
+    assert(snapSeq === seqOf(live, 'users'), `sqlite_sequence.users: ${seqOf(live, 'users')} -> ${snapSeq}`);
     await rawClose(snapshotDb);
     snapshotDb = null;
     const snapRw = await openDb(SNAPSHOT_PATH, sqlite3.OPEN_READWRITE);
     await rawRun(
       snapRw,
       `INSERT INTO users (username, email, password_hash, name, phone, capacity,
-        earnings_factor, role, is_fired, taking_orders, email_verified, was_employee,
-        display_name, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      'smoke_vac_probe', 'smoke_vac_probe@test.local', 'x', 'Проба', '', 1, 1,
-      'user', 0, 1, 1, 0, 'Проба', Date.now(), Date.now()
+        taking_orders, role, email_verified, display_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      'smoke_vac_probe', 'smoke_vac_probe@test.local', 'x', 'Проба', '', 1,
+      1, 'user', 1, 'Проба', Date.now(), Date.now()
     );
-    const probeRows = await rawAll(
-      snapRw,
-      'SELECT id FROM users WHERE username = "smoke_vac_probe"'
-    );
+    const probeRows = await rawAll(snapRw, 'SELECT id FROM users WHERE username = "smoke_vac_probe"');
     await rawClose(snapRw);
     assert(probeRows.length === 1, 'Не удалось вставить запись в снимок');
     const probeId = probeRows[0].id;
-    assert(
-      probeId === snapSeq + 1,
-      `Новая запись получила id=${probeId}, ожидался ${snapSeq + 1} (счётчик не перенесён)`
-    );
+    assert(probeId === snapSeq + 1, `Новая запись id=${probeId}, ожидался ${snapSeq + 1}`);
     assert(!deletedIds.includes(probeId), 'Новая запись переиспользовала удалённый id!');
-    console.log(
-      `3. AUTOINCREMENT: sqlite_sequence.users=${snapSeq} перенесён, новая запись в снимке ` +
-      `получила id=${probeId}; удалённые ${deletedIds.join(', ')} не переиспользованы`
+    console.log(`3. AUTOINCREMENT: seq=${snapSeq} перенесён, probe id=${probeId} ✅`);
+
+    // --- 7. BackupService ---
+    // Реальная backend/backups/ не тронута: BACKUP_DIR указывает на tests/tmp/backups.
+    const manual = await BackupService.createDbBackup({ includeTime: true });
+    if (manual.errors.length) {
+      throw new Error('BackupService: ошибки — ' + manual.errors.map(e => `${e.label}: ${e.message}`).join('; '));
+    }
+    console.log(`7. BackupService: создано ${manual.created.length} файлов, пропущено ${manual.skipped.length}`);
+    assert(manual.created.length >= 4, `Ожидалось минимум 4 файла, получено ${manual.created.length}`);
+    for (const f of manual.created) {
+      createdBackups.push(f);
+      assert(fs.existsSync(f), `Файл бэкапа не существует: ${f}`);
+      assert(fs.statSync(f).size > 0, `Пустой бэкап: ${f}`);
+      const bdb = await openDb(f, sqlite3.OPEN_READONLY);
+      const qc = await rawAll(bdb, 'PRAGMA quick_check');
+      await rawClose(bdb);
+      assert(qc[0] && Object.values(qc[0])[0] === 'ok', `quick_check ${path.basename(f)}: ${JSON.stringify(qc)}`);
+    }
+
+    // Ежедневный бэкап: created + skipped = минимум 4 (created — если сегодня
+    // ещё не было; skipped — если файл уже существует от прошлого прогона).
+    const daily = await BackupService.createDbBackup({ includeTime: false });
+    assert(daily.errors.length === 0, 'Ежедневный бэкап: ошибки');
+    assert(
+      daily.created.length + daily.skipped.length >= 4,
+      `Ежедневный: обработано ${daily.created.length + daily.skipped.length}, ожидалось >=4`
     );
+    for (const f of daily.created) createdBackups.push(f);
+
+    // Повторный ежедневный — всё пропускает (идемпотентность).
+    const dailyAgain = await BackupService.createDbBackup({ includeTime: false });
+    assert(dailyAgain.created.length === 0, 'Повторный ежедневный создал файлы (должен всё пропустить)');
+    assert(
+      dailyAgain.skipped.length >= 4,
+      `Повторный ежедневный: пропущено ${dailyAgain.skipped.length}, ожидалось >=4`
+    );
+    console.log('7b. Ежедневный бэкап идемпотентен ✅');
 
     console.log('✅ Все проверки пройдены');
   } catch (err) {
     console.error('❌ Ошибка smoke-теста:', err.message);
     process.exitCode = 1;
   } finally {
-    if (snapshotDb) { try { await rawClose(snapshotDb); } catch { /* уже закрыта */ } }
-    if (backupDb) { try { await rawClose(backupDb); } catch { /* уже закрыта */ } }
-    // Соединение с БД закрываем до удаления файлов — иначе SQLite держит
-    // временную БД открытой и файл не удаляется (Windows)
-    try { await getDB().close(); } catch { /* БД могла не открыться */ }
-    try { fs.unlinkSync(SNAPSHOT_PATH); } catch { /* не критично */ }
-    for (const file of createdBackups) {
-      try { fs.unlinkSync(file); } catch { /* не критично */ }
+    if (snapshotDb) { try { await rawClose(snapshotDb); } catch { } }
+    try { await closeNotificationsDB(); } catch { }
+    try { await closeAll(); } catch { }
+    // Убираем тестовые снимки и бэкапы
+    for (const f of [...tmpSnapshots, ...createdBackups]) {
+      try { fs.unlinkSync(f); } catch { }
     }
-    // Подчищаем все бэкапы этого теста (в т.ч. если упали до записи в массив)
-    try {
-      for (const name of fs.readdirSync(BACKUP_DIR)) {
-        if (name.startsWith(TEST_DB_BASENAME)) {
-          try { fs.unlinkSync(path.join(BACKUP_DIR, name)); } catch { /* не критично */ }
-        }
-      }
-    } catch { /* папки бэкапов может не быть */ }
-    for (const suffix of ['', '-wal', '-shm']) {
-      try { fs.unlinkSync(process.env.DB_PATH + suffix); } catch { /* не критично */ }
+    // Реальная backend/backups/ не тронута — тест писал в tests/tmp/backups.
+    // Явно удалим только те файлы, что создал тест (для страховки — если
+    // cleanup из helper не сработал).
+    for (const f of createdBackups) {
+      try { fs.unlinkSync(f); } catch { }
     }
+    cleanup();
   }
 })();

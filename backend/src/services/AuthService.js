@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 // uuid не нужен: токены генерируются встроенным crypto (randomBytes / randomInt)
 const config = require('../config');
 const User = require('../models/User');
+const UserStore = require('../models/UserStore');
 const { getUsersDB, getModelsDB, getStoreDB } = require('../config/database');
 const stores = require('../config/stores');
 const crypto = require('crypto');
@@ -230,8 +231,8 @@ class AuthService {
     // Сразу подтверждаем email (это admin-flow — код не нужен)
     await User.update(created.id, { email_verified: 1 });
 
-    // Per-store: роль в магазине (по умолчанию 'employee'), was_employee=1
-    const UserStore = require('../models/UserStore');
+    // Per-store: роль в магазине (по умолчанию 'employee'), was_employee=1.
+    // earnings_factor — per-store поле (user_stores), не users.
     const storeRole = role && ['employee', 'moderator', 'admin'].includes(role)
       ? role
       : 'employee';
@@ -239,6 +240,7 @@ class AuthService {
       role: storeRole,
       was_employee: 1,
       is_fired: 0,
+      earnings_factor: parseEarningsFactor(earningsFactor) ?? 1.0,
     });
 
     // Возвращаем объединённый объект (глобальные поля + per-store роль)
@@ -272,21 +274,19 @@ class AuthService {
       username,
       email,
       passwordHash,
-      // Регистрация самим пользователем: указанное имя — это его отображаемое
-      // имя (display_name), которое он видит в Профиле и может менять сам.
-      // name (имя для Персонала) пока ставим из логина — позже его поправит Персонал.
       name: String(username).trim(),
       displayName: name && String(name).trim() ? String(name).trim() : String(username).trim(),
       phone: formatPhonePretty(phone) || '',
       capacity: capacity || 1,
-      // Коэффициент: положительное число, максимум 2 знака ('99,99' и '99.99');
-      // пустое/невалидное → 1.0
-      earningsFactor: parseEarningsFactor(earningsFactor) ?? 1.0,
-      // До подтверждения email пользователь — 'guest' и НЕ состоит в команде:
-      // is_fired = 1, приём заказов выключен. Роль 'user' и активность
-      // возвращаются только после ввода кода из письма (см. verifyEmail).
+      // MULTISTORE: earnings_factor больше не в users — это per-store поле
+      // (user_stores.earnings_factor). До подтверждения email и привязки к
+      // магазину ему негде храниться.
+      //
+      // Гость не состоит в команде: role = 'guest', приём заказов выключен
+      // (taking_orders — глобальное поле users). per-store поля
+      // (is_fired, earnings_factor, was_employee) появятся, когда пользователь
+      // получит запись в user_stores.
       role: 'guest',
-      isFired: 1,
       takingOrders: 0,
     });
 
@@ -315,12 +315,11 @@ class AuthService {
 
   /**
    * Освобождает логин/email от «зависших» неподтверждённых регистраций.
-   * Вызывается из register(): подтверждённые аккаунты (сотрудник, админ,
-   * создатель, обычный user) освобождать нельзя — для них ошибка
-   * 'username already taken' / 'email already taken' (контроллер → 409),
-   * как и раньше. Записи с ролью 'guest' удаляются вместе с кодами
-   * подтверждения, refresh-токенами и связями со складами (у гостя
-   * заказов/статистики быть не может).
+   *
+   * MULTISTORE: гость не привязан ни к одному магазину (нет записи в
+   * user_stores), поэтому чистить его «хвосты» в store-N.db обычно не нужно —
+   * но для надёжности используем единый deleteGuestRows(userId), который
+   * обходит ВСЕ БД (users.db + models.db + все store-N.db).
    *
    * @returns {Promise<boolean>} true, если гостевые записи были заменены
    */
@@ -335,41 +334,16 @@ class AuthService {
       throw new Error('email already taken');
     }
 
-    // Логин и email могут указывать на две разные неподтверждённые записи —
-    // дедуплицируем по id и освобождаем обе
     const unique = [
       ...new Map([byUsername, byEmail].filter(Boolean).map((u) => [u.id, u])).values(),
     ];
     if (unique.length === 0) return false;
 
-    const db = getDB();
     for (const guest of unique) {
       console.log(
         `[Auth] Повторная регистрация: заменяем неподтверждённый аккаунт #${guest.id} (${guest.username} / ${guest.email})`
       );
-      // Полная очистка ссылающихся таблиц — иначе DELETE FROM users может
-      // упасть с SQLITE_CONSTRAINT: FOREIGN KEY constraint failed.
-      try {
-        await db.run('BEGIN IMMEDIATE');
-        await EmailVerification.deleteByUserId(guest.id);
-        await db.run('DELETE FROM refresh_tokens WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM user_warehouses WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM assignments WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM user_stats WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM earnings_history WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM earnings_adjustments WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM earnings_adjustments_active WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM issued_models WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM model_download_tokens WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM offer_models WHERE uploaded_by = ?', guest.id);
-        await db.run('UPDATE product_stats SET user_id = NULL WHERE user_id = ?', guest.id);
-        await db.run('DELETE FROM users WHERE id = ?', guest.id);
-        await db.run('COMMIT');
-      } catch (err) {
-        try { await db.run('ROLLBACK'); } catch (e) { /* не был в транзакции */ }
-        console.error(`[Auth] Не удалось заменить неподтверждённый аккаунт #${guest.id}:`, err.message);
-        throw err;
-      }
+      await this.deleteGuestRows(guest.id);
     }
     return true;
   }
@@ -381,14 +355,14 @@ class AuthService {
     const user = await User.getById(record.user_id);
     if (!user) throw new Error('Неверный или просроченный код');
 
-    // Подтверждаем email и выдаём роль 'user'. Роль меняем только у 'guest',
-    // чтобы не понизить роль уже существующего сотрудника/админа.
+    // MULTISTORE: обновляем ТОЛЬКО глобальные поля users.
+    //   • email_verified — подтверждён;
+    //   • role — 'guest' -> 'user' (гость становится полноценным пользователем);
+    //   • taking_orders — включаем приём заказов (глобальное поле).
+    // is_fired и earnings_factor — per-store поля (user_stores), а не здесь.
     const updates = { email_verified: 1 };
     if (user.role === 'guest') {
       updates.role = 'user';
-      // Гость не состоял в команде (is_fired = 1, приём заказов выключен) —
-      // после подтверждения возвращаем обычное состояние аккаунта
-      updates.is_fired = 0;
       updates.taking_orders = 1;
     }
     const updated = await User.update(user.id, updates);
@@ -517,7 +491,7 @@ class AuthService {
     await PasswordReset.deleteByUserId(user.id);
 
     // Инвалидируем существующие refresh-токены для безопасности
-    const db = getDB();
+    const db = getUsersDB();
     await db.run('DELETE FROM refresh_tokens WHERE user_id = ?', user.id);
 
     // Оповещение персонала в журнал действий
@@ -688,7 +662,7 @@ class AuthService {
     const refreshToken = this.generateRefreshToken();
     // Сохраняем refresh-токен в БД
     const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 дней
-    const db = getDB();
+    const db = getUsersDB();
     await db.run(
       'INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
       user.id, refreshToken, expiresAt
@@ -704,7 +678,7 @@ class AuthService {
   }
 
   static async refresh(refreshToken) {
-    const db = getDB();
+    const db = getUsersDB();
     // Ищем токен в БД
     const record = await db.get(
       'SELECT user_id, expires_at FROM refresh_tokens WHERE token = ?',
@@ -730,7 +704,7 @@ class AuthService {
   }
 
   static async logout(refreshToken) {
-    const db = getDB();
+    const db = getUsersDB();
     await db.run('DELETE FROM refresh_tokens WHERE token = ?', refreshToken);
   }
 

@@ -1,151 +1,153 @@
 /**
- * Smoke-тест когорт пользователей: флаг was_employee и фильтр cohort
- * в User.getAll (запуск: node tests/smoke-users-cohorts.js из папки backend/).
- * Использует временную БД, за собой убирает.
+ * Smoke-тест когорт пользователей.
+ * Запуск: node tests/smoke-users-cohorts.js из папки backend/.
+ *
+ * MULTISTORE: флаг was_employee переехал в user_stores (per-store), глобальная
+ * users.role — только 'god' | 'user' | 'guest'. Сотрудник магазина:
+ *   • users.role = 'user' (глобально);
+ *   • user_stores.role = 'employee' | 'moderator' | 'admin' | 'god';
+ *   • user_stores.was_employee = 1;
+ *   • user_stores.is_fired = 0 | 1.
  * Проверяет:
- *   1. User.create: staff-роль → was_employee = 1; роль 'user'/'guest' → 0.
- *   2. Увольнение (role employee → user, is_fired = 1) сохраняет флаг = 1.
- *   3. cohort='users' — никогда-не-сотрудники + гости (неподтверждённые
- *      регистрации видны админу); БЕЗ ex-сотрудников и staff-ролей.
- *   4. cohort='staff' — сотрудники + ex-сотрудники; без includeFired — без уволенных.
- *   5. Клиент не может подменить was_employee напрямую (не входит в allowed).
- *   6. Повышение user → employee выставляет флаг и переводит между когортами;
- *      обратное понижение/увольнение возвращает в ex-сотрудники, не в «users».
+ *   1. Создание записи в user_stores → was_employee=1 по умолчанию.
+ *   2. getAllInStore(storeId, {includeFired}) — состав когорты.
+ *   3. Роль в user_stores после увольнения НЕ понижается (в отличие от старой
+ *      схемы, где fireUser понижал role до 'user').
+ *   4. Восстановление возвращает is_fired=0, роль сохраняется.
+ *   5. Изоляция магазинов: магазин A не видит сотрудников магазина B.
+ *   6. Глобальная роль users.role не меняется при повышении/понижении в магазине.
  */
+const { setup, cleanup } = require('./helpers/setupTestEnv');
+const STORE_A = setup('1').storeId;
+const STORE_B = 'test-store-B';
 
-// ВАЖНО: env нужно выставить ДО require database-модуля
-const path = require('path');
-process.env.DB_PATH = path.join(__dirname, '..', 'tmp-smoke-cohort.db');
-process.env.BOT_VERSION = '';
-
-const fs = require('fs');
-const { initDB, getDB } = require('../src/config/database');
+const { initDB, closeAll, getUsersDB } = require('../src/config/database');
+const { initNotificationsDB, closeNotificationsDB } = require('../src/config/notificationsDatabase');
 const User = require('../src/models/User');
+const UserStore = require('../src/models/UserStore');
 
 function assert(cond, message) {
   if (!cond) throw new Error(message);
 }
 
-async function createUser(username, email, role, extra = {}) {
-  return User.create({
-    username,
-    email,
-    passwordHash: 'x',
-    name: extra.name || username,
-    phone: '',
-    capacity: 1,
-    earningsFactor: 1.0,
-    role,
-    isFired: extra.isFired,
-    takingOrders: extra.takingOrders,
-    tgUserId: extra.tgUserId || null,
-  });
-}
-
-async function fresh(id) {
-  return User.getById(id);
-}
-
-// Множество id пользователей когорты
-async function cohortIds(opts) {
-  const rows = await User.getAll(opts);
-  return new Set(rows.map((r) => r.id));
-}
-
 (async () => {
   try {
-    console.log('=== Smoke-тест когорт users/staff (was_employee) ===');
+    console.log('=== Smoke-тест когорт пользователей (user_stores) ===');
     await initDB();
-    const db = getDB();
+    await initNotificationsDB();
+    const db = getUsersDB();
 
-    // Чистим мусор от прошлых запусков
-    await db.run('DELETE FROM users WHERE username LIKE "smoke_coh_%"');
+    const ts = Date.now();
 
     // --- Фикстура ---
-    const admin = await createUser('smoke_coh_admin', 'cohadmin@test.local', 'admin');
-    const emp = await createUser('smoke_coh_emp', 'cohe1@test.local', 'employee');
-    // neverUser — подтвердил email (как verifyEmail), но ещё НЕ сотрудник
-    const neverUser = await createUser('smoke_coh_user', 'cohu1@test.local', 'user');
-    // exEmp — создан сотрудником, затем уволен (fireUser: role → 'user', is_fired → 1)
-    const exEmp = await createUser('smoke_coh_ex', 'cohe2@test.local', 'employee');
-    await User.update(exEmp.id, { is_fired: 1, taking_orders: 0, role: 'user' });
-    // guest — не подтвердил email
-    const guest = await createUser('smoke_coh_guest', 'cohg1@test.local', 'guest', { isFired: 1, takingOrders: 0 });
+    const admin = await User.create({
+      username: `smoke_coh_admin_${ts}`,
+      email: `smoke_coh_admin_${ts}@test.local`,
+      passwordHash: 'x', role: 'user',
+    });
+    await UserStore.upsert(admin.id, STORE_A, { role: 'admin', was_employee: 1 });
 
-    // --- 1. Флаг при создании ---
-    const a1 = await fresh(admin.id);
-    const e1 = await fresh(emp.id);
-    const n1 = await fresh(neverUser.id);
-    const x1 = await fresh(exEmp.id);
-    const g1 = await fresh(guest.id);
-    console.log('1. was_employee: admin =', a1.was_employee, ', emp =', e1.was_employee,
-      ', user =', n1.was_employee, ', exEmp =', x1.was_employee, ', guest =', g1.was_employee);
-    assert(a1.was_employee === 1, 'admin: был staff → was_employee = 1');
-    assert(e1.was_employee === 1, 'employee: был staff → was_employee = 1');
-    assert(n1.was_employee === 0, 'user: ещё не сотрудник → was_employee = 0');
-    assert(x1.was_employee === 1, 'уволенный ex-сотрудник → was_employee = 1');
-    assert(g1.was_employee === 0, 'guest → was_employee = 0');
+    const emp = await User.create({
+      username: `smoke_coh_emp_${ts}`,
+      email: `smoke_coh_emp_${ts}@test.local`,
+      passwordHash: 'x', role: 'user',
+    });
+    await UserStore.upsert(emp.id, STORE_A, { role: 'employee', was_employee: 1 });
 
-    // --- 2. Когорты ---
-    const usersCohort = await cohortIds({ cohort: 'users', includeFired: true, includeAll: true });
-    const staffAll = await cohortIds({ cohort: 'staff', includeFired: true, includeAll: true });
-    const staffActive = await cohortIds({ cohort: 'staff', includeFired: false, includeAll: true });
-    console.log('2. users:', usersCohort.size, '| staff (с уволенными):', staffAll.size, '| staff (активные):', staffActive.size);
-    assert(usersCohort.has(neverUser.id), 'cohort users: содержит обычного пользователя');
-    assert(!usersCohort.has(exEmp.id), 'cohort users: НЕ содержит уволенного ex-сотрудника');
-    assert(!usersCohort.has(admin.id) && !usersCohort.has(emp.id), 'cohort users: НЕ содержит staff-роли');
-    assert(usersCohort.has(guest.id), 'cohort users: СОДЕРЖИТ гостя (неподтверждённая регистрация видна админу)');
-    assert(staffAll.has(admin.id) && staffAll.has(emp.id) && staffAll.has(exEmp.id), 'cohort staff: staff + ex-сотрудники');
-    assert(!staffAll.has(neverUser.id), 'cohort staff: НЕ содержит обычного пользователя');
-    assert(!staffAll.has(guest.id), 'cohort staff: НЕ содержит гостя');
-    assert(!staffActive.has(exEmp.id), 'cohort staff без includeFired: без уволенных');
+    // neverUser — подтверждённый users.role='user', записи в user_stores нет
+    const neverUser = await User.create({
+      username: `smoke_coh_user_${ts}`,
+      email: `smoke_coh_user_${ts}@test.local`,
+      passwordHash: 'x', role: 'user',
+    });
 
-    // --- 2а. Гость виден в «users» и БЕЗ includeFired (он всегда is_fired=1) ---
-    const usersNoFired = await cohortIds({ cohort: 'users', includeFired: false, includeAll: true });
-    assert(usersNoFired.has(guest.id), 'cohort users без includeFired: гость всё равно виден');
-    assert(usersNoFired.has(neverUser.id), 'cohort users без includeFired: обычный пользователь виден');
-    assert(!usersNoFired.has(exEmp.id), 'cohort users без includeFired: ex-сотрудник по-прежнему скрыт');
+    // exEmp — был employee, уволен (is_fired=1), роль в user_stores сохранена
+    const exEmp = await User.create({
+      username: `smoke_coh_ex_${ts}`,
+      email: `smoke_coh_ex_${ts}@test.local`,
+      passwordHash: 'x', role: 'user',
+    });
+    await UserStore.upsert(exEmp.id, STORE_A, { role: 'employee', was_employee: 1 });
+    await UserStore.fire(exEmp.id, STORE_A);
 
-    // --- 3. Прежнее поведение без cohort (обратная совместимость) ---
-    const legacy = await cohortIds({ includeFired: true, includeAll: true });
-    assert(legacy.has(neverUser.id) && legacy.has(exEmp.id), 'без cohort: прежний список всех, кроме гостей');
+    // guest — неподтверждённый email, никаких записей в user_stores
+    const guest = await User.create({
+      username: `smoke_coh_guest_${ts}`,
+      email: `smoke_coh_guest_${ts}@test.local`,
+      passwordHash: 'x', role: 'guest',
+    });
 
-    // --- 4. Клиент не может подменить was_employee напрямую ---
-    await User.update(neverUser.id, { was_employee: 1 });
-    const n2 = await fresh(neverUser.id);
-    console.log('4. Прямая подмена was_employee: получено', n2.was_employee);
-    assert(n2.was_employee === 0, 'was_employee не должен меняться напрямую (не в allowed)');
+    // --- 1. was_employee по умолчанию ---
+    const adminStore = await UserStore.get(admin.id, STORE_A);
+    const empStore = await UserStore.get(emp.id, STORE_A);
+    console.log('1. was_employee: admin =', adminStore.was_employee, ', emp =', empStore.was_employee);
+    assert(adminStore.was_employee === 1, 'admin: was_employee = 1');
+    assert(empStore.was_employee === 1, 'emp: was_employee = 1');
+    assert((await UserStore.get(neverUser.id, STORE_A)) === null, 'neverUser: нет записи в user_stores');
+    assert((await UserStore.get(guest.id, STORE_A)) === null, 'guest: нет записи в user_stores');
 
-    // --- 5. Повышение user → employee (кабинет/ручной файл) ---
-    await User.update(neverUser.id, { role: 'employee', is_fired: 0, taking_orders: 1 });
-    const n3 = await fresh(neverUser.id);
-    assert(n3.was_employee === 1, 'после повышения was_employee = 1');
-    const usersAfter = await cohortIds({ cohort: 'users', includeFired: true, includeAll: true });
-    const staffAfter = await cohortIds({ cohort: 'staff', includeFired: true, includeAll: true });
-    assert(!usersAfter.has(neverUser.id), 'после повышения пользователь исчез из cohort users');
-    assert(staffAfter.has(neverUser.id), 'после повышения пользователь появился в cohort staff');
+    // --- 2. getAllInStore: активные ---
+    const active = await User.getAllInStore(STORE_A, { includeFired: false });
+    const activeIds = new Set(active.map((u) => u.id));
+    console.log('2. Активные в магазине A:', activeIds.size);
+    assert(activeIds.has(admin.id), 'активные: admin есть');
+    assert(activeIds.has(emp.id), 'активные: emp есть');
+    assert(!activeIds.has(exEmp.id), 'активные: уволенный exEmp скрыт');
+    assert(!activeIds.has(neverUser.id), 'активные: neverUser не имеет записи в user_stores');
+    assert(!activeIds.has(guest.id), 'активные: guest не имеет записи в user_stores');
 
-    // --- 6. Понижение/увольнение обратно: ex-сотрудник, а не «user» ---
-    await User.update(neverUser.id, { role: 'user', is_fired: 1, taking_orders: 0 });
-    const n4 = await fresh(neverUser.id);
-    assert(n4.was_employee === 1, 'после понижения флаг остаётся 1');
-    const usersFinal = await cohortIds({ cohort: 'users', includeFired: true, includeAll: true });
-    const staffFinal = await cohortIds({ cohort: 'staff', includeFired: true, includeAll: true });
-    assert(!usersFinal.has(neverUser.id), 'пониженный ex-сотрудник НЕ возвращается в cohort users');
-    assert(staffFinal.has(neverUser.id), 'пониженный ex-сотрудник остаётся в cohort staff (уволенные)');
+    // Все с includeFired ---
+    const all = await User.getAllInStore(STORE_A, { includeFired: true });
+    const allIds = new Set(all.map((u) => u.id));
+    console.log('3. Все (с уволенными):', allIds.size);
+    assert(allIds.has(exEmp.id), 'все: exEmp включён при includeFired');
+
+    // --- 4. Роль после увольнения сохранена ---
+    const exStore = await UserStore.get(exEmp.id, STORE_A);
+    const exGlobal = await User.getById(exEmp.id);
+    console.log('4. exEmp: role(user_stores) =', exStore.role, ', is_fired =', exStore.is_fired,
+      ', users.role =', exGlobal.role);
+    assert(exStore.role === 'employee', 'роль в user_stores после увольнения сохранена');
+    assert(exStore.is_fired === 1, 'is_fired = 1');
+    assert(exGlobal.role === 'user', 'users.role остаётся глобально user');
+
+    // --- 5. Восстановление ---
+    await UserStore.restore(exEmp.id, STORE_A);
+    const exRestored = await UserStore.get(exEmp.id, STORE_A);
+    console.log('5. После восстановления: role =', exRestored.role, ', is_fired =', exRestored.is_fired);
+    assert(exRestored.is_fired === 0, 'is_fired = 0 после restore');
+    assert(exRestored.role === 'employee', 'роль после restore та же');
+
+    // --- 6. Изоляция магазинов: в STORE_B нет никого ---
+    const inB = await User.getAllInStore(STORE_B, { includeFired: true });
+    console.log('6. Сотрудников магазина B:', inB.length);
+    assert(inB.length === 0, 'магазин B не видит сотрудников магазина A');
+
+    // --- 7. excludeRole: 'god' ---
+    const godUser = await User.create({
+      username: `smoke_coh_god_${ts}`,
+      email: `smoke_coh_god_${ts}@test.local`,
+      passwordHash: 'x', role: 'user',
+    });
+    await UserStore.upsert(godUser.id, STORE_A, { role: 'god', was_employee: 1 });
+    const noGod = await User.getAllInStore(STORE_A, { includeFired: true, excludeRole: 'god' });
+    const noGodIds = new Set(noGod.map((u) => u.id));
+    assert(!noGodIds.has(godUser.id), 'excludeRole=god скрывает Создателя');
 
     console.log('✅ Все проверки пройдены');
+
+    // --- Очистка ---
+    const allIds2 = [admin.id, emp.id, neverUser.id, exEmp.id, guest.id, godUser.id];
+    for (const id of allIds2) {
+      await db.run('DELETE FROM user_stores WHERE user_id = ?', id);
+      await db.run('DELETE FROM users WHERE id = ?', id);
+    }
   } catch (err) {
     console.error('❌ Ошибка smoke-теста:', err.message);
     process.exitCode = 1;
   } finally {
-    // За собой убираем. Соединение с БД закрываем до удаления файлов —
-    // иначе SQLite держит временную БД открытой и файл не удаляется (Windows)
-    try {
-      await getDB().close();
-    } catch { /* БД могла не открыться — не критично */ }
-    for (const suffix of ['', '-wal', '-shm']) {
-      try { fs.unlinkSync(process.env.DB_PATH + suffix); } catch { /* не критично */ }
-    }
+    try { await closeNotificationsDB(); } catch { /* ignore */ }
+    try { await closeAll(); } catch { /* ignore */ }
+    cleanup();
   }
 })();

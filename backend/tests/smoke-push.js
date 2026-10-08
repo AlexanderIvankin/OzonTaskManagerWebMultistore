@@ -1,30 +1,37 @@
 /**
  * Smoke-тест связки Socket.IO + Web Push.
- * Запуск из папки backend/: node tests/smoke-push.js
+ * Запуск: node tests/smoke-push.js из папки backend/.
+ *
+ * MULTISTORE: notifyUser/notifyStaff/isUserOnline/socket.notifyUser принимают
+ * storeId первым аргументом. push-подписки по-прежнему глобальные (одно
+ * устройство = одна подписка) — таблица в users.db без store_id.
  *
  * Проверяет:
  *   1) схему push_subscriptions (таблица + индекс idx_push_user);
- *   2) PushService: валидация подписки, upsert по endpoint (смена владельца),
+ *   2) PushService: валидация, upsert по endpoint (смена владельца),
  *      отправка (успех / 410 Gone -> удаление / 500 -> подписка цела),
- *      pruneStale (чистка залежавшихся подписок), отписка;
- *   3) socket.isUserOnline() при неинициализированном Socket.IO -> false;
- *   4) маршрутизацию NotificationService.notifyUser: пользователь ОФЛАЙН ->
- *      оповещение уходит в PushService (а не в сокет), а транзиентные
- *      (persist: false) не пушатся вообще.
+ *      pruneStale, отписка;
+ *   3) socket.isUserOnline(storeId, userId) без Socket.IO -> false;
+ *   4) маршрутизацию NotificationService.notifyUser: офлайн + storeId ->
+ *      Web Push; офлайн без storeId -> молча ничего; persist: false не пушится.
  *
  * Сеть НЕ используется: webpush.sendNotification подменяется заглушкой.
- * Все созданные записи удаляются в конце.
  */
 require('dotenv').config();
+const { setup, cleanup } = require('./helpers/setupTestEnv');
+const env = setup('1');
+const STORE_ID = env.storeId;
 
 const webpush = require('web-push');
-const { initDB, getDB } = require('../src/config/database');
+const { initDB, closeAll, getUsersDB } = require('../src/config/database');
 const {
   initNotificationsDB,
   getNotificationsDB,
+  closeNotificationsDB,
 } = require('../src/config/notificationsDatabase');
 const PushService = require('../src/services/PushService');
 const NotificationService = require('../src/services/NotificationService');
+const User = require('../src/models/User');
 const { isUserOnline, notifyUser: socketNotifyUser } = require('../src/socket');
 
 const ENDPOINT_A = 'https://example.invalid/smoke-push-a';
@@ -35,7 +42,6 @@ function assert(condition, message) {
   console.log(`✅ ${message}`);
 }
 
-/** Подписка, как её отдаёт PushSubscription.toJSON() в браузере. */
 function fakeSubscription(endpoint) {
   return {
     endpoint,
@@ -47,12 +53,14 @@ function fakeSubscription(endpoint) {
   const originalSendNotification = webpush.sendNotification;
   const startedAt = Date.now();
   let testUserId = null;
+  let u1 = null;
+  let u2 = null;
 
   try {
     console.log('=== Smoke-тест Web Push (Socket.IO + Push) ===');
     await initDB();
     await initNotificationsDB();
-    const db = getDB();
+    const db = getUsersDB();
 
     assert(PushService.enabled, 'Web Push настроен (VAPID_* из .env)');
 
@@ -66,59 +74,51 @@ function fakeSubscription(endpoint) {
     );
     assert(Boolean(index), 'Индекс idx_push_user создан');
 
-    const users = await db.all('SELECT id FROM users ORDER BY id LIMIT 2');
-    if (!users.length) {
-      console.log('⚠️ В БД нет пользователей — проверки PushService пропущены');
-      return;
-    }
-    testUserId = users[0].id;
-    const secondUserId = (users[1] || users[0]).id;
+    // --- Тестовые пользователи ---
+    const ts = Date.now();
+    u1 = await User.create({
+      username: `smoke_push_u1_${ts}`,
+      email: `smoke_push_u1_${ts}@smoke.local`,
+      passwordHash: 'x',
+      name: 'SmokePushПервый',
+      role: 'user',
+    });
+    u2 = await User.create({
+      username: `smoke_push_u2_${ts}`,
+      email: `smoke_push_u2_${ts}@smoke.local`,
+      passwordHash: 'x',
+      name: 'SmokePushВторой',
+      role: 'user',
+    });
+    testUserId = u1.id;
+    const secondUserId = u2.id;
 
     await db.run(
       'DELETE FROM push_subscriptions WHERE endpoint IN (?, ?)',
-      ENDPOINT_A,
-      ENDPOINT_B
+      ENDPOINT_A, ENDPOINT_B
     );
 
     // --- 1. Валидация подписки ---
-    assert(
-      PushService.isValidSubscription(fakeSubscription(ENDPOINT_A)),
-      'Валидная подписка принята'
-    );
+    assert(PushService.isValidSubscription(fakeSubscription(ENDPOINT_A)), 'Валидная подписка принята');
     assert(!PushService.isValidSubscription(null), 'null отклонён');
     assert(
-      !PushService.isValidSubscription({
-        endpoint: '',
-        keys: { p256dh: 'a', auth: 'b' },
-      }),
+      !PushService.isValidSubscription({ endpoint: '', keys: { p256dh: 'a', auth: 'b' } }),
       'Пустой endpoint отклонён'
     );
     assert(
-      !PushService.isValidSubscription({
-        endpoint: 'https://x',
-        keys: { p256dh: 'a' },
-      }),
+      !PushService.isValidSubscription({ endpoint: 'https://x', keys: { p256dh: 'a' } }),
       'Подписка без auth отклонена'
     );
 
-    // --- 2. Upsert по endpoint: тот же браузер, другой пользователь ---
+    // --- 2. Upsert по endpoint: смена владельца ---
     await PushService.subscribe(testUserId, fakeSubscription(ENDPOINT_A), 'smoke-agent');
-    assert(
-      (await PushService.countForUser(testUserId)) === 1,
-      'Подписка сохранена (1 устройство)'
-    );
+    assert((await PushService.countForUser(testUserId)) === 1, 'Подписка сохранена (1 устройство)');
     await PushService.subscribe(secondUserId, fakeSubscription(ENDPOINT_A), 'smoke-agent');
-    const row = await db.get(
-      'SELECT user_id FROM push_subscriptions WHERE endpoint = ?',
-      ENDPOINT_A
-    );
-    assert(
-      row && row.user_id === secondUserId,
-      'Повторный вход на устройстве переприсвоил подписку новому пользователю'
-    );
+    const row = await db.get('SELECT user_id FROM push_subscriptions WHERE endpoint = ?', ENDPOINT_A);
+    assert(row && row.user_id === secondUserId, 'Повторный вход переприсвоил подписку');
     await db.run('DELETE FROM push_subscriptions WHERE endpoint = ?', ENDPOINT_A);
 
-    // --- 3. Отправка: 410 Gone -> подписка удаляется ---
+    // --- 3. 410 Gone -> подписка удаляется ---
     await PushService.subscribe(testUserId, fakeSubscription(ENDPOINT_A), 'smoke-agent');
     webpush.sendNotification = async () => {
       const err = new Error('Gone');
@@ -126,16 +126,10 @@ function fakeSubscription(endpoint) {
       throw err;
     };
     let result = await PushService.sendToUser(testUserId, { title: 't', body: 'b' });
-    assert(
-      result.sent === 0 && result.removed >= 1,
-      `410 Gone -> подписка удалена (removed=${result.removed})`
-    );
-    assert(
-      (await PushService.countForUser(testUserId)) === 0,
-      'После 410 подписок у пользователя нет'
-    );
+    assert(result.sent === 0 && result.removed >= 1, `410 Gone -> подписка удалена (removed=${result.removed})`);
+    assert((await PushService.countForUser(testUserId)) === 0, 'После 410 подписок нет');
 
-    // --- 4. Отправка: 500 -> ошибка посчитана, подписка остаётся ---
+    // --- 4. 500 -> ошибка без удаления ---
     await PushService.subscribe(testUserId, fakeSubscription(ENDPOINT_B), 'smoke-agent');
     webpush.sendNotification = async () => {
       const err = new Error('Server error');
@@ -143,88 +137,84 @@ function fakeSubscription(endpoint) {
       throw err;
     };
     result = await PushService.sendToUser(testUserId, { title: 't', body: 'b' });
-    assert(
-      result.failed === 1 && result.removed === 0,
-      `500 -> ошибка доставки без удаления (failed=${result.failed})`
-    );
-    assert(
-      (await PushService.countForUser(testUserId)) === 1,
-      'Подписка сохранена после 500'
-    );
+    assert(result.failed === 1 && result.removed === 0, `500 -> ошибка без удаления (failed=${result.failed})`);
+    assert((await PushService.countForUser(testUserId)) === 1, 'Подписка сохранена после 500');
 
-    // --- 5. Отправка: успех (проверяем TTL и обновление last_used_at) ---
+    // --- 5. Успех + TTL + last_used_at ---
     let sentPayload = null;
     webpush.sendNotification = async (subscription, data, options) => {
       sentPayload = { subscription, data: JSON.parse(data), options };
     };
     result = await PushService.sendToUser(testUserId, { title: 's', body: 'ok' });
-    assert(result.sent === 1, `Успешная доставка посчитана (sent=${result.sent})`);
-    assert(
-      sentPayload?.options?.TTL === PushService.ttlSec,
-      `TTL push-сообщения = ${PushService.ttlSec} c (24 часа)`
-    );
-    const used = await db.get(
-      'SELECT last_used_at FROM push_subscriptions WHERE endpoint = ?',
-      ENDPOINT_B
-    );
-    assert(
-      Boolean(used?.last_used_at) && used.last_used_at >= startedAt,
-      'last_used_at обновлён после успешной доставки'
-    );
+    assert(result.sent === 1, `Успешная доставка (sent=${result.sent})`);
+    assert(sentPayload?.options?.TTL === PushService.ttlSec, `TTL = ${PushService.ttlSec} c (24 часа)`);
+    const used = await db.get('SELECT last_used_at FROM push_subscriptions WHERE endpoint = ?', ENDPOINT_B);
+    assert(Boolean(used?.last_used_at) && used.last_used_at >= startedAt, 'last_used_at обновлён');
 
-    // --- 6. pruneStale: залежавшаяся подписка вычищается ---
+    // --- 6. pruneStale ---
     const staleAt = startedAt - 400 * 24 * 60 * 60 * 1000;
     await db.run(
       'UPDATE push_subscriptions SET created_at = ?, last_used_at = ? WHERE endpoint = ?',
-      staleAt,
-      staleAt,
-      ENDPOINT_B
+      staleAt, staleAt, ENDPOINT_B
     );
     const pruned = await PushService.pruneStale(180);
     assert(pruned >= 1, `pruneStale удалил залежавшуюся подписку (${pruned})`);
 
     // --- 7. Онлайн-детект без Socket.IO ---
-    assert(isUserOnline(testUserId) === false, 'isUserOnline без Socket.IO = false');
+    assert(isUserOnline(STORE_ID, testUserId) === false, 'isUserOnline(storeId, userId) без Socket.IO = false');
     assert(
-      socketNotifyUser(testUserId, 'notification_new', {}) === false,
-      'notifyUser без Socket.IO возвращает false (событие не доставлено)'
+      socketNotifyUser(STORE_ID, testUserId, 'notification_new', {}) === false,
+      'socket.notifyUser(storeId, ...) без Socket.IO возвращает false'
     );
 
-    // --- 8. Маршрутизация: пользователь офлайн -> Web Push ---
+    // --- 8. Офлайн + storeId -> Web Push ---
     await PushService.subscribe(testUserId, fakeSubscription(ENDPOINT_B), 'smoke-agent');
     const pushCalls = [];
-    webpush.sendNotification = async (_subscription, data) => {
-      pushCalls.push(JSON.parse(data));
-    };
-    await NotificationService.notifyUser(testUserId, 'order_assigned', {
-      orderId: 'PUSH-SMOKE-1',
-      userName: 'SmokeTest',
-      details: { products: [{ offer_id: 'ARD000001', quantity: 1 }] },
-    });
-    assert(
-      pushCalls.length === 1,
-      `Офлайн: оповещение ушло Web Push (попыток: ${pushCalls.length})`
+    webpush.sendNotification = async (_sub, data) => { pushCalls.push(JSON.parse(data)); };
+    await NotificationService.notifyUser(
+      testUserId,
+      'order_assigned',
+      {
+        orderId: 'PUSH-SMOKE-1',
+        userName: 'SmokeTest',
+        details: { products: [{ offer_id: 'ARD000001', quantity: 1 }] },
+      },
+      { storeId: STORE_ID }
     );
+    assert(pushCalls.length === 1, `Офлайн + storeId: push ушёл (попыток: ${pushCalls.length})`);
     assert(
-      pushCalls[0]?.body?.includes('PUSH-SMOKE-1') &&
-        pushCalls[0]?.url === '/notifications',
+      pushCalls[0]?.body?.includes('PUSH-SMOKE-1') && pushCalls[0]?.url === '/notifications',
       'Push-payload содержит номер заказа и url /notifications'
     );
+    assert(pushCalls[0]?.storeId === STORE_ID, 'Push-payload содержит storeId');
 
-    // --- 9. Транзиентные оповещения (persist: false) не пушатся ---
+    // --- 9. Офлайн БЕЗ storeId -> ни сокета, ни push (только БД) ---
+    const pushCallsBeforeNoStore = pushCalls.length;
+    await NotificationService.notifyUser(
+      testUserId,
+      'order_assigned',
+      { orderId: 'PUSH-NO-STORE', userName: 'SmokeTest' }
+      // storeId не передан
+    );
+    assert(
+      pushCalls.length === pushCallsBeforeNoStore,
+      'Офлайн без storeId: push НЕ уходит (событие не адресуемо)'
+    );
+
+    // --- 10. persist: false не пушится ---
     const pushCallsBefore = pushCalls.length;
     await NotificationService.notifyUser(
       testUserId,
       'command_cooldown',
       { command: 'Smoke-команда', retryAfterSec: 5 },
-      { persist: false }
+      { storeId: STORE_ID, persist: false }
     );
     assert(
       pushCalls.length === pushCallsBefore,
-      'Транзиентное оповещение (persist: false) в Web Push не уходит'
+      'Транзиентное (persist: false) в Web Push не уходит'
     );
 
-    // --- 10. Отписка устройства ---
+    // --- 11. Отписка устройства ---
     const removed = await PushService.unsubscribe(testUserId, ENDPOINT_B);
     assert(removed === 1, 'unsubscribe удалил подписку устройства');
 
@@ -233,24 +223,28 @@ function fakeSubscription(endpoint) {
     console.error('❌', err.message);
     process.exitCode = 1;
   } finally {
-    // Возвращаем настоящую отправку и убираем тестовые данные
     webpush.sendNotification = originalSendNotification;
     try {
-      const db = getDB();
-      await db.run(
-        'DELETE FROM push_subscriptions WHERE endpoint IN (?, ?)',
-        ENDPOINT_A,
-        ENDPOINT_B
-      );
+      const db = getUsersDB();
+      await db.run('DELETE FROM push_subscriptions WHERE endpoint IN (?, ?)', ENDPOINT_A, ENDPOINT_B);
       if (testUserId != null) {
         await getNotificationsDB().run(
           'DELETE FROM notifications WHERE recipient_id = ? AND created_at >= ?',
-          testUserId,
-          startedAt
+          testUserId, startedAt
         );
+        const ids = [u1?.id, u2?.id].filter(Boolean);
+        if (ids.length) {
+          await db.run(
+            `DELETE FROM users WHERE id IN (${ids.map(() => '?').join(',')})`,
+            ...ids
+          ).catch(() => { });
+        }
       }
     } catch (cleanupErr) {
       console.warn('⚠️ Очистка тестовых данных:', cleanupErr.message);
     }
+    try { await closeNotificationsDB(); } catch { /* ignore */ }
+    try { await closeAll(); } catch { /* ignore */ }
+    cleanup();
   }
 })();

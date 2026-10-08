@@ -16,6 +16,10 @@ backend/store*.db*
 backend/users*.db*
 backend/models*.db*
 
+# Временные файлы smoke-тестов
+backend/tests/tmp/
+tmp-smoke-*
+
 backend/team-info.xlsx
 backend/materials-prices.json
 backend/employees-db.xlsx
@@ -26,12 +30,16 @@ backend/employees-db*.xlsx
 *.xls~
 ~$*.xlsx
 
-.env.production
-.env
+backend/.env.production
+backend/.env
 
 # Игнорировать все файлы окружения для магазинов
-.env.store*
+backend/.env.store*
 
 # Но не игнорировать их файлы-примеры
-!.env.store*.example
+!backend/.env.example
+!backend/.env.store*.example
+
+# Локальный .env workspace для REST Client (с токенами)
+/.env
 

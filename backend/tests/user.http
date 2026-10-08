@@ -1,7 +1,18 @@
-### Переменные
+### ============================================================
+###  USER — кабинет сотрудника
+### ============================================================
 @baseUrl = http://localhost:5000
-# Ввести access токен (после авторизации)
-@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImlhdCI6MTc4ODExNDU1MiwiZXhwIjoxNzg4MTE1NDUyfQ.moLjeNrWkgMNb1j8o9y_kenBCsfSgFJyCAiRul2aeME
+
+### Токены из .env (см. scripts/http-login.js).
+### Комментируйте/раскомментируйте нужную строку — или переключайте руками.
+@employeeToken = {{$dotenv HTTP_EMPLOYEE_TOKEN}}
+@userToken     = {{$dotenv HTTP_USER_TOKEN}}
+
+### Для сотруднических эндпоинтов (заказы, статистика):
+@accessToken = {{employeeToken}}
+
+### Для публичных (профиль, push) можно и под userToken:
+# @accessToken = {{userToken}}
 
 ### Получить активные заказы (требуется роль сотрудника)
 GET {{baseUrl}}/api/user/orders/active
@@ -10,7 +21,130 @@ Authorization: Bearer {{accessToken}}
 ### Завершить заказ (пример с TEST-ORDER-001)
 POST {{baseUrl}}/api/user/orders/TEST-ORDER-001/finish
 Authorization: Bearer {{accessToken}}
+### ============================================================
+###  USER — кабинет сотрудника (store определяется по Host)
+### ============================================================
+@baseUrl = http://localhost:5000
+@accessToken = PASTE_ACCESS_TOKEN_HERE
 
+### ---------- Профиль ----------
+
+### Профиль текущего пользователя (+ store-блок + статистика)
+GET {{baseUrl}}/api/user/profile
+Authorization: Bearer {{accessToken}}
+
+### Обновить отображаемое имя (глобальное поле display_name)
+PUT {{baseUrl}}/api/user/profile
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "displayName": "Новое Имя"
+}
+
+### ---------- Web Push ----------
+
+### Публичный VAPID-ключ (для pushManager.subscribe в браузере)
+GET {{baseUrl}}/api/user/push-public-key
+Authorization: Bearer {{accessToken}}
+
+### Сколько устройств подписано на push
+GET {{baseUrl}}/api/user/push-status
+Authorization: Bearer {{accessToken}}
+
+### Сохранить подписку устройства (endpoint + keys из PushSubscription.toJSON())
+POST {{baseUrl}}/api/user/push-subscribe
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "subscription": {
+    "endpoint": "https://fcm.googleapis.com/fcm/send/...",
+    "keys": {
+      "p256dh": "BNc...",
+      "auth": "k3..."
+    }
+  }
+}
+
+### Удалить подписку (одно устройство: { endpoint } | все: { all: true })
+POST {{baseUrl}}/api/user/push-unsubscribe
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/..."
+}
+
+### ---------- Заказы (требуется роль сотрудника) ----------
+
+### Активные заказы сотрудника (состав, фото, статистика, модель)
+GET {{baseUrl}}/api/user/orders/active
+Authorization: Bearer {{accessToken}}
+
+### Завершённые, но ещё не отправленные (awaiting_deliver) — этикетка доступна
+GET {{baseUrl}}/api/user/orders/completed
+Authorization: Bearer {{accessToken}}
+
+### Обновить статусы заказов (кулдаун 1 минута)
+POST {{baseUrl}}/api/user/orders/refresh
+Authorization: Bearer {{accessToken}}
+
+### Завершить заказ (нужна статистика по всем товарам)
+POST {{baseUrl}}/api/user/orders/TEST-ORDER-001/finish
+Authorization: Bearer {{accessToken}}
+
+### Отменить заказ
+POST {{baseUrl}}/api/user/orders/TEST-ORDER-001/cancel
+Authorization: Bearer {{accessToken}}
+
+### ---------- Этикетки ----------
+
+### Скачать этикетку одного заказа (кулдаун 1 минута)
+GET {{baseUrl}}/api/user/orders/TEST-ORDER-001/label
+Authorization: Bearer {{accessToken}}
+
+### Скачать склейку всех этикеток (кулдаун 1 час после успеха)
+GET {{baseUrl}}/api/user/orders/labels/all
+Authorization: Bearer {{accessToken}}
+
+### Скачать этикетку, отправленную администратором (label_sent)
+GET {{baseUrl}}/api/user/labels/TEST-ORDER-001/sent
+Authorization: Bearer {{accessToken}}
+
+### ---------- Статистика и заработок ----------
+
+### Статистика товаров: заполнить материал/цвет/вес
+POST {{baseUrl}}/api/user/fill-stats
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "offerId": "TEST-OFFER-1",
+  "material": "Pet-G",
+  "color": "Черный",
+  "weight": 150
+}
+
+### Товары без заполненной статистики в активных заказах
+GET {{baseUrl}}/api/user/missing-stats
+Authorization: Bearer {{accessToken}}
+
+### Заработок за текущий месяц
+GET {{baseUrl}}/api/user/earnings/monthly
+Authorization: Bearer {{accessToken}}
+
+### Заработок за конкретный месяц (YYYY-MM)
+GET {{baseUrl}}/api/user/earnings/monthly?month=2025-01
+Authorization: Bearer {{accessToken}}
+
+### Активный заработок (с последнего расчёта)
+GET {{baseUrl}}/api/user/earnings/active
+Authorization: Bearer {{accessToken}}
+
+### Переключить приём заказов (кулдаун 1 минута)
+POST {{baseUrl}}/api/user/toggle-orders
+Authorization: Bearer {{accessToken}}
 ### Отменить заказ
 POST {{baseUrl}}/api/user/orders/TEST-ORDER-001/cancel
 Authorization: Bearer {{accessToken}}

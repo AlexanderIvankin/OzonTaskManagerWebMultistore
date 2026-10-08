@@ -168,6 +168,7 @@ class StorageService {
   static async listZipKeys() {
     const out = [];
     let token;
+    let resp;
     do {
       try {
         resp = await s3.send(new ListObjectsV2Command({

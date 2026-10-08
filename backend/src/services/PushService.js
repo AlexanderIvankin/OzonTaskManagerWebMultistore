@@ -13,7 +13,7 @@ try {
       'Выполните `npm install` в папке backend/ и перезапустите процесс.'
   );
 }
-const { getDB } = require('../config/database');
+const { getUsersDB } = require('../config/database'); 
 
 // ============================================================================
 // PushService — обёртка над web-push: доставка оповещений тем, кто ОФЛАЙН.
@@ -109,7 +109,7 @@ class PushService {
   static async subscribe(userId, subscription, userAgent = null) {
     if (!PushService.isValidSubscription(subscription)) return false;
     try {
-      const db = getDB();
+      const db = getUsersDB();
       const now = Date.now();
       await db.run(
         `INSERT INTO push_subscriptions
@@ -143,7 +143,7 @@ class PushService {
   static async unsubscribe(userId, endpoint) {
     if (!endpoint) return 0;
     try {
-      const db = getDB();
+      const db = getUsersDB();
       const result = await db.run(
         'DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?',
         userId,
@@ -162,7 +162,7 @@ class PushService {
    */
   static async unsubscribeAll(userId) {
     try {
-      const db = getDB();
+      const db = getUsersDB();
       const result = await db.run(
         'DELETE FROM push_subscriptions WHERE user_id = ?',
         userId
@@ -177,7 +177,7 @@ class PushService {
   /** Количество подписанных устройств пользователя. */
   static async countForUser(userId) {
     try {
-      const db = getDB();
+      const db = getUsersDB();
       const row = await db.get(
         'SELECT COUNT(*) AS count FROM push_subscriptions WHERE user_id = ?',
         userId
@@ -203,7 +203,7 @@ class PushService {
     if (!webpush || !PushService.enabled) return result;
 
     try {
-      const db = getDB();
+      const db = getUsersDB();
       const subs = await db.all(
         'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?',
         userId
@@ -253,7 +253,7 @@ class PushService {
   static async _deleteByIds(ids) {
     if (!Array.isArray(ids) || !ids.length) return 0;
     try {
-      const db = getDB();
+      const db = getUsersDB();
       const placeholders = ids.map(() => '?').join(', ');
       const result = await db.run(
         `DELETE FROM push_subscriptions WHERE id IN (${placeholders})`,
@@ -277,7 +277,7 @@ class PushService {
    */
   static async pruneStale(days = 180) {
     try {
-      const db = getDB();
+      const db = getUsersDB();
       const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
       const result = await db.run(
         `DELETE FROM push_subscriptions

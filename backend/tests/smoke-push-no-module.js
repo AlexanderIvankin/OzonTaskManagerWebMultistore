@@ -1,20 +1,12 @@
 /**
  * Smoke-тест-регрессия прод-инцидента: «502 на /api/auth/login после обновления».
+ * Подменяет загрузчик модулей так, будто web-push отсутствует, и проверяет,
+ * что API/планировщик всё равно загружаются, а PushService.enabled === false.
  *
- * Причина того инцидента: PushService подключается при СТАРТЕ сервера
- * (NotificationService -> AuthService -> routes/auth). Если пакет web-push не
- * установлен (на сервере не выполнен `npm install` после обновления кода),
- * require('web-push') бросал MODULE_NOT_FOUND и ронял ВЕСЬ API — nginx отдавал
- * 502 на все запросы, включая логин.
+ * MULTISTORE: используем helpers/setupTestEnv, чтобы initDB() получил валидный
+ * .env.store1 (иначе упадёт на валидации магазина).
  *
- * Тест подменяет загрузчик модулей так, будто web-push отсутствует, и проверяет:
- *   • маршруты и планировщик всё равно загружаются (сервер стартует → 502 нет);
- *   • PushService.enabled === false;
- *   • sendToUser() возвращает нулевой результат и не бросает;
- *   • subscribe()/unsubscribe() продолжают работать (это только БД).
- *
- * Запуск из папки backend/: node tests/smoke-push-no-module.js
- * Тестовые данные удаляются в конце.
+ * Запуск: node tests/smoke-push-no-module.js
  */
 require('dotenv').config();
 
@@ -30,8 +22,11 @@ Module._load = function patchedLoad(request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 
-const { initDB, getDB } = require('../src/config/database');
-const { initNotificationsDB } = require('../src/config/notificationsDatabase');
+const { setup, cleanup } = require('./helpers/setupTestEnv');
+const env = setup('1');
+
+const { initDB, closeAll, getUsersDB } = require('../src/config/database');
+const { initNotificationsDB, closeNotificationsDB } = require('../src/config/notificationsDatabase');
 
 const ENDPOINT = 'https://example.invalid/smoke-no-webpush';
 
@@ -65,25 +60,32 @@ function assert(condition, message) {
 
     await initDB();
     await initNotificationsDB();
-    const db = getDB();
-    const user = await db.get('SELECT id FROM users ORDER BY id LIMIT 1');
-    if (user) {
-      await PushService.subscribe(
-        user.id,
-        { endpoint: ENDPOINT, keys: { p256dh: 'a', auth: 'b' } }
-      );
-      assert(
-        (await PushService.countForUser(user.id)) >= 1,
-        'subscribe работает без web-push (операция только с БД)'
-      );
-      await PushService.unsubscribe(user.id, ENDPOINT);
-      assert(
-        (await PushService.countForUser(user.id)) === 0,
-        'unsubscribe работает без web-push'
-      );
-    } else {
-      console.log('⚠️ В БД нет пользователей — проверки БД пропущены');
-    }
+    const db = getUsersDB();
+    // Создаём тестового пользователя — иначе проверки БД пропускаются
+    const User = require('../src/models/User');
+    const user = await User.create({
+      username: `smoke_no_push_${Date.now()}`,
+      email: `smoke_no_push_${Date.now()}@smoke.local`,
+      passwordHash: 'x',
+      name: 'SmokeNoPush',
+      role: 'user',
+    });
+    await PushService.subscribe(
+      user.id,
+      { endpoint: ENDPOINT, keys: { p256dh: 'a', auth: 'b' } }
+    );
+    assert(
+      (await PushService.countForUser(user.id)) >= 1,
+      'subscribe работает без web-push (операция только с БД)'
+    );
+    await PushService.unsubscribe(user.id, ENDPOINT);
+    assert(
+      (await PushService.countForUser(user.id)) === 0,
+      'unsubscribe работает без web-push'
+    );
+
+    // Убираем тестового пользователя
+    await db.run('DELETE FROM users WHERE id = ?', user.id);
 
     console.log('=== Тест пройден ✅ ===');
   } catch (err) {
@@ -92,9 +94,10 @@ function assert(condition, message) {
   } finally {
     Module._load = originalLoad;
     try {
-      await getDB().run('DELETE FROM push_subscriptions WHERE endpoint = ?', ENDPOINT);
-    } catch {
-      /* БД могла не инициализироваться — чистить нечего */
-    }
+      await getUsersDB().run('DELETE FROM push_subscriptions WHERE endpoint = ?', ENDPOINT);
+    } catch { /* БД могла не инициализироваться */ }
+    try { await closeNotificationsDB(); } catch { /* ignore */ }
+    try { await closeAll(); } catch { /* ignore */ }
+    cleanup();
   }
 })();

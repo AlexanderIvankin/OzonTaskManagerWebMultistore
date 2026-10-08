@@ -1,54 +1,242 @@
-### Переменные
-@baseUrl = http://localhost:5000
-# Ввести админский access токен (после авторизации)
-@adminToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjMsImlhdCI6MTc4ODE4NTI3MywiZXhwIjoxNzg4MTg2MTczfQ.rid7spsMof9Dxb2QSw_G2wwE0Fq4OvRbEqMeh8Rj9IQ
+### ============================================================
+###  ADMIN — панель магазина (только staff: admin/moderator/god)
+### ============================================================
+### Все запросы работают в контексте магазина, определённого по Host.
+### Модели/оповещения/S3 — глобальные, но действия админа магазина
+### логируются в его store_id.
 
-### Получить всех пользователей
+@baseUrl = http://localhost:5000
+
+### Токен админа из .env (см. scripts/http-login.js)
+@adminToken = {{$dotenv HTTP_ADMIN_TOKEN}}
+
+### id текущего админа (из .env, для параметров :id)
+@adminUserId = {{$dotenv HTTP_ADMIN_USER_ID}}
+
+@userId = 1
+@orderId = TEST-ORDER-001
+@offerId = ARD000003-N
+
+### Если получили 401 — токен устарел. Обновите из корня проекта:
+###     node scripts/http-login.js
+### (или перелогиньтесь вручную через auth.http → loginAdmin)
+
+### ---------- Пользователи магазина ----------
+
+### Список сотрудников магазина
 GET {{baseUrl}}/api/admin/users
 Authorization: Bearer {{adminToken}}
 
-### Получить пользователя по ID
-GET {{baseUrl}}/api/admin/users/1
+### Список с уволенными
+GET {{baseUrl}}/api/admin/users?includeFired=true
 Authorization: Bearer {{adminToken}}
 
-### Обновить пользователя
-PUT {{baseUrl}}/api/admin/users/1
+### Список с уволенными и выключенными приём заказов
+GET {{baseUrl}}/api/admin/users?includeFired=true&includeAll=true
+Authorization: Bearer {{adminToken}}
+
+### Когорта «обычные пользователи» (никогда не сотрудники + гости)
+GET {{baseUrl}}/api/admin/users?cohort=users
+Authorization: Bearer {{adminToken}}
+
+### Когорта «сотрудники» (все staff + ex-сотрудники)
+GET {{baseUrl}}/api/admin/users?cohort=staff&includeFired=true
+Authorization: Bearer {{adminToken}}
+
+### Склады + количество активных заказов + выданные модели
+GET {{baseUrl}}/api/admin/users?withWarehouses=true
+Authorization: Bearer {{adminToken}}
+
+### Детали сотрудника (со статистикой магазина и складами)
+GET {{baseUrl}}/api/admin/users/{{userId}}
+Authorization: Bearer {{adminToken}}
+
+### Создать аккаунт вручную (в обход email-подтверждения)
+### Глобально создаётся User (users.role='user'), per-store — запись в user_stores
+POST {{baseUrl}}/api/admin/users
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "username": "newemployee",
+  "email": "newemployee@example.com",
+  "password": "pass123",
+  "name": "Новый Сотрудник",
+  "phone": "+7 (999) 111-22-33",
+  "capacity": 2,
+  "earningsFactor": 1.5,
+  "role": "employee"
+}
+
+### Обновить сотрудника (глобальные поля + per-store role/is_fired/earnings_factor)
+PUT {{baseUrl}}/api/admin/users/{{userId}}
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
 {
   "name": "Обновлённое имя",
+  "phone": "+7 (999) 555-11-22",
   "capacity": 3,
-  "earnings_factor": 1.5
+  "earnings_factor": 1.5,
+  "role": "employee"
 }
 
-### Уволить пользователя (DELETE)
-DELETE {{baseUrl}}/api/admin/users/1
+### Уволить сотрудника в ЭТОМ магазине (is_fired=1, роль сохраняется)
+DELETE {{baseUrl}}/api/admin/users/{{userId}}
 Authorization: Bearer {{adminToken}}
 
-### Обновить пользователя
-PUT {{baseUrl}}/api/admin/users/1
+### Восстановить уволенного (is_fired=0, роль сохраняется)
+POST {{baseUrl}}/api/admin/users/{{userId}}/restore
+Authorization: Bearer {{adminToken}}
+
+### Активные заказы сотрудника
+GET {{baseUrl}}/api/admin/users/{{userId}}/orders
+Authorization: Bearer {{adminToken}}
+
+### Статистика сотрудника в магазине
+GET {{baseUrl}}/api/admin/users/{{userId}}/stats
+Authorization: Bearer {{adminToken}}
+
+### ---------- Статистика персонала ----------
+
+### Все сотрудники магазина со статистикой (без god, god → фейк)
+GET {{baseUrl}}/api/admin/stats
+Authorization: Bearer {{adminToken}}
+
+### Включая уволенных
+GET {{baseUrl}}/api/admin/stats?includeFired=true
+Authorization: Bearer {{adminToken}}
+
+### 🎃 Пасхалка: редактирование фейковой статистики Создателя (только god)
+PUT {{baseUrl}}/api/admin/stats/god
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
 {
-  "role": "employee"
+  "total_orders": 1337,
+  "canceled_orders": 666,
+  "total_amount": 666666666.66,
+  "earnings_total": 999999999.99
 }
+
+### ---------- Синхронизация из Excel ----------
+
+### Ожидаемое имя файла сотрудников (для проверки на клиенте)
+GET {{baseUrl}}/api/admin/sync/expected-filename
+Authorization: Bearer {{adminToken}}
+
+### Синхронизация из загруженного файла (allowPromotion=true)
+POST {{baseUrl}}/api/admin/sync/employees
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----Boundary
+
+------Boundary
+Content-Disposition: form-data; name="file"; filename="team-info.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+< ../team-info.xlsx
+------Boundary--
+
+### Синхронизация из серверного team-info.xlsx (allowPromotion=false)
+POST {{baseUrl}}/api/admin/sync/server-file
+Authorization: Bearer {{adminToken}}
+
+### ---------- Экспорт данных ----------
+
+### Экспорт team-info.xlsx (активные сотрудники)
+GET {{baseUrl}}/api/admin/export/team-info
+Authorization: Bearer {{adminToken}}
+
+### Экспорт team-info.xlsx с уволенными (employees-db.xlsx)
+GET {{baseUrl}}/api/admin/export/team-info?includeFired=true
+Authorization: Bearer {{adminToken}}
+
+### Экспорт статистики товаров магазина (Excel)
+GET {{baseUrl}}/api/admin/export/product-stats
+Authorization: Bearer {{adminToken}}
+
+### ---------- Скачивание БД ----------
+
+### Снимок store-N.db текущего магазина (VACUUM INTO)
+GET {{baseUrl}}/api/admin/export/database
+Authorization: Bearer {{adminToken}}
+
+### Снимок users.db (глобальная)
+GET {{baseUrl}}/api/admin/export/database/users
+Authorization: Bearer {{adminToken}}
+
+### Снимок models.db (глобальная)
+GET {{baseUrl}}/api/admin/export/database/models
+Authorization: Bearer {{adminToken}}
+
+### Снимок notifications.db (глобальная)
+GET {{baseUrl}}/api/admin/export/database/notifications
+Authorization: Bearer {{adminToken}}
+
+### ZIP: контекст одного магазина (store-N + users + models + notifications)
+GET {{baseUrl}}/api/admin/export/database/store-all
+Authorization: Bearer {{adminToken}}
+
+### ZIP: АБСОЛЮТНО ВСЕ БД приложения (все store-N + 3 глобальные)
+GET {{baseUrl}}/api/admin/export/database/all
+Authorization: Bearer {{adminToken}}
+
+### Ручной бэкап ВСЕХ БД в backups/<label>/
+POST {{baseUrl}}/api/admin/backup
+Authorization: Bearer {{adminToken}}
+
+### ---------- Materials (per-store) ----------
+
+### Текущие настройки магазина (materials-prices-store-1.json)
+GET {{baseUrl}}/api/admin/materials
+Authorization: Bearer {{adminToken}}
+
+### Скачать файл настроек магазина
+GET {{baseUrl}}/api/admin/materials/download
+Authorization: Bearer {{adminToken}}
+
+### Загрузить файл настроек (имя обязательно = materials-prices-store-1.json)
+POST {{baseUrl}}/api/admin/materials/upload
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----Boundary
+
+------Boundary
+Content-Disposition: form-data; name="file"; filename="materials-prices-store-1.json"
+Content-Type: application/json
+
+< ../materials-prices-store-1.json
+------Boundary--
+
+### ---------- Склады ----------
+
+### Список складов магазина
+GET {{baseUrl}}/api/admin/warehouses
+Authorization: Bearer {{adminToken}}
 
 ### Синхронизировать склады из Ozon
 POST {{baseUrl}}/api/admin/warehouses/sync
 Authorization: Bearer {{adminToken}}
 
-### Получить список складов
-GET {{baseUrl}}/api/admin/warehouses
-Authorization: Bearer {{adminToken}}
+### ---------- Заказы ----------
 
-### Получить заказы в ожидании (awaiting_packaging)
+### Заказы в awaiting_packaging (не назначенные)
 GET {{baseUrl}}/api/admin/orders/awaiting
 Authorization: Bearer {{adminToken}}
 
+### С фильтром по складу
+GET {{baseUrl}}/api/admin/orders/awaiting?warehouseId=1234567890
+Authorization: Bearer {{adminToken}}
+
+### Детали заказа
+GET {{baseUrl}}/api/admin/orders/{{orderId}}/details
+Authorization: Bearer {{adminToken}}
+
+### Все активные заказы магазина (сотрудник, склад, состав, фото)
+GET {{baseUrl}}/api/admin/orders/active
+Authorization: Bearer {{adminToken}}
+
 ### Назначить заказ сотруднику
-POST {{baseUrl}}/api/admin/orders/TEST-ORDER-001/assign
+POST {{baseUrl}}/api/admin/orders/{{orderId}}/assign
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
@@ -57,11 +245,57 @@ Content-Type: application/json
 }
 
 ### Снять заказ с сотрудника
-POST {{baseUrl}}/api/admin/orders/TEST-ORDER-001/unassign
+POST {{baseUrl}}/api/admin/orders/{{orderId}}/unassign
 Authorization: Bearer {{adminToken}}
 
-### Экспорт заработка за месяц (скачает файл)
+### Завершённые заказы (пагинация + фильтры)
+### Query: userId, days, limit (число | 'all'), offset, orderId, offerId
+GET {{baseUrl}}/api/admin/orders/completed?limit=25
+Authorization: Bearer {{adminToken}}
+
+### Полная выгрузка за период
+GET {{baseUrl}}/api/admin/orders/completed?days=30&limit=all
+Authorization: Bearer {{adminToken}}
+
+### Поиск по номеру заказа
+GET {{baseUrl}}/api/admin/orders/completed?orderId=12345
+Authorization: Bearer {{adminToken}}
+
+### Поиск по артикулу
+GET {{baseUrl}}/api/admin/orders/completed?offerId=ARD000003
+Authorization: Bearer {{adminToken}}
+
+### Принудительно перезагрузить очередь заказов магазина
+POST {{baseUrl}}/api/admin/orders/reload-queue
+Authorization: Bearer {{adminToken}}
+
+### Снять все активные назначения магазина
+POST {{baseUrl}}/api/admin/assignments/clear
+Authorization: Bearer {{adminToken}}
+
+### ---------- Этикетки ----------
+
+### Скачать этикетку заказа себе (нужен статус awaiting_deliver)
+GET {{baseUrl}}/api/admin/orders/{{orderId}}/label
+Authorization: Bearer {{adminToken}}
+
+### Отправить этикетку сотруднику (PDF сохранится в outputs/store-1/labels/)
+POST {{baseUrl}}/api/admin/orders/{{orderId}}/label/send
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "userId": 1
+}
+
+### ---------- Заработок ----------
+
+### Экспорт заработка за месяц (Excel)
 GET {{baseUrl}}/api/admin/earnings/monthly?month=2025-01
+Authorization: Bearer {{adminToken}}
+
+### Активный заработок всех сотрудников магазина
+GET {{baseUrl}}/api/admin/earnings/active
 Authorization: Bearer {{adminToken}}
 
 ### Добавить корректировку заработка
@@ -75,38 +309,57 @@ Content-Type: application/json
   "reason": "Премия за хорошую работу"
 }
 
-### Обнулить активный заработок сотрудника
-POST {{baseUrl}}/api/admin/earnings/settle/1
+### Обнулить активный заработок сотрудника (расчёт)
+POST {{baseUrl}}/api/admin/earnings/settle/{{userId}}
 Authorization: Bearer {{adminToken}}
 
-### Сбросить все назначения (только админ)
-POST {{baseUrl}}/api/admin/assignments/clear
+### Сбросить ВСЕ данные о заработке магазина (история + активные + корректировки)
+POST {{baseUrl}}/api/admin/earnings/reset
 Authorization: Bearer {{adminToken}}
 
-### Перезагрузить очередь заказов
-POST {{baseUrl}}/api/admin/orders/reload-queue
+### ---------- Статистика товаров ----------
+
+### Удалить статистику товара
+DELETE {{baseUrl}}/api/admin/product-stats/{{offerId}}
 Authorization: Bearer {{adminToken}}
 
-### Получить текущие настройки материалов
-GET {{baseUrl}}/api/admin/materials
+### ---------- 3D-модели (глобальные, S3) ----------
+### Если у магазина DISABLE_MODELS=true — все эндпоинты вернут 403.
+
+### Список всех моделей (issued_count, in_cache, in_work)
+GET {{baseUrl}}/api/admin/models
 Authorization: Bearer {{adminToken}}
 
-### Загрузить файл материалов (materials-prices.json)
-POST {{baseUrl}}/api/admin/materials/upload
+### Загрузить/обновить zip-модель для артикула
+POST {{baseUrl}}/api/admin/models/upload
 Authorization: Bearer {{adminToken}}
-Content-Type: multipart/form-data; boundary=----WebKitFormBoundary
+Content-Type: multipart/form-data; boundary=----Boundary
 
-------WebKitFormBoundary
-Content-Disposition: form-data; name="file"; filename="materials-prices.json"
-Content-Type: application/json
+------Boundary
+Content-Disposition: form-data; name="file"; filename="ARD000003-N.zip"
+Content-Type: application/zip
 
-< ../materials-prices.json
-------WebKitFormBoundary--
+< ../ARD000003-N.zip
+------Boundary--
 
-### Экспорт team-info (активные сотрудники) — скачает файл
-GET {{baseUrl}}/api/admin/export/team-info
+### Скачать модель себе (персонал, обходит токены)
+GET {{baseUrl}}/api/admin/models/{{offerId}}/download
 Authorization: Bearer {{adminToken}}
 
-### Экспорт team-info с уволенными — скачает файл
-GET {{baseUrl}}/api/admin/export/team-info?includeFired=true
+### Удалить модель (S3 + models.db)
+DELETE {{baseUrl}}/api/admin/models/{{offerId}}
+Authorization: Bearer {{adminToken}}
+
+### ---------- Планировщик: пауза/возобновление (per-store) ----------
+
+### Статус авто-проверки для текущего магазина
+GET {{baseUrl}}/api/admin/scheduler/status
+Authorization: Bearer {{adminToken}}
+
+### Приостановить авто-проверку заказов ЭТОГО магазина
+POST {{baseUrl}}/api/admin/scheduler/pause
+Authorization: Bearer {{adminToken}}
+
+### Возобновить
+POST {{baseUrl}}/api/admin/scheduler/resume
 Authorization: Bearer {{adminToken}}
