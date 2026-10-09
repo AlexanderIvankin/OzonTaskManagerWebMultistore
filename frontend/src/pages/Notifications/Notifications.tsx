@@ -624,7 +624,7 @@ export const Notifications = () => {
   );
 
   return (
-    <div className="mx-auto max-w-4xl items-center text-center md:text-start">
+    <div className="items-center text-center md:text-start">
       <h1 className="mb-4 text-2xl font-bold">🔔 Оповещения</h1>
 
       {/* Вкладки: личные — всем, журнал действий и ошибки — персоналу */}

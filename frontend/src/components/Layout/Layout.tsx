@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet } from "react-router-dom";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "../../store";
 import { logout } from "../../store/authSlice";
-import { getGlobalProfileUrl, buildCrossOriginUrl } from "../../lib/urls";
+import {
+  getMyStoresUrl,
+  getRootOrigin,
+  buildCrossOriginUrl,
+} from "../../lib/urls";
 import { AppDispatch } from "../../store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,7 +33,6 @@ import {
 export const Layout = () => {
   const user = useSelector((state: RootState) => state.auth.user);
   const dispatch = useDispatch<AppDispatch>();
-  const navigate = useNavigate();
 
   // Глобальный контекст — корневой домен без магазина (store_id null или
   // undefined, если у пользователя старая сессия без поля).
@@ -136,25 +139,28 @@ export const Layout = () => {
   }, [loadUnread]);
 
   const handleLogout = async () => {
-    // Отписываем устройство от Web Push, пока access-токен ещё валиден: после
-    // выхода оповещения на этом браузере приходить не должны. При входе другого
-    // пользователя подписка переприсвоится ему (PushService.subscribe, upsert
-    // по endpoint) — чужие уведомления не «просочатся».
     await disablePush();
     disconnectSocket();
     await dispatch(logout());
-    navigate("/login");
+    // Hard-redirect на login КОРНЕВОГО домена. localStorage привязан к origin:
+    // при выходе с магазинного поддомена токены на корне остаются, поэтому
+    // флаг logout=1 — Login.tsx очистит их при монтировании.
+    window.location.href = `${getRootOrigin()}/login?logout=1`;
   };
 
   return (
     <div className="flex h-dvh overflow-hidden">
       {/* Sidebar: на мобилке — узкая колонка со значками, с md — полный сайдбар */}
       <aside className="w-14 md:w-64 shrink-0 border-r bg-card p-2 md:p-4 flex flex-col">
-        <div className="mb-6 md:mb-20 flex flex-col items-center md:items-stretch text-center">
-          {/* На мобилке логотип = значок, подписи скрыты */}
+        <div className="mb-6 md:mb-10 flex flex-col items-center md:items-stretch text-center">
+          {/* На мобилке логотип = значок; подсказка показывает, где мы */}
           <span
             className="md:hidden size-9 grid place-items-center rounded-lg bg-primary/10 text-lg"
-            title="Ozon Manager"
+            title={
+              isGlobalContext
+                ? user?.root_name || "Global"
+                : user?.store_name || "Магазин"
+            }
           >
             {user?.role === "god"
               ? "👻"
@@ -166,9 +172,20 @@ export const Layout = () => {
                     ? "👷"
                     : "👤"}
           </span>
-          <h1 className="hidden md:block text-xl font-bold">
-            {isGlobalContext ? "Ozon Manager" : "Ozon Manager"}
+
+          {/* Бренд — мелким eyebrow */}
+          <p className="hidden md:block text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
+            Ozon Manager
+          </p>
+
+          {/* Имя контекста: ROOT_NAME (глобальный домен) или STORE_NAME
+              (поддомен магазина). Fallback — технический. */}
+          <h1 className="hidden md:block text-xl font-bold leading-tight mb-2">
+            {isGlobalContext
+              ? user?.root_name || "Global"
+              : user?.store_name || "Магазин"}
           </h1>
+
           <p className="hidden md:block text-sm text-muted-foreground mb-[5px]">
             {user?.display_name}
           </p>
@@ -182,23 +199,31 @@ export const Layout = () => {
           </p>
         </div>
         <nav className="flex-1 space-y-1">
-          {/* «Мои магазины» — ТОЛЬКО в магазинном контексте: ведёт на
-              корневой домен (hard-redirect + токен в URL-хэше). */}
-          {!isGlobalContext && (
+          {/* «Мои магазины» — отдельная вкладка.
+              • В глобальном контексте: NavLink на /stores (та же вкладка).
+              • В магазинном: cross-origin ссылка на корень (/stores) с
+                токеном в URL-хэше. */}
+          {isGlobalContext ? (
+            <NavLink to="/stores" className={navClass}>
+              <span aria-hidden="true" className="inline-block align-middle">
+                🏬
+              </span>
+              <span className="hidden md:inline md:ml-2">Магазины</span>
+            </NavLink>
+          ) : (
             <a
-              href={buildCrossOriginUrl(getGlobalProfileUrl())}
+              href={buildCrossOriginUrl(getMyStoresUrl())}
               className="flex items-center justify-center md:justify-start px-2 md:px-3 py-2 rounded-md transition-colors hover:bg-accent"
             >
               <span aria-hidden="true" className="inline-block align-middle">
                 🏬
               </span>
-              <span className="hidden md:inline md:ml-2">Мои магазины</span>
+              <span className="hidden md:inline md:ml-2">Магазины</span>
             </a>
           )}
 
-          {/* «Профиль» — всегда. В глобальном контексте это GlobalProfile
-              (глобальный профиль + dashboard магазинов); в магазинном —
-              StoreProfile (per-store роль и заработок). */}
+          {/* «Профиль» — всегда. В глобальном контексте: GlobalProfile
+              (личные данные + настройки). В магазинном: StoreProfile. */}
           <NavLink to="/profile" className={navClass}>
             <span
               aria-hidden="true"
@@ -209,7 +234,7 @@ export const Layout = () => {
             <span className="hidden md:inline md:ml-2">Профиль</span>
           </NavLink>
 
-          {/* «Заказы» — только в магазинном контексте (нужна роль сотрудника) */}
+          {/* «Заказы» — только в магазинном контексте */}
           {!isGlobalContext &&
             ["employee", "moderator", "admin", "god"].includes(
               user?.role || "",
@@ -220,8 +245,7 @@ export const Layout = () => {
               </NavLink>
             )}
 
-          {/* «Оповещения» — всегда (в глобальном контексте единый inbox всех
-              магазинов, backend это разрешает). */}
+          {/* «Оповещения» — всегда */}
           <NavLink
             to="/notifications"
             className={({ isActive }) =>

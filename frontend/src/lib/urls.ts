@@ -63,3 +63,8 @@ export function buildCrossOriginUrl(baseUrl: string): string {
   const hash = buildAuthHash();
   return hash ? `${baseUrl}#${hash}` : baseUrl;
 }
+
+/** Ссылка на страницу «Мои магазины» (на корневом домене). */
+export function getMyStoresUrl(): string {
+  return `${getRootOrigin()}/stores`;
+}

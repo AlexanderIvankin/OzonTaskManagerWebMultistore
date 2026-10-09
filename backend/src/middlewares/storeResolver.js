@@ -87,6 +87,10 @@ function isGlobalPath(path) {
   // Приём заказов — сквозной флаг users.taking_orders (глобальный,
   // не per-store), переключается и с глобального домена тоже.
   if (path === '/user/toggle-orders') return true;
+
+  // Обновление display_name — глобальное поле users, доступно любому
+  // авторизованному пользователю (в том числе без роли в магазине).
+  if (path === '/user/display-name') return true;
   return false;
 }
 

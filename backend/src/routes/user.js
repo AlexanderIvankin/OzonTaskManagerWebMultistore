@@ -43,8 +43,23 @@ router.post(
   userController.toggleOrders,
 );
 
+// Отображаемое имя (display_name) — глобальное поле users.
+// Редактируется ТОЛЬКО на странице GlobalProfile (корневой домен);
+// в магазинах display_name показывается, но не редактируется.
+// Работает без магазина (req.storeId = null на глобальном домене).
+router.put('/display-name', userController.updateDisplayName);
+
 // Для всех остальных маршрутов требуется роль сотрудника (employee, moderator, admin)
 router.use(requireEmployee);
+
+// ===========================================================================
+// Роуты в контексте магазина (нужен сотрудник, req.storeId != null)
+// ===========================================================================
+
+// Названия материалов и цвета магазина — для формы «Заполнить статистику»
+// (employee+; на /admin/materials у сотрудника не было доступа).
+// Тонкий payload: без цен за грамм (они — только для персонала).
+router.get('/materials', userController.getMaterialsForForm);
 
 // Активные заказы
 router.get('/orders/active', userController.getActiveOrders);

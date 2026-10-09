@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useNavigate } from "react-router-dom";
 import { RootState, AppDispatch } from "../../store";
 import { updateUser, fetchStores } from "../../store/authSlice";
 import { userApi } from "../../api/user";
@@ -16,27 +17,25 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import { StoreCard } from "../../components/StoreCard";
 import { RoleBadge } from "@/components/RoleBadge";
 import { toast } from "sonner";
 
 /**
  * Глобальный профиль (корневой домен, без магазина).
  *
- *   • Глобальные поля users: display_name (редактируется здесь), username,
- *     email, phone, capacity.
- *   • Сквозные настройки: приём заказов (users.taking_orders) и Web Push
- *     (подписка на устройство). Оба действуют во всех магазинах сразу.
- *   • Dashboard магазинов: карточки со ролью пользователя в каждом магазине;
- *     «Открыть» → hard redirect на поддомен (с токеном в URL-хэше).
+ *   • Личные данные: display_name (редактируется здесь), логин, email,
+ *     телефон, число принтеров.
+ *   • Сквозные настройки: приём заказов (users.taking_orders) и Web Push —
+ *     действуют во всех магазинах сразу.
+ *   • Кнопка «Мои магазины» — переход на страницу dashboard.
  *
  * Per-store данные (роль, заработок) — в StoreProfile на поддомене.
  */
 export const GlobalProfile = () => {
   const user = useSelector((s: RootState) => s.auth.user);
   const stores = useSelector((s: RootState) => s.auth.stores);
-  const storesLoading = useSelector((s: RootState) => s.auth.storesLoading);
   const dispatch = useDispatch<AppDispatch>();
+  const navigate = useNavigate();
 
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [displayNameInput, setDisplayNameInput] = useState("");
@@ -53,6 +52,7 @@ export const GlobalProfile = () => {
     disable: disablePush,
   } = usePushSubscription();
 
+  // Подтягиваем список магазинов, чтобы показать счётчик «Мои магазины»
   useEffect(() => {
     dispatch(fetchStores());
   }, [dispatch]);
@@ -112,7 +112,6 @@ export const GlobalProfile = () => {
 
   return (
     <div className="container mx-auto py-10 max-w-5xl space-y-6">
-      {/* Предупреждение для гостя (email не подтверждён) */}
       {isGuest && (
         <Card className="border-yellow-300 bg-yellow-50 text-yellow-900">
           <CardContent className="py-4">
@@ -125,7 +124,7 @@ export const GlobalProfile = () => {
         </Card>
       )}
 
-      {/* === Глобальные данные пользователя === */}
+      {/* === Личные данные === */}
       <Card>
         <CardHeader>
           <div className="flex flex-col items-center justify-center mb-2 w-full min-w-0">
@@ -213,7 +212,7 @@ export const GlobalProfile = () => {
       {/* === Сквозные настройки: приём заказов + Web Push === */}
       {!isGuest && (
         <Card>
-          <CardHeader className="text-center items-center justify-center">
+          <CardHeader className="flex flex-col items-center justify-center text-center">
             <CardTitle className="text-lg">⚙️ Общие настройки</CardTitle>
             <CardDescription>
               Действуют во всех магазинах, где вы работаете.
@@ -221,9 +220,8 @@ export const GlobalProfile = () => {
           </CardHeader>
           <CardContent className="space-y-6">
             <Separator />
-            {/* Приём заказов */}
-            <div className="flex items-center justify-center gap-4">
-              <div className="flex items-center space-x-2">
+            <div className="flex flex-wrap items-center justify-center gap-x-4">
+              <div className="flex flex-wrap justify-center items-center space-x-2 gap-y-3">
                 <Switch
                   checked={takingOrders}
                   onCheckedChange={handleToggleOrders}
@@ -250,7 +248,6 @@ export const GlobalProfile = () => {
 
             <Separator />
 
-            {/* Web Push */}
             <div className="flex flex-col items-center gap-2 text-center mb-2">
               <p className="font-medium text-balance">
                 <span className="text-lg mr-2 inline-block" aria-hidden="true">
@@ -313,33 +310,24 @@ export const GlobalProfile = () => {
         </Card>
       )}
 
-      {/* === Dashboard магазинов === */}
-      <Card>
-        <CardHeader className="text-center items-center justify-center">
-          <CardTitle className="text-lg">🏬 Мои магазины</CardTitle>
-          <CardDescription>
-            Магазины, в которых у вас есть роль. Нажмите «Открыть», чтобы
-            перейти.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="text-center items-center justify-center">
-          {storesLoading && stores.length === 0 && (
-            <p className="text-center text-sm text-muted-foreground">
-              Загрузка...
-            </p>
-          )}
-          {!storesLoading && stores.length === 0 && (
-            <p className="text-center text-sm text-muted-foreground">
-              Пока нет доступных магазинов.
-            </p>
-          )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {stores.map((store) => (
-              <StoreCard key={store.store_id} store={store} />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      {/* === Ссылка на «Мои магазины» === */}
+      {!isGuest && (
+        <Card>
+          <CardHeader className="flex flex-col items-center justify-center text-center">
+            <CardTitle className="text-lg">🏬 Мои магазины</CardTitle>
+            <CardDescription>
+              {stores.length > 0
+                ? `У вас доступ к ${stores.length} магазин(ам)`
+                : "Пока нет доступных магазинов"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col items-center justify-center text-center">
+            <Button onClick={() => navigate("/stores")}>
+              Перейти в «Магазины» →
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };

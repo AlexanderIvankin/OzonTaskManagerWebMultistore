@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useDispatch } from "react-redux";
 import { Link, useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
@@ -30,6 +30,20 @@ export const Login = () => {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+
+  // Очистка токенов при переходе из магазина (см. Layout.handleLogout).
+  // localStorage привязан к origin, поэтому выход с shop1 не затирает
+  // токены на lvh.me — чистим их здесь.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("logout") === "1") {
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      // Убираем флаг из URL (без перезагрузки)
+      window.history.replaceState({}, "", "/login");
+    }
+  }, []);
+
   const [error, setError] = useState<string | null>(null);
   // Email аккаунта, которому нужно подтвердить почту (для ссылки на /verify-email)
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);

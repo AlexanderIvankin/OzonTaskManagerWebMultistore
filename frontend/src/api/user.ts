@@ -6,8 +6,22 @@ export const userApi = {
    * Список магазинов пользователя (для глобального профиля).
    * Работает без магазина — можно вызвать на корневом домене.
    */
-  getStores: () =>
-    api.get<StoreInfo[]>("/user/stores").then((res) => res.data),
+  getStores: () => api.get<StoreInfo[]>("/user/stores").then((res) => res.data),
+
+  // Материалы и цвета текущего магазина — для формы «Заполнить статистику».
+  // Тонкий payload: только названия (без цен за грамм — они для персонала).
+  getMaterialsForForm: () =>
+    api
+      .get<{ materialNames: string[]; colors: string[] }>("/user/materials")
+      .then((res) => res.data),
+
+  // Заполнить статистику товара в текущем магазине (материал, цвет, вес)
+  fillStats: (data: {
+    offerId: string;
+    material: string;
+    color: string;
+    weight: number;
+  }) => api.post("/user/fill-stats", data).then((res) => res.data),
 
   // Получить активный заработок
   getActiveEarnings: () =>
@@ -23,11 +37,10 @@ export const userApi = {
   toggleTakingOrders: () =>
     api.post("/user/toggle-orders").then((res) => res.data),
 
-  // Обновить отображаемое имя (display_name) — только свой профиль
+  // Обновить отображаемое имя (display_name) — глобальное поле users.
+  // Доступно с глобального домена (магазин не нужен).
   updateDisplayName: (displayName: string) =>
-    api
-      .put("/user/profile", { displayName })
-      .then((res) => res.data),
+    api.put("/user/display-name", { displayName }).then((res) => res.data),
 };
 
 // ============================================================================

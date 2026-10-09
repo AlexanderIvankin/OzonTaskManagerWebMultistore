@@ -61,9 +61,7 @@ export const ExportData = () => {
     setLoadingDb(true);
     try {
       const res = await adminApi.downloadDatabase();
-      // Имя файла берём из Content-Disposition (bot_web-1.db).
-      // Клиентскую дату не подставляем, чтобы не расходиться с сервером.
-      downloadBlob(res.data, getDownloadFileName(res, "bot_web.db"));
+      downloadBlob(res.data, getDownloadFileName(res, "store.db"));
       toast.success("Файл базы данных скачан");
     } catch (err: any) {
       toast.error(
@@ -145,13 +143,31 @@ export const ExportData = () => {
 
   const handleCreateBackup = async () => {
     if (
-      !confirm("Создать бэкап базы данных на сервере (папка backend/backups)?")
+      !confirm(
+        "Создать ПОЛНЫЙ бэкап всех БД на сервере?\n\n" +
+          "Будут сохранены: users.db, models.db, notifications.db " +
+          "и все store-N.db (все магазины).\n\n" +
+          "Файлы попадут в backend/backups/<label>/ с датой и временем.",
+      )
     )
       return;
     setCreatingBackup(true);
     try {
       const result = await adminApi.createDbBackup();
-      toast.success(`Бэкап создан: ${result.file}`);
+      // Если часть БД упала — наверх придёт 500 с деталями; при успехе
+      // показываем сводку по созданным/пропущенным файлам.
+      const created = Array.isArray(result?.created) ? result.created : [];
+      const skipped = Array.isArray(result?.skipped) ? result.skipped : [];
+      if (created.length) {
+        toast.success(
+          `Бэкап создан: ${created.length} файл(ов)${skipped.length ? `, пропущено ${skipped.length}` : ""}`,
+        );
+      } else if (result?.file) {
+        // Совместимость со старой сигнатурой
+        toast.success(`Бэкап создан: ${result.file}`);
+      } else {
+        toast.success("Бэкап создан");
+      }
     } catch (err: any) {
       toast.error(err.message || "Ошибка создания бэкапа");
     } finally {
@@ -184,6 +200,44 @@ export const ExportData = () => {
         📤 Экспорт данных
       </h1>
 
+      {/* === Бэкап на сервере (персонал) — ВЫНЕСЕНО НАВЕРХ === */}
+      {isAdmin && (
+        <Card className="border-destructive/40">
+          <CardHeader className="flex flex-col items-center text-center justify-center gap-2 sm:text-start sm:flex-row sm:justify-start">
+            <CardTitle className="flex items-center gap-2">
+              🗄️ Бэкап на сервере
+            </CardTitle>
+            <div>
+              <Badge variant="destructive">Backup</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Создаёт консистентные снимки (VACUUM INTO) <b>всех</b> баз данных
+              приложения прямо на сервере: <code>users.db</code>,{" "}
+              <code>models.db</code>, <code>notifications.db</code> и все{" "}
+              <code>store-N.db</code> (каждый магазин). Файлы сохраняются в{" "}
+              <code>backend/backups/&lt;label&gt;/</code> с датой и временем в
+              имени. Ежедневный автобэкап запускается планировщиком в 00:00.
+            </p>
+            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+              <Button
+                onClick={handleCreateBackup}
+                disabled={creatingBackup}
+                variant="default"
+                className="min-w-0"
+              >
+                <span className="truncate min-w-0">
+                  {creatingBackup
+                    ? "Создаём бэкап..."
+                    : "🗄️ Создать полный бэкап"}
+                </span>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Статистика товаров */}
       <Card>
         <CardHeader>
@@ -214,7 +268,6 @@ export const ExportData = () => {
       <Card>
         <CardHeader>
           <CardTitle className="text-center sm:text-start">
-            {" "}
             <span className="inline-block align-middle -translate-y-[3px]">
               👥
             </span>{" "}
@@ -248,29 +301,26 @@ export const ExportData = () => {
         </CardContent>
       </Card>
 
-      {/* База данных — для персонала (admin/moderator/god) */}
-      {/* База данных — для персонала (admin/moderator/god) */}
+      {/* Скачивание снимков БД — персонал */}
       {isAdmin && (
         <Card>
           <CardHeader className="flex flex-col items-center text-center justify-center gap-2 sm:text-start sm:flex-row sm:justify-start">
             <CardTitle className="flex items-center gap-2">
-              🗄️ Базы данных
+              💾 Скачать базы данных
             </CardTitle>
-            <div>
-              <Badge variant="destructive">Backup</Badge>
-            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
               Скачиваются консистентные снимки (VACUUM INTO) на момент запроса:
               снимок пересобирается, поэтому размер может быть меньше файла БД
               на сервере — лишние страницы и «дырки» после удалений в него не
-              попадают. Каждая БД в отдельной папке backups/&lt;label&gt;/.
+              попадают. Создание бэкапа <b>на сервере</b> — в самой верхней
+              карточке страницы.
             </p>
 
             {/* store-N.db — БД текущего магазина */}
             <div className="space-y-2">
-              <p className="text-sm font-medium">Этот магазин</p>
+              <p className="text-sm font-medium text-center sm:text-start">Этот магазин</p>
               <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
                 <Button
                   onClick={handleDownloadDatabase}
@@ -299,38 +349,45 @@ export const ExportData = () => {
 
             {/* Общие БД */}
             <div className="space-y-2">
-              <p className="text-sm font-medium">Общие БД (глобальные)</p>
-              <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-medium text-center sm:text-start">Общие БД (глобальные)</p>
+              <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
                 <Button
                   onClick={handleDownloadUsersDb}
                   disabled={loadingUsersDb}
                   variant="outline"
+                  className="min-w-0"
                   size="sm"
                 >
-                  {loadingUsersDb ? "..." : "👥 users.db"}
+                  <span className="truncate min-w-0">
+                    {loadingUsersDb ? "..." : "👥 users.db"}
+                  </span>
                 </Button>
                 <Button
                   onClick={handleDownloadModelsDb}
                   disabled={loadingModelsDb}
                   variant="outline"
-                  size="sm"
+                  className="min-w-0"
                 >
-                  {loadingModelsDb ? "..." : "🧊 models.db"}
+                  <span className="truncate min-w-0">
+                    {loadingModelsDb ? "..." : "🧊 models.db"}
+                  </span>
                 </Button>
                 <Button
                   onClick={handleDownloadNotificationsDb}
                   disabled={loadingNotificationsDb}
                   variant="outline"
-                  size="sm"
+                  className="min-w-0"
                 >
-                  {loadingNotificationsDb ? "..." : "🔔 notifications.db"}
+                  <span className="truncate min-w-0">
+                    {loadingNotificationsDb ? "..." : "🔔 notifications.db"}
+                  </span>
                 </Button>
               </div>
             </div>
 
-            {/* Полный бэкап всех БД */}
+            {/* Полный дамп всех БД в ZIP */}
             <div className="space-y-2">
-              <p className="text-sm font-medium">Резервные копии</p>
+              <p className="text-sm font-medium text-center sm:text-start">Полный дамп всех БД</p>
               <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
                 <Button
                   onClick={handleDownloadAll}
@@ -342,18 +399,6 @@ export const ExportData = () => {
                     {loadingAll
                       ? "Готовим ZIP..."
                       : "📦 ZIP: все БД приложения"}
-                  </span>
-                </Button>
-                <Button
-                  onClick={handleCreateBackup}
-                  disabled={creatingBackup}
-                  variant="outline"
-                  className="min-w-0"
-                >
-                  <span className="truncate min-w-0">
-                    {creatingBackup
-                      ? "Создаём бэкап..."
-                      : "🗄️ Бэкап на сервере"}
                   </span>
                 </Button>
               </div>

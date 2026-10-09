@@ -1,6 +1,7 @@
 const AuthService = require('../services/AuthService');
 const User = require('../models/User');
 const UserStore = require('../models/UserStore');
+const config = require('../config');
 // Роли персонала живут в отдельном модуле без зависимостей — иначе socket.js
 // (который берёт отсюда STAFF_ROLES) тянул бы AuthService и замыкал цикл
 // require: NotificationService -> socket -> middlewares/auth -> AuthService ->
@@ -69,10 +70,14 @@ async function authenticate(req, res, next) {
     earnings_factor: earningsFactor,
     was_employee: wasEmployee,
     store_id: req.storeId || null,
-    // Вложенный per-store блок — «есть ли запись в user_stores» для этого
-    // магазина. Фронт использует его в StoreProfile, чтобы отличить
-    // «уволен» от «нет роли в этом магазине». На глобальном домене —
-    // null (магазина нет).
+    // Имя текущего контекста для сайдбара:
+    //   • на поддомене магазина — STORE_NAME из .env.storeN
+    //     (fallback «Магазин N»), поле store_name;
+    //   • на корневом домене — ROOT_NAME из .env (fallback 'Global'),
+    //     поле root_name.
+    // Оба взаимоисключающие: в одном контексте заполнено только одно.
+    store_name: req.store?.name || null,
+    root_name: req.storeId ? null : config.rootName,
     store: storeRecord
       ? {
         role: storeRecord.role,

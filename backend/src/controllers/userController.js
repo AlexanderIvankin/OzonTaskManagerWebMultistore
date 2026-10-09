@@ -1,4 +1,5 @@
 const { Assignment, UserStats, Earnings, ProductStat, UserStore, User } = require('../models');
+const MaterialsService = require('../services/MaterialsService');
 const Notification = require('../models/Notification');
 const OrderService = require('../services/OrderService');
 const OzonService = require('../services/OzonService');
@@ -574,5 +575,30 @@ exports.getUserStores = async (req, res) => {
   } catch (err) {
     console.error('[getUserStores] Ошибка:', err);
     res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * Тонкий набор для формы «Заполнить статистику»:
+ * только названия материалов (без цен за грамм) и цвета текущего магазина.
+ *
+ * Отдаём сотруднику (employee+) — до этого фронт бился в /admin/materials и
+ * получал 403, показывая fallback. Цены за грамм — служебные данные магазина,
+ * сотруднику не нужны; остаются в /admin/materials (персонал).
+ *
+ * Работает в контексте магазина (req.storeId) — на глобальном домене
+ * маршрут не зарегистрирован (резолвер его не пропускает).
+ */
+exports.getMaterialsForForm = async (req, res, next) => {
+  try {
+    const storeId = req.storeId;
+    const materials = MaterialsService.getMaterials(storeId);
+    res.json({
+      materialNames: Object.keys(materials || {}),
+      colors: MaterialsService.getColors(storeId) || [],
+    });
+  } catch (err) {
+    console.error(`[user.getMaterialsForForm][store ${req.storeId}] Ошибка:`, err);
+    next(err);
   }
 };

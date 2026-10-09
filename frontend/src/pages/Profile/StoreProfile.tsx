@@ -1,7 +1,6 @@
-import { useSelector, useDispatch } from "react-redux";
+import { useSelector } from "react-redux";
 import { useState, useEffect } from "react";
-import { RootState, AppDispatch } from "../../store";
-import { updateUser } from "../../store/authSlice";
+import { RootState } from "../../store";
 import { userApi } from "../../api/user";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,13 +13,13 @@ import {
 import { RoleBadge } from "@/components/RoleBadge";
 import { toast } from "sonner";
 import { Separator } from "@/components/ui/separator";
-import { Input } from "@/components/ui/input";
 
 /**
  * Профиль пользователя В КОНТЕКСТЕ МАГАЗИНА (поддомен).
  *
- *   • Локальные поля: display_name (глобальное, но редактируется здесь для
- *     удобства), роль в магазине, заработок.
+ *   • Роль в магазине, заработок.
+ *   • display_name — показывается read-only (редактируется только в
+ *     GlobalProfile на корневом домене: это глобальное поле users).
  *   • Сквозные настройки (приём заказов, Web Push) — в GlobalProfile.
  *
  * Предупреждения:
@@ -29,7 +28,6 @@ import { Input } from "@/components/ui/input";
  */
 export const StoreProfile = () => {
   const user = useSelector((state: RootState) => state.auth.user);
-  const dispatch = useDispatch<AppDispatch>();
 
   const [activeEarnings, setActiveEarnings] = useState<{
     baseEarnings: number;
@@ -41,33 +39,6 @@ export const StoreProfile = () => {
     count: number;
   } | null>(null);
   const [loadingEarnings, setLoadingEarnings] = useState(false);
-
-  const [editingDisplayName, setEditingDisplayName] = useState(false);
-  const [displayNameInput, setDisplayNameInput] = useState("");
-  const [savingDisplayName, setSavingDisplayName] = useState(false);
-
-  const handleSaveDisplayName = async () => {
-    const value = displayNameInput.trim();
-    if (!value) {
-      toast.error("Укажите отображаемое имя");
-      return;
-    }
-    setSavingDisplayName(true);
-    try {
-      const updated = await userApi.updateDisplayName(value);
-      if (user) {
-        dispatch(updateUser({ ...user, display_name: updated.display_name }));
-      }
-      setEditingDisplayName(false);
-      toast.success("Отображаемое имя обновлено");
-    } catch (err: any) {
-      toast.error(
-        err?.response?.data?.error || err?.message || "Ошибка сохранения",
-      );
-    } finally {
-      setSavingDisplayName(false);
-    }
-  };
 
   const loadActiveEarnings = async () => {
     try {
@@ -111,53 +82,11 @@ export const StoreProfile = () => {
       <Card>
         <CardHeader>
           <div className="flex flex-col items-center justify-center mb-[15px] w-full min-w-0">
-            {editingDisplayName ? (
-              <div className="flex items-center justify-center gap-2 mb-[5px] w-full max-w-full px-1 flex-wrap">
-                <Input
-                  className="max-w-xs text-center min-w-0 flex-1"
-                  value={displayNameInput}
-                  autoFocus
-                  placeholder="Как вас показывать"
-                  onChange={(e) => setDisplayNameInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSaveDisplayName();
-                  }}
-                />
-                <Button
-                  size="sm"
-                  onClick={handleSaveDisplayName}
-                  disabled={savingDisplayName}
-                >
-                  {savingDisplayName ? "..." : "Сохранить"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setEditingDisplayName(false)}
-                  disabled={savingDisplayName}
-                >
-                  Отмена
-                </Button>
-              </div>
-            ) : (
-              <div className="flex items-start justify-center gap-1 mb-[5px] w-full max-w-full min-w-0 px-1">
-                <span className="w-7 shrink-0" aria-hidden="true" />
-                <CardTitle className="flex-1 min-w-0 text-lg sm:text-xl md:text-2xl text-center break-all [overflow-wrap:anywhere] [word-break:break-word] leading-tight">
-                  {user?.display_name || user?.name || user?.username}
-                </CardTitle>
-                <Button
-                  className="h-7 w-7 p-0 shrink-0 mt-0.5"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setDisplayNameInput(user?.display_name || user?.name || "");
-                    setEditingDisplayName(true);
-                  }}
-                >
-                  ✏️
-                </Button>
-              </div>
-            )}
+            <div className="flex items-start justify-center gap-1 mb-[5px] w-full max-w-full min-w-0 px-1">
+              <CardTitle className="flex-1 min-w-0 text-lg sm:text-xl md:text-2xl text-center break-all [overflow-wrap:anywhere] [word-break:break-word] leading-tight">
+                {user?.display_name || user?.name || user?.username}
+              </CardTitle>
+            </div>
             <CardDescription>
               <RoleBadge role={user?.role ?? ""} />
             </CardDescription>

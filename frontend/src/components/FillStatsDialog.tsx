@@ -17,7 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import api from "../api";
+import { userApi } from "../api/user";
 
 // Строгое ограничение веса пластика в граммах (10 кг) — как в бот-версии
 const MAX_WEIGHT_GRAMS = 10000;
@@ -44,16 +44,14 @@ export const FillStatsDialog = ({
   // Загружаем список материалов и цветов при открытии
   useEffect(() => {
     if (open) {
-      api
-        .get("/admin/materials")
-        .then((res) => {
-          setMaterialsList(
-            res.data.materials ? Object.keys(res.data.materials) : [],
-          );
-          setColorsList(res.data.colors || []);
+      userApi
+        .getMaterialsForForm()
+        .then((data) => {
+          setMaterialsList(data.materialNames || []);
+          setColorsList(data.colors || []);
         })
         .catch(() => {
-          // Если не загрузилось, используем дефолтные
+          // Если не загрузилось (нет сети / не в магазине), используем дефолтные
           setMaterialsList([
             "Pet-G",
             "ABS",
@@ -103,7 +101,7 @@ export const FillStatsDialog = ({
     }
     setLoading(true);
     try {
-      await api.post("/user/fill-stats", {
+      await userApi.fillStats({
         offerId,
         material,
         color,
@@ -115,7 +113,9 @@ export const FillStatsDialog = ({
     } catch (err: any) {
       // Показываем текст ошибки с сервера (например, про превышение лимита)
       toast.error(
-        err.response?.data?.error || err.message || "Ошибка сохранения статистики",
+        err.response?.data?.error ||
+          err.message ||
+          "Ошибка сохранения статистики",
       );
     } finally {
       setLoading(false);
@@ -135,7 +135,10 @@ export const FillStatsDialog = ({
         <div className="space-y-4 py-4">
           <div className="space-y-2">
             <Label>Материал</Label>
-            <Select value={material} onValueChange={(value) => setMaterial(value ?? "")}>
+            <Select
+              value={material}
+              onValueChange={(value) => setMaterial(value ?? "")}
+            >
               <SelectTrigger>
                 <SelectValue placeholder="Выберите материал" />
               </SelectTrigger>
@@ -150,7 +153,10 @@ export const FillStatsDialog = ({
           </div>
           <div className="space-y-2">
             <Label>Цвет</Label>
-            <Select value={color} onValueChange={(value) => setColor(value ?? "")}>
+            <Select
+              value={color}
+              onValueChange={(value) => setColor(value ?? "")}
+            >
               <SelectTrigger>
                 <SelectValue placeholder="Выберите цвет" />
               </SelectTrigger>
@@ -174,8 +180,8 @@ export const FillStatsDialog = ({
               onChange={(e) => setWeight(e.target.value)}
             />
             <p className="text-xs text-muted-foreground">
-              Положительное число, не более одной цифры после запятой
-              (например, 12.5 или 12,5). Максимум —{" "}
+              Положительное число, не более одной цифры после запятой (например,
+              12.5 или 12,5). Максимум —{" "}
               {MAX_WEIGHT_GRAMS.toLocaleString("ru-RU")} г (10 кг).
             </p>
           </div>
