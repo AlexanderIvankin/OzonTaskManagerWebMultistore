@@ -40,6 +40,9 @@ backend/.env.store*
 !backend/.env.example
 !backend/.env.store*.example
 
+# Но не игнорировать их файлы-примеры
+frontend/.env.production
+
 # Токены для REST Client
 tests/http/.env
 

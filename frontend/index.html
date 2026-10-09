@@ -1,30 +1,57 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ozon Manager</title>
-    <!-- Раннее применение темы (класс .dark на <html>) — без мигания при загрузке -->
-    <script>
-      (function () {
-        try {
-          var stored = localStorage.getItem("theme");
-          var theme =
-            stored === "light" || stored === "dark"
-              ? stored
-              : window.matchMedia("(prefers-color-scheme: dark)").matches
-                ? "dark"
-                : "light";
-          if (theme === "dark") document.documentElement.classList.add("dark");
-        } catch (e) {
-          /* localStorage недоступен — остаёмся в светлой теме */
-        }
-      })();
-    </script>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.png" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ozon Manager</title>
+  <!-- Раннее применение темы (класс .dark на <html>) — без мигания при загрузке -->
+  <script>
+    (function () {
+      try {
+        var stored = localStorage.getItem("theme");
+        var theme =
+          stored === "light" || stored === "dark"
+            ? stored
+            : window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+        if (theme === "dark") document.documentElement.classList.add("dark");
+      } catch (e) {
+        /* localStorage недоступен — остаёмся в светлой теме */
+      }
+    })();
+  </script>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script>
+    // MULTISTORE: подхват токенов из URL-хэша при переходе между поддоменами
+    // (localStorage у каждого origin свой — shop1.lvh.me не видит токены lvh.me).
+    // Выполняется ДО main.tsx, чтобы store успел прочитать свежие значения.
+    (function () {
+      var h = window.location.hash;
+      if (!h || h.indexOf('#auth=') !== 0) return;
+      try {
+        var p = new URLSearchParams(h.slice(1));
+        var a = p.get('auth');
+        var r = p.get('refresh');
+        if (a) localStorage.setItem('accessToken', a);
+        if (r) localStorage.setItem('refreshToken', r);
+        // Чистим URL: токен не должен остаться в истории браузера
+        window.history.replaceState(
+          null,
+          '',
+          window.location.pathname + window.location.search
+        );
+      } catch (e) {
+        /* некорректный хэш — игнорируем */
+      }
+    })();
+  </script>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
 </html>

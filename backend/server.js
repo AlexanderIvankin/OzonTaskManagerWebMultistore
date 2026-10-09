@@ -80,6 +80,20 @@ function hostnameFromOrigin(origin) {
   }
 }
 
+// Хосты, которые считаем «dev-окружением» (любой поддомен разрешён для CORS).
+// Сделано для разработки через lvh.me / nip.io: shop1.lvh.me:5173 должен
+// ходить в backend на localhost:5000 без настройки clientOrigin.
+function isDevHostname(hostname) {
+  if (!hostname) return false;
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "lvh.me" ||
+    hostname.endsWith(".lvh.me") ||
+    hostname.endsWith(".nip.io")
+  );
+}
+
 function dynamicCors(req, res, next) {
   const hostname = hostnameFromHostHeader(req.headers.host);
   const storeId = resolveStoreId(hostname);
@@ -90,10 +104,13 @@ function dynamicCors(req, res, next) {
       if (!origin) return callback(null, true);
       if (DEV_ORIGINS.includes(origin)) return callback(null, true);
 
+      // Разрешаем любые dev-поддомены (lvh.me / nip.io / localhost)
+      const actualHost = hostnameFromOrigin(origin);
+      if (isDevHostname(actualHost)) return callback(null, true);
+
       if (store && store.clientOrigin) {
         const allowed = hostnameFromOrigin(store.clientOrigin);
-        const actual = hostnameFromOrigin(origin);
-        if (allowed && actual === allowed) return callback(null, true);
+        if (allowed && actualHost === allowed) return callback(null, true);
       }
 
       console.warn(
@@ -102,9 +119,9 @@ function dynamicCors(req, res, next) {
       return callback(null, false);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    exposedHeaders: ['Content-Disposition'],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    exposedHeaders: ["Content-Disposition"],
   })(req, res, next);
 }
 

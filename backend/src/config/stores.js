@@ -50,6 +50,10 @@ function buildStore(storeId) {
   return {
     id: storeIdFinal,
 
+    // Человеческое имя магазина для UI глобального профиля (dashboard
+    // магазинов). STORE_NAME из .env.storeN, fallback — «Магазин N».
+    name: String(env.STORE_NAME || `Магазин ${storeIdFinal}`).trim(),
+
     // Поддомен для резолва магазина по Host (см. middlewares/storeResolver.js).
     // shop1.example.com -> 'shop1'. Если SUBDOMAIN не задан — берётся STORE_ID.
     // Храним в нижнем регистре: Host приходит в нижнем регистре.

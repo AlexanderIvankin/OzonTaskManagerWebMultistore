@@ -331,7 +331,6 @@ exports.getActiveEarnings = async (req, res, next) => {
  */
 exports.toggleOrders = async (req, res, next) => {
   try {
-    const storeId = req.storeId;
     const userId = req.user.id;
     const user = await User.getById(userId);
     if (!user) throw new Error('User not found');
@@ -339,17 +338,37 @@ exports.toggleOrders = async (req, res, next) => {
     const newStatus = user.taking_orders === 1 ? 0 : 1;
     await User.update(userId, { taking_orders: newStatus });
 
-    CooldownService.touch('toggleOrders', storeId, userId);
+    // Кулдаун: если запрос пришёл с магазинного домена — с ключом
+    // 'storeId:userId'; если с глобального — 'null:userId' (единый для
+    // всех магазинов, но отдельный от магазинных).
+    CooldownService.touch('toggleOrders', req.storeId, userId);
 
-    NotificationService.notifyStaff('taking_orders_changed', {
+    // Оповещение персоналу. Если контекст магазина известен — только ему.
+    // Если нет (глобальный домен) — во ВСЕ магазины, где пользователь
+    // числится сотрудником: каждый магазин получит свою запись в журнале.
+    const payload = {
       userId,
       userName: user.name,
       takingOrders: newStatus === 1,
-    }, { storeId });
+    };
+    if (req.storeId) {
+      NotificationService.notifyStaff('taking_orders_changed', payload, {
+        storeId: req.storeId,
+      });
+    } else {
+      const UserStore = require('../models/UserStore');
+      const rows = await UserStore.listByUser(userId);
+      for (const r of rows) {
+        if (r.is_fired) continue;
+        NotificationService.notifyStaff('taking_orders_changed', payload, {
+          storeId: r.store_id,
+        });
+      }
+    }
 
     res.json({ taking_orders: newStatus });
   } catch (err) {
-    console.error(`[toggleOrders][store ${req.storeId}] Ошибка:`, err);
+    console.error(`[toggleOrders][store ${req.storeId || '—'}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -493,6 +512,67 @@ exports.getMissingStats = async (req, res, next) => {
     res.json({ missingOffers: Array.from(missingOffers) });
   } catch (err) {
     console.error(`[getMissingStats][store ${req.storeId}] Ошибка:`, err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * Список магазинов, доступных текущему пользователю.
+ *
+ * Используется страницей «Глобальный профиль» (корневой домен): показывает
+ * карточки магазинов, где пользователь имеет запись в user_stores, и
+ * магазины без записи (можно предложить «запросить доступ»).
+ *
+ * Работает БЕЗ магазина в запросе (req.storeId = null) — это разрешено
+ * резолвером для пути /user/stores.
+ *
+ * Ответ для каждого магазина реестра:
+ *   {
+ *     store_id, name, subdomain, client_origin,
+ *     role: 'employee' | 'moderator' | 'admin' | 'god' | null,
+ *     is_fired: boolean | null,       // null — записи нет
+ *     earnings_factor: number | null,
+ *     was_employee: boolean | null,
+ *     has_access: boolean,            // есть ли доступ к сотрудническим фичам
+ *   }
+ */
+exports.getUserStores = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const UserStore = require('../models/UserStore');
+    const stores = require('../config/stores');
+
+    // Per-store записи пользователя
+    const userStoreRows = await UserStore.listByUser(userId);
+    const byStoreId = new Map(
+      userStoreRows.map((r) => [String(r.store_id), r])
+    );
+
+    // Обходим ВСЕ зарегистрированные магазины (порядок — по STORE_ID)
+    const allStoreIds = stores.getStoreIds();
+    const result = allStoreIds.map((sid) => {
+      const store = stores.getStore(sid);
+      const record = byStoreId.get(sid);
+
+      return {
+        store_id: sid,
+        name: store.name,
+        subdomain: store.subdomain,
+        client_origin: store.clientOrigin,
+        // Записи может не быть — пользователь «глобальный», к магазину
+        // отношения не имеет
+        role: record ? record.role : null,
+        is_fired: record ? !!record.is_fired : null,
+        earnings_factor: record ? record.earnings_factor : null,
+        was_employee: record ? !!record.was_employee : null,
+        // Может ли пользователь войти в магазин как сотрудник/staff
+        has_access: !!(record && !record.is_fired),
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('[getUserStores] Ошибка:', err);
     res.status(500).json({ error: err.message });
   }
 };

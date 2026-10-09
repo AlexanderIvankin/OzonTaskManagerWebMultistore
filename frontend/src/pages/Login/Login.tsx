@@ -48,9 +48,13 @@ export const Login = () => {
     setUnverifiedEmail(null);
     try {
       const result = await dispatch(login(data)).unwrap();
-      // result содержит { user, accessToken, refreshToken }
-      // Модератор = Администратор, Создатель тоже попадает в админку
-      if (["admin", "moderator", "god"].includes(result.user.role)) {
+      // MULTISTORE:
+      //   • корневой домен (store_id == null) → всегда /profile
+      //     (GlobalProfile со списком магазинов);
+      //   • поддомен магазина — роль уже эффективная, ведём в рабочий раздел.
+      if (result.user.store_id == null) {
+        navigate("/profile");
+      } else if (["admin", "moderator", "god"].includes(result.user.role)) {
         navigate("/admin");
       } else if (result.user.role === "employee") {
         navigate("/orders");
@@ -59,7 +63,10 @@ export const Login = () => {
       }
     } catch (err: any) {
       if (err?.response?.data?.code === "EMAIL_NOT_VERIFIED") {
-        setError(err?.response?.data?.error || "Email не подтверждён. Введите код из письма.");
+        setError(
+          err?.response?.data?.error ||
+            "Email не подтверждён. Введите код из письма.",
+        );
         // Подставляем email в ссылку подтверждения, только если введён именно email
         const raw = data.usernameOrEmail?.trim() || "";
         setUnverifiedEmail(raw.includes("@") ? raw : "");
@@ -111,25 +118,27 @@ export const Login = () => {
                 </p>
               )}
             </div>
-              <div className="flex justify-end mb-[16px]">
-                <Link
-                  to={`/reset-password${
-                    getValues("usernameOrEmail")?.includes("@")
-                      ? `?email=${encodeURIComponent(getValues("usernameOrEmail").trim())}`
-                      : ""
-                  }`}
-                  className="text-xs text-blue-600 hover:underline"
-                >
-                  Забыли пароль?
-                </Link>
-              </div>
+            <div className="flex justify-end mb-[16px]">
+              <Link
+                to={`/reset-password${
+                  getValues("usernameOrEmail")?.includes("@")
+                    ? `?email=${encodeURIComponent(getValues("usernameOrEmail").trim())}`
+                    : ""
+                }`}
+                className="text-xs text-blue-600 hover:underline"
+              >
+                Забыли пароль?
+              </Link>
+            </div>
 
             {error && <p className="text-sm mb-[15px] text-red-500">{error}</p>}
             {unverifiedEmail !== null && (
               <p className="text-sm mb-[15px]">
                 <Link
                   to={`/verify-email${
-                    unverifiedEmail ? `?email=${encodeURIComponent(unverifiedEmail)}` : ""
+                    unverifiedEmail
+                      ? `?email=${encodeURIComponent(unverifiedEmail)}`
+                      : ""
                   }`}
                   className="text-blue-600 hover:underline"
                 >

@@ -122,7 +122,11 @@ export interface AdminActiveOrder {
     currency_code?: string;
     images?: Array<{ url: string; name: string }>;
     // 3D-модель (zip в S3): наличие = кнопка скачивания у сотрудника
-    model?: { offerId: string; fileName: string; fileSize: number | null } | null;
+    model?: {
+      offerId: string;
+      fileName: string;
+      fileSize: number | null;
+    } | null;
     // Статистика товара (материал, цвет, вес); null — статистика не заполнена
     stats?: ProductStats | null;
   }>;
@@ -199,6 +203,13 @@ export const adminApi = {
 
   deleteUser: (id: number) =>
     api.delete(`/admin/users/${id}`).then((res) => res.data),
+
+  // Восстановление уволенного сотрудника в ТЕКУЩЕМ магазине:
+  // is_fired=0, роль в user_stores сохраняется (не понижается/повышается)
+  restoreUser: (id: number) =>
+    api
+      .post<{ message: string; role: string }>(`/admin/users/${id}/restore`)
+      .then((res) => res.data),
 
   // === Статистика команды (вкладка «Статистика», только персонал) ===
   getStaffStats: (includeFired = false) =>
@@ -288,9 +299,9 @@ export const adminApi = {
   // Активные заказы сотрудника (аналог /employee_orders)
   getUserOrders: (userId: number) =>
     api
-      .get<Array<{ order_id: string; assigned_at: number }>>(
-        `/admin/users/${userId}/orders`,
-      )
+      .get<
+        Array<{ order_id: string; assigned_at: number }>
+      >(`/admin/users/${userId}/orders`)
       .then((res) => res.data),
 
   // Завершённые заказы (страница «Завершённые заказы»): серверная пагинация.
@@ -372,9 +383,21 @@ export const adminApi = {
   exportProductStats: (): Promise<AxiosResponse<Blob>> =>
     api.get("/admin/export/product-stats", { responseType: "blob" }),
 
-  // === Скачивание файла базы данных (только админ) ===
+  // === Скачивание файлов БД (только персонал) ===
+  // MULTISTORE: у каждого магазина своя store-N.db, плюс три глобальные БД
+  // (users / models / notifications) и два ZIP-варианта.
   downloadDatabase: (): Promise<AxiosResponse<Blob>> =>
     api.get("/admin/export/database", { responseType: "blob" }),
+  downloadUsersDb: (): Promise<AxiosResponse<Blob>> =>
+    api.get("/admin/export/database/users", { responseType: "blob" }),
+  downloadModelsDb: (): Promise<AxiosResponse<Blob>> =>
+    api.get("/admin/export/database/models", { responseType: "blob" }),
+  downloadNotificationsDb: (): Promise<AxiosResponse<Blob>> =>
+    api.get("/admin/export/database/notifications", { responseType: "blob" }),
+  downloadStoreAllDatabases: (): Promise<AxiosResponse<Blob>> =>
+    api.get("/admin/export/database/store-all", { responseType: "blob" }),
+  downloadAllDatabases: (): Promise<AxiosResponse<Blob>> =>
+    api.get("/admin/export/database/all", { responseType: "blob" }),
 
   // === Создание бэкапа БД на сервере (только админ) ===
   createDbBackup: () => api.post("/admin/backup").then((res) => res.data),
@@ -415,7 +438,9 @@ export const adminApi = {
   // С сотрудником — отправить ему этикетку (оповещение + скачивание)
   sendOrderLabelToEmployee: (orderId: string, userId: number) =>
     api
-      .post(`/admin/orders/${encodeURIComponent(orderId)}/label/send`, { userId })
+      .post(`/admin/orders/${encodeURIComponent(orderId)}/label/send`, {
+        userId,
+      })
       .then((res) => res.data),
 
   // === 3D-модели (zip-архивы в S3, раздел «Модели») ===
@@ -430,18 +455,21 @@ export const adminApi = {
     formData.append("file", file);
     if (offerId) formData.append("offerId", offerId);
     return api
-      .post<{ message: string; model: OfferModelRow }>(
-        "/admin/models/upload",
-        formData,
-        { headers: { "Content-Type": "multipart/form-data" } },
-      )
+      .post<{
+        message: string;
+        model: OfferModelRow;
+      }>("/admin/models/upload", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
       .then((res) => res.data);
   },
 
   // Удалить модель (zip из S3 + метаданные)
   deleteModel: (offerId: string) =>
     api
-      .delete<{ message: string }>(`/admin/models/${encodeURIComponent(offerId)}`)
+      .delete<{
+        message: string;
+      }>(`/admin/models/${encodeURIComponent(offerId)}`)
       .then((res) => res.data),
 
   // Скачать модель себе (персонал)

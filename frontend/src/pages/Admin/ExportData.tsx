@@ -29,6 +29,12 @@ export const ExportData = () => {
   const [loadingDb, setLoadingDb] = useState(false);
   const [loadingTeam, setLoadingTeam] = useState(false);
   const [creatingBackup, setCreatingBackup] = useState(false);
+  // MULTISTORE: пять видов скачивания БД (одна + три общие + два ZIP)
+  const [loadingUsersDb, setLoadingUsersDb] = useState(false);
+  const [loadingModelsDb, setLoadingModelsDb] = useState(false);
+  const [loadingNotificationsDb, setLoadingNotificationsDb] = useState(false);
+  const [loadingStoreAll, setLoadingStoreAll] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
 
   const handleExportProductStats = async () => {
     setLoadingStats(true);
@@ -66,6 +72,75 @@ export const ExportData = () => {
     } finally {
       setLoadingDb(false);
     }
+  };
+
+  /** Универсальный даунлоадер для снимков БД. */
+  const downloadBlobWithName = async (
+    fetcher: () => Promise<any>,
+    fallbackName: string,
+    setLoading: (v: boolean) => void,
+    errorPrefix: string,
+  ) => {
+    setLoading(true);
+    try {
+      const res = await fetcher();
+      downloadBlob(res.data, getDownloadFileName(res, fallbackName));
+      toast.success("Файл скачан");
+    } catch (err: any) {
+      toast.error(await getBlobErrorMessage(err, errorPrefix));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDownloadUsersDb = () =>
+    downloadBlobWithName(
+      () => adminApi.downloadUsersDb(),
+      "users.db",
+      setLoadingUsersDb,
+      "Ошибка скачивания users.db",
+    );
+
+  const handleDownloadModelsDb = () =>
+    downloadBlobWithName(
+      () => adminApi.downloadModelsDb(),
+      "models.db",
+      setLoadingModelsDb,
+      "Ошибка скачивания models.db",
+    );
+
+  const handleDownloadNotificationsDb = () =>
+    downloadBlobWithName(
+      () => adminApi.downloadNotificationsDb(),
+      "notifications.db",
+      setLoadingNotificationsDb,
+      "Ошибка скачивания notifications.db",
+    );
+
+  const handleDownloadStoreAll = () => {
+    if (!confirm("Скачать ZIP с БД текущего магазина + 3 общие БД?")) return;
+    return downloadBlobWithName(
+      () => adminApi.downloadStoreAllDatabases(),
+      "store_all.zip",
+      setLoadingStoreAll,
+      "Ошибка скачивания ZIP",
+    );
+  };
+
+  const handleDownloadAll = () => {
+    if (
+      !confirm(
+        "Скачать ZIP со ВСЕМИ БД приложения (все магазины + 3 общие)? " +
+          "Это может быть долго и большой файл.",
+      )
+    )
+      return;
+    return downloadBlobWithName(
+      () => adminApi.downloadAllDatabases(),
+      "all_databases.zip",
+      setLoadingAll,
+      "Ошибка скачивания ZIP",
+    );
   };
 
   const handleCreateBackup = async () => {
@@ -174,11 +249,12 @@ export const ExportData = () => {
       </Card>
 
       {/* База данных — для персонала (admin/moderator/god) */}
+      {/* База данных — для персонала (admin/moderator/god) */}
       {isAdmin && (
         <Card>
           <CardHeader className="flex flex-col items-center text-center justify-center gap-2 sm:text-start sm:flex-row sm:justify-start">
             <CardTitle className="flex items-center gap-2">
-              🗄️ Файл базы данных
+              🗄️ Базы данных
             </CardTitle>
             <div>
               <Badge variant="destructive">Backup</Badge>
@@ -186,36 +262,101 @@ export const ExportData = () => {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Скачивается консистентный снимок базы данных (VACUUM INTO) на
-              момент запроса: снимок пересобирается, поэтому его размер может
-              быть меньше файла БД на сервере — лишние страницы и «дырки» после
-              удалений в него не попадают. Кнопка «Бэкап на сервере» создаёт
-              такой же проверенный снимок в папке backend/backups (ежедневный
-              автобэкап также запускается планировщиком в 00:00).
+              Скачиваются консистентные снимки (VACUUM INTO) на момент запроса:
+              снимок пересобирается, поэтому размер может быть меньше файла БД
+              на сервере — лишние страницы и «дырки» после удалений в него не
+              попадают. Каждая БД в отдельной папке backups/&lt;label&gt;/.
             </p>
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
-              <Button
-                onClick={handleDownloadDatabase}
-                disabled={loadingDb}
-                variant="outline"
-                className="min-w-0"
-              >
-                <span className="truncate min-w-0">
-                  {loadingDb
-                    ? "Готовим снимок..."
-                    : "💾 Скачать базу данных (.db)"}
-                </span>
-              </Button>
-              <Button
-                onClick={handleCreateBackup}
-                disabled={creatingBackup}
-                variant="outline"
-                className="min-w-0"
-              >
-                <span className="truncate min-w-0">
-                  {creatingBackup ? "Создаём бэкап..." : "🗄️ Бэкап на сервере"}
-                </span>
-              </Button>
+
+            {/* store-N.db — БД текущего магазина */}
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Этот магазин</p>
+              <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+                <Button
+                  onClick={handleDownloadDatabase}
+                  disabled={loadingDb}
+                  variant="outline"
+                  className="min-w-0"
+                >
+                  <span className="truncate min-w-0">
+                    {loadingDb ? "Готовим снимок..." : "💾 Скачать store-N.db"}
+                  </span>
+                </Button>
+                <Button
+                  onClick={handleDownloadStoreAll}
+                  disabled={loadingStoreAll}
+                  variant="outline"
+                  className="min-w-0"
+                >
+                  <span className="truncate min-w-0">
+                    {loadingStoreAll
+                      ? "Готовим ZIP..."
+                      : "📦 ZIP: магазин + общие БД"}
+                  </span>
+                </Button>
+              </div>
+            </div>
+
+            {/* Общие БД */}
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Общие БД (глобальные)</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  onClick={handleDownloadUsersDb}
+                  disabled={loadingUsersDb}
+                  variant="outline"
+                  size="sm"
+                >
+                  {loadingUsersDb ? "..." : "👥 users.db"}
+                </Button>
+                <Button
+                  onClick={handleDownloadModelsDb}
+                  disabled={loadingModelsDb}
+                  variant="outline"
+                  size="sm"
+                >
+                  {loadingModelsDb ? "..." : "🧊 models.db"}
+                </Button>
+                <Button
+                  onClick={handleDownloadNotificationsDb}
+                  disabled={loadingNotificationsDb}
+                  variant="outline"
+                  size="sm"
+                >
+                  {loadingNotificationsDb ? "..." : "🔔 notifications.db"}
+                </Button>
+              </div>
+            </div>
+
+            {/* Полный бэкап всех БД */}
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Резервные копии</p>
+              <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+                <Button
+                  onClick={handleDownloadAll}
+                  disabled={loadingAll}
+                  variant="outline"
+                  className="min-w-0"
+                >
+                  <span className="truncate min-w-0">
+                    {loadingAll
+                      ? "Готовим ZIP..."
+                      : "📦 ZIP: все БД приложения"}
+                  </span>
+                </Button>
+                <Button
+                  onClick={handleCreateBackup}
+                  disabled={creatingBackup}
+                  variant="outline"
+                  className="min-w-0"
+                >
+                  <span className="truncate min-w-0">
+                    {creatingBackup
+                      ? "Создаём бэкап..."
+                      : "🗄️ Бэкап на сервере"}
+                  </span>
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>

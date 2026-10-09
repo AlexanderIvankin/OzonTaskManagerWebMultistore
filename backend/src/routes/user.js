@@ -15,15 +15,33 @@ router.get('/profile', userController.getProfile);
 router.put('/profile', userController.updateDisplayName);
 
 // ===========================================================================
-// Web Push: подписки на оповещения.
-// Размещено ДО requireEmployee — подписаться может ЛЮБОЙ авторизованный, т.к.
-// личные оповещения приходят всем ролям (включая 'user': например, сброс пароля).
-// Канал доставки (Socket.IO или Web Push) выбирает NotificationService.
+// Глобальные (не store-scoped) роуты — доступны ЛЮБОМУ авторизованному,
+// в том числе на корневом домене без магазина (req.storeId = null).
+// Размещены ДО requireEmployee.
 // ===========================================================================
+
+// Список магазинов пользователя (для страницы «Глобальный профиль»).
+// Резолвер разрешает /user/stores без магазина — из него строится dashboard.
+router.get('/stores', userController.getUserStores);
+
+// Web Push: подписки на оповещения.
+// Подписаться может любой авторизованный (личные оповещения приходят всем
+// ролям, включая 'user'). Канал доставки (Socket.IO или Web Push) выбирает
+// NotificationService.
 router.get('/push-public-key', userController.getPushPublicKey);
 router.get('/push-status', userController.getPushStatus);
 router.post('/push-subscribe', userController.pushSubscribe);
 router.post('/push-unsubscribe', userController.pushUnsubscribe);
+
+// Приём заказов — сквозной флаг users.taking_orders (глобальный).
+// Работает и на глобальном домене (req.storeId = null): сотрудник может
+// отключить приём заказов сразу во всех магазинах, где он числится.
+// Кулдаун — с ключом 'null:userId' (единый для всех магазинов).
+router.post(
+  '/toggle-orders',
+  cooldown('toggleOrders', 'Переключение приёма заказов'),
+  userController.toggleOrders,
+);
 
 // Для всех остальных маршрутов требуется роль сотрудника (employee, moderator, admin)
 router.use(requireEmployee);
@@ -66,13 +84,6 @@ router.get(
 
 // Скачать этикетку, отправленную администратором (label_sent)
 router.get('/labels/:orderId/sent', userController.getSentLabel);
-
-// Переключить приём заказов (кулдаун 1 мин после успеха — как /toggle_orders в боте)
-router.post(
-  '/toggle-orders',
-  cooldown('toggleOrders', 'Переключение приёма заказов'),
-  userController.toggleOrders
-);
 
 // Заработок за месяц
 router.get('/earnings/monthly', userController.getMonthlyEarnings);

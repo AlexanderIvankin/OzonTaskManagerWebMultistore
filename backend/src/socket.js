@@ -15,16 +15,36 @@ let io;
 function initSocket(server) {
   io = new Server(server, {
     cors: {
-      // Паритет с HTTP-CORS в server.js: dev-порты + боевой origin магазина.
-      // Полный per-store CORS здесь не нужен: фронт магазина shop1 ходит на
-      // поддомен shop1, и socket.io отправляет запрос туда же.
-      origin: [
-        'http://localhost:3000',
-        'http://localhost:5173',
-        process.env.CLIENT_ORIGIN,
-        process.env.CLIENT_URL,
-      ].filter(Boolean),
-      methods: ['GET', 'POST'],
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        // dev-порты и любые *.lvh.me / *.nip.io / localhost
+        const devPatterns = [
+          "http://localhost:3000",
+          "http://localhost:5173",
+        ];
+        if (devPatterns.includes(origin)) return callback(null, true);
+        try {
+          const host = new URL(origin).hostname;
+          if (
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === "lvh.me" ||
+            host.endsWith(".lvh.me") ||
+            host.endsWith(".nip.io")
+          ) {
+            return callback(null, true);
+          }
+        } catch { /* ignore */ }
+        // prod: только CLIENT_ORIGIN / CLIENT_URL
+        if (
+          origin === process.env.CLIENT_ORIGIN ||
+          origin === process.env.CLIENT_URL
+        ) {
+          return callback(null, true);
+        }
+        return callback(null, false);
+      },
+      methods: ["GET", "POST"],
       credentials: true,
     },
   });

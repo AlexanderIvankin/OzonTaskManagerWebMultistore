@@ -361,15 +361,15 @@ export const Users = () => {
   const handleRestoreUser = async (user: User) => {
     if (!confirm(`Восстановить пользователя ${user.name}?`)) return;
     try {
-      await adminApi.updateUser(user.id, {
-        is_fired: false,
-        taking_orders: true,
-        role: "employee",
-      });
+      // Роль в user_stores НЕ меняется — сохраняется та, что была до увольнения.
+      // Восстановление возвращает is_fired=0 и включает приём заказов.
+      await adminApi.restoreUser(user.id);
       toast.success(`Пользователь ${user.name} восстановлен`);
       loadUsers();
     } catch (err: any) {
-      toast.error(err.message || "Ошибка восстановления");
+      toast.error(
+        err?.response?.data?.error || err.message || "Ошибка восстановления",
+      );
     }
   };
 
@@ -863,6 +863,11 @@ export const Users = () => {
                               >
                                 🔄 Восстановить
                               </Button>
+                            ) : user.role === "god" ? (
+                              // Создателя уволить нельзя никому — даже самому Создателю
+                              <span className="text-xs text-halloween-text">
+                                🎃
+                              </span>
                             ) : (
                               <Button
                                 variant="destructive"

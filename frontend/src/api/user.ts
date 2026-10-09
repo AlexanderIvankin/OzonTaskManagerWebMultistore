@@ -1,6 +1,14 @@
 import api from ".";
+import type { StoreInfo } from "../types";
 
 export const userApi = {
+  /**
+   * Список магазинов пользователя (для глобального профиля).
+   * Работает без магазина — можно вызвать на корневом домене.
+   */
+  getStores: () =>
+    api.get<StoreInfo[]>("/user/stores").then((res) => res.data),
+
   // Получить активный заработок
   getActiveEarnings: () =>
     api.get("/user/earnings/active").then((res) => res.data),

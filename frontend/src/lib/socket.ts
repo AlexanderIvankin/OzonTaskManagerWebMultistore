@@ -1,9 +1,11 @@
 import { io, Socket } from "socket.io-client";
 import api from "../api";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
-// Сокет подключается к корню сервера (без /api)
-const SERVER_URL = API_URL.replace(/\/api\/?$/, "");
+// MULTISTORE: socket.io подключается к тому же origin, где открыт фронт
+// (shop1.lvh.me:5173 → shop1.lvh.me:5173). Vite proxy перекидывает и HTTP,
+// и WebSocket на backend, сохраняя Host — тогда storeResolver на бэке видит
+// нужный магазин (см. vite.config.ts → server.proxy).
+const SERVER_URL = window.location.origin;
 
 let socket: Socket | null = null;
 let refreshAttempts = 0;

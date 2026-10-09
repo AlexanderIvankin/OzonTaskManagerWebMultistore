@@ -65,14 +65,73 @@ function resolveStoreId(hostname) {
 }
 
 /**
+ * Глобальные пути — доступны БЕЗ магазина (например, на корневом домене
+ * myapp.com, где нет магазина, но живёт глобальный профиль).
+ *
+ * req.path здесь уже БЕЗ префикса /api (роутер смонтирован на /api),
+ * поэтому проверяем пути в форме '/auth/login', '/user/stores' и т.д.
+ *
+ * Если запрос пришёл с магазинного поддомена (shop1.example.com) — эти же
+ * пути работают как обычно, просто req.storeId будет заполнен.
+ */
+function isGlobalPath(path) {
+  if (path === '/auth' || path.startsWith('/auth/')) return true;
+  // Список магазинов пользователя (страница GlobalProfile)
+  if (path === '/user/stores') return true;
+  // Push-подписки — глобальные (привязаны к устройству, не к магазину)
+  if (path.startsWith('/user/push-')) return true;
+  // Оповещения — общие для всех магазинов: на глобальном домене
+  // отдаём ЕДИНЫЙ inbox со всех магазинов (Notification.getByRecipient
+  // с storeId=null не применяет фильтр по магазину).
+  if (path === '/notifications' || path.startsWith('/notifications/')) return true;
+  // Приём заказов — сквозной флаг users.taking_orders (глобальный,
+  // не per-store), переключается и с глобального домена тоже.
+  if (path === '/user/toggle-orders') return true;
+  return false;
+}
+
+/**
  * Express-middleware. Кладёт req.storeId и req.store.
  * Вешается на /api ДО authenticate и роутов.
+ *
+ * MULTISTORE + глобальный домен:
+ *   • магазин определён → req.storeId, req.store заполнены;
+ *   • магазин не определён, но путь глобальный (/auth/*, /user/stores,
+ *     /user/push-*) → req.storeId = null, req.store = null, пропускаем;
+ *   • магазин не определён и путь НЕ глобальный → 404 STORE_NOT_FOUND.
  */
 function storeResolver(req, res, next) {
   const hostname = hostnameFromHostHeader(req.headers.host);
+  const rootDomain = (process.env.ROOT_DOMAIN || '').trim().toLowerCase();
+
+  // 1. Корневой домен = ГЛОБАЛЬНЫЙ контекст (магазина нет).
+  //    Здесь работает только глобальный набор путей: /auth/*, /user/stores,
+  //    /user/push-*. Всё остальное — 404 (магазин не выбран).
+  //    Без этой проверки fallback «единственный магазин» вернул бы магазин 1
+  //    даже на корневом домене, и фронт не смог бы отличить глобальный
+  //    профиль от магазинного.
+  if (rootDomain && (hostname === rootDomain || hostname === `www.${rootDomain}`)) {
+    if (isGlobalPath(req.path)) {
+      req.storeId = null;
+      req.store = null;
+      return next();
+    }
+    return res.status(404).json({
+      error: 'Магазин не найден',
+      code: 'STORE_NOT_FOUND',
+      host: req.headers.host || null,
+    });
+  }
+
+  // 2. Резолвинг магазина по Host (shop1.example.com → магазин 1)
   const storeId = resolveStoreId(hostname);
 
   if (!storeId) {
+    if (isGlobalPath(req.path)) {
+      req.storeId = null;
+      req.store = null;
+      return next();
+    }
     return res.status(404).json({
       error: 'Магазин не найден',
       code: 'STORE_NOT_FOUND',

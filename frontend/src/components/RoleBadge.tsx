@@ -2,11 +2,16 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 
 // === Роли аккаунта и их отображение ===
-// Единый источник подписей ролей (используется также в Select и т.п.)
+// MULTISTORE: роль в этом словаре — ЭФФЕКТИВНАЯ (в текущем магазине).
+// Backend отдаёт её в user.role (см. src/types/index.ts → effectiveRole).
+//
+//   • guest     — зарегистрировался, но не подтвердил email;
+//   • user      — подтверждён, но не сотрудник этого магазина;
+//   • employee  — сотрудник магазина;
+//   • moderator — модератор магазина (полный доступ, live-тосты);
+//   • admin     — админ магазина (полный доступ);
+//   • god       — Создатель (глобально, единственный).
 export const ROLE_LABELS: Record<string, string> = {
-  // Гость — зарегистрировался, но не подтвердил email (удаляется
-  // планировщиком через GUEST_TTL_HOURS). Показывается только во вкладке
-  // «Пользователи», чтобы админ видел попытки регистрации.
   guest: "⏳ Гость",
   user: "👤 Пользователь",
   employee: "👷 Сотрудник",
@@ -37,16 +42,15 @@ const ROLE_BADGE_STYLES: Record<
 };
 
 interface RoleBadgeProps {
-  /** Роль аккаунта (см. backend: guest/user/employee/moderator/admin/god) */
+  /** Эффективная роль (см. src/types/index.ts → EffectiveRole). */
   role: string;
   /** Дополнительные классы поверх стиля роли (например, font-bold) */
   className?: string;
 }
 
 /**
- * Значок роли аккаунта — единая точка отображения ролей в интерфейсе
+ * Значок роли — единая точка отображения ролей в интерфейсе
  * (профиль, список пользователей, заработки и т.д.).
- * Подписи берутся из ROLE_LABELS, стиль — из ROLE_BADGE_STYLES.
  */
 export function RoleBadge({ role, className }: RoleBadgeProps) {
   const style = ROLE_BADGE_STYLES[role] ?? {

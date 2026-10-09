@@ -2,8 +2,12 @@ import axios from "axios";
 import { store } from "../store";
 import { updateUser, logout } from "../store/authSlice";
 
+// MULTISTORE: baseURL относительный — запросы идут на тот же origin, где
+// открыт фронт (shop1.example.com → shop1.example.com/api/... → nginx →
+// backend видит Host: shop1.example.com → storeResolver находит магазин).
+// В dev Vite-proxy перекидывает /api → http://localhost:5000, сохраняя Host.
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "http://localhost:5000/api",
+  baseURL: "/api",
   headers: { "Content-Type": "application/json" },
   withCredentials: true,
 });
@@ -25,10 +29,7 @@ async function performRefresh(): Promise<string> {
   const refreshToken = localStorage.getItem("refreshToken");
   if (!refreshToken) throw new Error("No refresh token");
 
-  const { data } = await axios.post(
-    `${import.meta.env.VITE_API_URL || "http://localhost:5000/api"}/auth/refresh`,
-    { refreshToken },
-  );
+  const { data } = await axios.post(`/api/auth/refresh`, { refreshToken });
 
   localStorage.setItem("accessToken", data.accessToken);
   // Поддерживаем ротацию refresh-токена, если сервер его возвращает
@@ -37,12 +38,9 @@ async function performRefresh(): Promise<string> {
   }
 
   // Обновляем пользователя в store свежими данными
-  const userResponse = await axios.get(
-    `${import.meta.env.VITE_API_URL || "http://localhost:5000/api"}/auth/me`,
-    {
-      headers: { Authorization: `Bearer ${data.accessToken}` },
-    },
-  );
+  const userResponse = await axios.get(`/api/auth/me`, {
+    headers: { Authorization: `Bearer ${data.accessToken}` },
+  });
   store.dispatch(updateUser(userResponse.data));
 
   return data.accessToken;

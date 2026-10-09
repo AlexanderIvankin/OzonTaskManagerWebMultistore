@@ -14,6 +14,10 @@
 ### Для публичных (профиль, push) можно и под userToken:
 # @accessToken = {{userToken}}
 
+### Список магазинов пользователя (глобальный профиль)
+GET {{baseUrl}}/api/user/stores
+Authorization: Bearer {{accessToken}}
+
 ### Получить активные заказы (требуется роль сотрудника)
 GET {{baseUrl}}/api/user/orders/active
 Authorization: Bearer {{accessToken}}
@@ -21,11 +25,6 @@ Authorization: Bearer {{accessToken}}
 ### Завершить заказ (пример с TEST-ORDER-001)
 POST {{baseUrl}}/api/user/orders/TEST-ORDER-001/finish
 Authorization: Bearer {{accessToken}}
-### ============================================================
-###  USER — кабинет сотрудника (store определяется по Host)
-### ============================================================
-@baseUrl = http://localhost:5000
-@accessToken = PASTE_ACCESS_TOKEN_HERE
 
 ### ---------- Профиль ----------
 

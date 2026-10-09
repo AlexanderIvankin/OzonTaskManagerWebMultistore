@@ -25,13 +25,17 @@ async function authenticate(req, res, next) {
   // Роль в ТЕКУЩЕМ магазине — из user_stores (глобальная users.role тут
   // только 'god' | 'user' | 'guest'). Именно per-store роль определяет
   // права: сотрудник магазина 1 может быть обычным пользователем магазина 2.
+  //
+  // storeRecord объявлен СНАРУЖИ if — он нужен ниже для формирования
+  // вложенного блока req.user.store (в т.ч. когда записи нет → null).
+  let storeRecord = null;
   let storeRole = null;
   let isFired = 0;
   let earningsFactor = 1.0;
   let wasEmployee = 0;
 
   if (req.storeId) {
-    const storeRecord = await UserStore.get(user.id, req.storeId);
+    storeRecord = await UserStore.get(user.id, req.storeId);
     if (storeRecord) {
       storeRole = storeRecord.role;
       isFired = storeRecord.is_fired ? 1 : 0;
@@ -65,6 +69,18 @@ async function authenticate(req, res, next) {
     earnings_factor: earningsFactor,
     was_employee: wasEmployee,
     store_id: req.storeId || null,
+    // Вложенный per-store блок — «есть ли запись в user_stores» для этого
+    // магазина. Фронт использует его в StoreProfile, чтобы отличить
+    // «уволен» от «нет роли в этом магазине». На глобальном домене —
+    // null (магазина нет).
+    store: storeRecord
+      ? {
+        role: storeRecord.role,
+        is_fired: !!storeRecord.is_fired,
+        earnings_factor: storeRecord.earnings_factor ?? 1.0,
+        was_employee: !!storeRecord.was_employee,
+      }
+      : null,
   };
   next();
 }
