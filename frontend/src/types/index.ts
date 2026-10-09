@@ -99,7 +99,7 @@ export interface StoreInfo {
 /**
  * URL магазина для перехода из глобального профиля.
  *
- * • prod: отдаём client_origin как есть (https://shop1.example.com/profile);
+ * • prod: отдаём client_origin как есть (https://store1.example.com/profile);
  * • dev:  client_origin может быть localhost — тогда перестраиваем на
  *   <subdomain>.<корневой_домен>:<текущий_порт>. Это делает переходы
  *   рабочими при dev через lvh.me.
@@ -108,7 +108,7 @@ export const storeUrl = (store: StoreInfo, path = "/profile"): string => {
   const suffix = path.startsWith("/") ? path : `/${path}`;
 
   // ВАЖНО: dev определяем по ТЕКУЩЕМУ окну, а НЕ по client_origin магазина.
-  // client_origin в .env.storeN указывает на прод-домен (shop1.your-domain.ru),
+  // client_origin в .env.storeN указывает на прод-домен (store1.your-domain.ru),
   // и если бы мы смотрели на него, то из dev редирект улетал бы на прод.
   const { protocol, hostname, port } = window.location;
   const portPart = port ? `:${port}` : "";

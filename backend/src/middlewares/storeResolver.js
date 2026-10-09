@@ -3,7 +3,7 @@
 // Приоритет:
 //   1. Точное совпадение hostname с hostname из CLIENT_ORIGIN магазина.
 //   2. Совпадение первого лейбла hostname с SUBDOMAIN магазина
-//      (shop1.example.com -> 'shop1'; 1.example.com -> '1').
+//      (store1.example.com -> 'store1'; 1.example.com -> '1').
 //   3. Fallback: если в реестре ровно ОДИН магазин — отдаём его для любого Host.
 //      Это рабочий режим локальной разработки (localhost:3000/5000)
 //      и этап миграции на один магазин.
@@ -15,7 +15,7 @@
 const stores = require('../config/stores');
 const { getStoreIds } = stores;
 
-/** 'https://shop1.example.com:443' -> 'shop1.example.com' */
+/** 'https://store1.example.com:443' -> 'store1.example.com' */
 function hostnameFromOrigin(origin) {
   if (!origin) return null;
   try {
@@ -25,7 +25,7 @@ function hostnameFromOrigin(origin) {
   }
 }
 
-/** 'shop1.example.com:5000' -> 'shop1.example.com' */
+/** 'store1.example.com:5000' -> 'store1.example.com' */
 function hostnameFromHostHeader(hostHeader) {
   if (!hostHeader) return null;
   return String(hostHeader).split(':')[0].trim().toLowerCase();
@@ -71,7 +71,7 @@ function resolveStoreId(hostname) {
  * req.path здесь уже БЕЗ префикса /api (роутер смонтирован на /api),
  * поэтому проверяем пути в форме '/auth/login', '/user/stores' и т.д.
  *
- * Если запрос пришёл с магазинного поддомена (shop1.example.com) — эти же
+ * Если запрос пришёл с магазинного поддомена (store1.example.com) — эти же
  * пути работают как обычно, просто req.storeId будет заполнен.
  */
 function isGlobalPath(path) {
@@ -127,7 +127,7 @@ function storeResolver(req, res, next) {
     });
   }
 
-  // 2. Резолвинг магазина по Host (shop1.example.com → магазин 1)
+  // 2. Резолвинг магазина по Host (store1.example.com → магазин 1)
   const storeId = resolveStoreId(hostname);
 
   if (!storeId) {

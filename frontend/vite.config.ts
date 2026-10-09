@@ -14,9 +14,9 @@ export default defineConfig({
     host: true,
     port: 5173,
     // Разрешаем любые поддомены lvh.me и nip.io (для dev через поддомены):
-    //   shop1.lvh.me:5173 → магазин 1
+    //   store1.lvh.me:5173 → магазин 1
     //   lvh.me:5173       → глобальный профиль
-    //   shop1.nip.io:5173 → альтернатива
+    //   store1.nip.io:5173 → альтернатива
     // Точка перед доменом = «и сам домен, и все его поддомены».
     allowedHosts: [".lvh.me", ".nip.io", "localhost", "127.0.0.1"],
     proxy: {

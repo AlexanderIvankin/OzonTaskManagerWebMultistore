@@ -81,7 +81,7 @@ function hostnameFromOrigin(origin) {
 }
 
 // Хосты, которые считаем «dev-окружением» (любой поддомен разрешён для CORS).
-// Сделано для разработки через lvh.me / nip.io: shop1.lvh.me:5173 должен
+// Сделано для разработки через lvh.me / nip.io: store1.lvh.me:5173 должен
 // ходить в backend на localhost:5000 без настройки clientOrigin.
 function isDevHostname(hostname) {
   if (!hostname) return false;

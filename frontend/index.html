@@ -29,7 +29,7 @@
   <div id="root"></div>
   <script>
     // MULTISTORE: подхват токенов из URL-хэша при переходе между поддоменами
-    // (localStorage у каждого origin свой — shop1.lvh.me не видит токены lvh.me).
+    // (localStorage у каждого origin свой — store1.lvh.me не видит токены lvh.me).
     // Выполняется ДО main.tsx, чтобы store успел прочитать свежие значения.
     (function () {
       var h = window.location.hash;

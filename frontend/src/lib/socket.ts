@@ -2,7 +2,7 @@ import { io, Socket } from "socket.io-client";
 import api from "../api";
 
 // MULTISTORE: socket.io подключается к тому же origin, где открыт фронт
-// (shop1.lvh.me:5173 → shop1.lvh.me:5173). Vite proxy перекидывает и HTTP,
+// (store1.lvh.me:5173 → store1.lvh.me:5173). Vite proxy перекидывает и HTTP,
 // и WebSocket на backend, сохраняя Host — тогда storeResolver на бэке видит
 // нужный магазин (см. vite.config.ts → server.proxy).
 const SERVER_URL = window.location.origin;

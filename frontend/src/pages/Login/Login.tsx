@@ -32,7 +32,7 @@ export const Login = () => {
   const [loading, setLoading] = useState(false);
 
   // Очистка токенов при переходе из магазина (см. Layout.handleLogout).
-  // localStorage привязан к origin, поэтому выход с shop1 не затирает
+  // localStorage привязан к origin, поэтому выход с store1 не затирает
   // токены на lvh.me — чистим их здесь.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

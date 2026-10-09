@@ -3,8 +3,8 @@ import { store } from "../store";
 import { updateUser, logout } from "../store/authSlice";
 
 // MULTISTORE: baseURL относительный — запросы идут на тот же origin, где
-// открыт фронт (shop1.example.com → shop1.example.com/api/... → nginx →
-// backend видит Host: shop1.example.com → storeResolver находит магазин).
+// открыт фронт (store1.example.com → store1.example.com/api/... → nginx →
+// backend видит Host: store1.example.com → storeResolver находит магазин).
 // В dev Vite-proxy перекидывает /api → http://localhost:5000, сохраняя Host.
 const api = axios.create({
   baseURL: "/api",

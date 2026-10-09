@@ -56,8 +56,8 @@ function initSocket(server) {
       return next(new Error('Authentication error'));
     }
 
-    // StoreId — по Host того же handshake (фронт на поддомене shop1
-    // подключается к сокету на shop1). Это тот же resolveStoreId, что и в
+    // StoreId — по Host того же handshake (фронт на поддомене store1
+    // подключается к сокету на store1). Это тот же resolveStoreId, что и в
     // HTTP: single-store fallback работает и здесь (dev на localhost).
     const hostname = String(socket.handshake.headers.host || '')
       .split(':')[0].trim().toLowerCase();
@@ -151,7 +151,7 @@ function notifyStaffLive(storeId, event, data) {
 
 /**
  * Онлайн ли пользователь В КОНКРЕТНОМ МАГАЗИНЕ.
- * storeId обязателен: одна персона на shop1 и shop2 — разные соединения
+ * storeId обязателен: одна персона на store1 и shop2 — разные соединения
  * в разных поддоменах, разные комнаты.
  */
 function isUserOnline(storeId, userId) {

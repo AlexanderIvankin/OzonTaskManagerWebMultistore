@@ -2,7 +2,7 @@
  * Утилиты для построения URL между корневым доменом и магазинными
  * сабдоменами. Frontend и backend используют соглашение:
  *   • корневой домен (lvh.me / myapp.com) — глобальный профиль;
- *   • поддомен (shop1.lvh.me / shop1.myapp.com) — конкретный магазин.
+ *   • поддомен (store1.lvh.me / store1.myapp.com) — конкретный магазин.
  *
  * getRootOrigin() возвращает origin БЕЗ поддомена, с сохранением протокола
  * и порта (для dev-порта 5173).
@@ -26,7 +26,7 @@ export function getRootOrigin(): string {
   // myapp.com — уже корень
   if (parts.length <= 2) return origin;
 
-  // shop1.myapp.com → myapp.com; shop1.lvh.me → lvh.me
+  // store1.myapp.com → myapp.com; store1.lvh.me → lvh.me
   const rootHost = parts.slice(-2).join(".");
   return `${protocol}//${rootHost}${portPart}`;
 }

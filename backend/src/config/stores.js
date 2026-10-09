@@ -39,7 +39,7 @@ function buildStore(storeId) {
   if (!env.CLIENT_ORIGIN) {
     throw new Error(
       `[stores] Магазин ${storeIdFinal}: не задан CLIENT_ORIGIN ` +
-      `(нужен для CORS; пример: https://shop1.your-domain.ru)`
+      `(нужен для CORS; пример: https://store1.your-domain.ru)`
     );
   }
 
@@ -55,7 +55,7 @@ function buildStore(storeId) {
     name: String(env.STORE_NAME || `Магазин ${storeIdFinal}`).trim(),
 
     // Поддомен для резолва магазина по Host (см. middlewares/storeResolver.js).
-    // shop1.example.com -> 'shop1'. Если SUBDOMAIN не задан — берётся STORE_ID.
+    // store1.example.com -> 'store1'. Если SUBDOMAIN не задан — берётся STORE_ID.
     // Храним в нижнем регистре: Host приходит в нижнем регистре.
     subdomain: String(env.SUBDOMAIN || storeIdFinal).toLowerCase(),
 
