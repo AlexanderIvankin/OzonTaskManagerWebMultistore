@@ -65,7 +65,10 @@ function writeTeamInfoXlsx(employees) {
     const mk = async (key, role, extra = {}) => {
       const u = await User.create({
         username: `smoke_sync_${key}_${ts}`, email: `smoke_sync_${key}_${ts}@test.local`,
-        passwordHash: 'x', name: extra.name || key,
+        passwordHash: 'x',
+        // ?? — чтобы пустое '' НЕ заменялось на key (иначе не сможем
+        // проверить, что sync заполняет пустые поля god из Excel).
+        name: extra.name !== undefined ? extra.name : key,
         role: extra.globalRole || 'user', tgUserId: extra.tgUserId || null,
       });
       created[key] = u;
@@ -84,7 +87,8 @@ function writeTeamInfoXlsx(employees) {
     const plain = await mk('user', null, { name: 'Новый Сотрудник', tgUserId: '1004' });
     const guest = await mk('guest', null, { name: 'Не подтвердил', tgUserId: '1006', globalRole: 'guest' });
     const admin = await mk('admin', 'admin', { name: 'Админ', tgUserId: '1005' });
-    const god = await mk('god', 'god', { name: 'Создатель', tgUserId: '1007', globalRole: 'god' });
+    // god — с ПУСТЫМИ полями, проверим что Excel их заполнит
+    const god = await mk('god', 'god', { name: '', tgUserId: null, globalRole: 'god' });
 
     // Активное назначение для emp2 — должно быть снято при увольнении
     await storeDb.run(
@@ -147,6 +151,32 @@ function writeTeamInfoXlsx(employees) {
     console.log(`7. guest: user_stores=${gu === null ? 'нет' : 'есть'}, global_role=${guGlobal.role}`);
     assert(gu === null, '7. у guest нет записи в user_stores');
     assert(guGlobal.role === 'guest', '7. guest остаётся guest');
+
+    // 7a. God: заполнены ПУСТЫЕ поля, role/is_fired не тронуты
+    const gDb = await User.getById(god.id);
+    const gStore = await UserStore.get(god.id, STORE_ID);
+    console.log(`7a. god: name="${gDb.name}", tg=${gDb.tg_user_id}, store.role=${gStore.role}, is_fired=${gStore.is_fired}`);
+    assert(gDb.name === 'Создатель', '7a. god: пустое name заполнено из Excel');
+    assert(gDb.tg_user_id === '1007', '7a. god: пустое tg_user_id заполнено');
+    assert(gStore.role === 'god', '7a. god: роль в магазине не тронута');
+    assert(gStore.is_fired === 0, '7a. god: is_fired не тронут');
+
+    // 7b. Staff (admin): в файле ЕСТЬ — глобальные поля обновились,
+    // роль в user_stores сохранена (не понижен до employee)
+    // Пересоберём Excel, добавив admin с новыми данными
+    writeTeamInfoXlsx([
+      { name: 'Сотрудник Один', email: `smoke_sync_emp1_${ts}@test.local`, tgUserId: '1001' },
+      { name: 'Админ Обновлённый', email: `smoke_sync_admin_${ts}@test.local`, tgUserId: '1005', phone: '+7 (999) 555-55-55', capacity: 5 },
+    ]);
+    await SyncService.syncFromExcel(XLSX_PATH, null, { storeId: STORE_ID });
+    const aDb = await User.getById(admin.id);
+    const aStore = await UserStore.get(admin.id, STORE_ID);
+    console.log(`7b. admin: name="${aDb.name}", phone="${aDb.phone}", cap=${aDb.capacity}, role=${aStore.role}, is_fired=${aStore.is_fired}`);
+    assert(aDb.name === 'Админ Обновлённый', '7b. admin: name обновлён');
+    assert(aDb.phone === '+7 (999) 555-55-55', '7b. admin: phone обновлён');
+    assert(aDb.capacity === 5, '7b. admin: capacity обновлён');
+    assert(aStore.role === 'admin', '7b. admin: роль в магазине сохранена (не понижен)');
+    assert(aStore.is_fired === 0, '7b. admin: не уволен');
 
     // 8. Экспорт: emp2 нет, восстановленные есть
     const wb2 = XLSX.readFile(TEAM_INFO_PATH);

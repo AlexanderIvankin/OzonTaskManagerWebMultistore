@@ -198,6 +198,17 @@ class SyncService {
   /**
    * Синхронизация сотрудников магазина из Excel.
    *
+   * ПРАВИЛА:
+   *   • Обновляем всех: employee/admin/moderator/god. Увольняем только employee.
+   *   • Роль в user_stores НИКОГДА не перезаписывается (admin остаётся admin,
+   *     moderator остаётся moderator, god остаётся god).
+   *   • Глобальная users.role — только 'god' (при первом назначении Создателя)
+   *     и 'user' (при создании/промоушене). Синхронизация не меняет users.role
+   *     для существующих аккаунтов.
+   *   • god: заполняем ТОЛЬКО пустые поля (name/phone/tg_user_id) и склады;
+   *     установленные значения не перетираем. user_stores не трогаем.
+   *   • guest (email не подтверждён) — пропускаем полностью.
+   *
    * @param {string} filePath
    * @param {number} adminUserId
    * @param {Object} options
@@ -356,47 +367,57 @@ class SyncService {
       }
 
       if (user) {
-        // --- Создатель уже назначен глобально ---
-        // Полностью игнорируем: он неприкосновенен для любой синхронизации,
-        // его нельзя уволить/понизить через Excel.
-        if (user.role === 'god') {
-          console.log(
-            `[SyncService][store ${storeId}] Строка Создателя (#${user.id}) пропущена: уже 'god'`
-          );
+        // --- Первое назначение Создателя ---
+        // GOD_EMAIL/GOD_ID из .env совпало, а глобально 'god' ещё нет —
+        // назначаем его (глобально + во всех магазинах) и выходим.
+        if (isGodIdentity(data, godEnv) && user.role !== 'god') {
+          await this.ensureGodStatus(user.id);
+          updated++;
           continue;
         }
 
-        if (user) {
-          // --- Создатель уже назначен глобально ---
-          if (user.role === 'god') {
-            console.log(
-              `[SyncService][store ${storeId}] Строка Создателя (#${user.id}) пропущена: уже 'god'`
-            );
-            continue;
-          }
-
-          // --- Первое назначение Создателя ---
-          if (isGodIdentity(data, godEnv)) {
-            await this.ensureGodStatus(user.id);
-            updated++;
-            continue;
-          }
-
-          // --- Гость (email не подтверждён) ---
-          // Пропускаем полностью: не создаём запись в user_stores и не трогаем
-          // users. Гость станет пользователем только после подтверждения email
-          // (AuthService.verifyEmail), тогда следующая синхронизация обработает
-          // его нормально.
-          if (user.role === 'guest') {
-            console.log(
-              `[SyncService][store ${storeId}] Пользователь #${user.id} (${data.name}) — гость (email не подтверждён), пропускаем`
-            );
-            skipped++;
-            continue;
-          }
+        // --- Гость (email не подтверждён) ---
+        // Пропускаем полностью: не создаём запись в user_stores и не трогаем
+        // users. Гость станет пользователем только после подтверждения email
+        // (AuthService.verifyEmail), тогда следующая синхронизация обработает
+        // его нормально.
+        if (user.role === 'guest') {
+          console.log(
+            `[SyncService][store ${storeId}] Пользователь #${user.id} (${data.name}) — гость (email не подтверждён), пропускаем`
+          );
+          skipped++;
+          continue;
         }
 
-        // --- Глобальные поля users ---
+        // --- God (уже назначен) ---
+        // В отличие от старой логики («пропустить полностью») — ЗАПОЛНЯЕМ ПУСТЫЕ
+        // глобальные поля и обновляем склады. Не перетираем установленные
+        // значения: god — единственный, его данные не должны «случайно»
+        // измениться при синхронизации.
+        // user_stores НЕ трогаем: его роль/статус в магазине уже 'god'.
+        if (user.role === 'god') {
+          const godUpdates = {};
+          if (!user.name && data.name) godUpdates.name = data.name;
+          if (!user.phone && data.phonePretty) godUpdates.phone = data.phonePretty;
+          if (!user.tg_user_id && data.tgUserId) godUpdates.tg_user_id = data.tgUserId;
+          if (Object.keys(godUpdates).length) {
+            await User.update(user.id, godUpdates);
+            console.log(
+              `[SyncService][store ${storeId}] god #${user.id}: заполнены пустые поля: ${Object.keys(godUpdates).join(', ')}`
+            );
+          }
+          // Склад — не «критичное» поле, обновляем как у всех
+          await Warehouse.clearUserWarehouses(storeId, user.id);
+          for (const whId of data.warehouses) {
+            await Warehouse.addUserWarehouse(storeId, user.id, whId);
+          }
+          updated++;
+          continue;
+        }
+
+        // --- Обычный случай: employee / admin / moderator / user ---
+
+        // Глобальные поля users
         const globalFields = {
           name: data.name,
           phone: data.phoneRaw === '' ? (user.phone || '') : (data.phonePretty || ''),
@@ -413,15 +434,19 @@ class SyncService {
         }
         await User.update(user.id, globalFields);
 
-        // --- Per-store: user_stores ---
+        // Per-store: user_stores
         const existing = await UserStore.get(user.id, storeId);
         if (existing) {
-          // Если в user_stores роль 'god' — неприкосновенно
+          // Если в user_stores роль 'god' — неприкосновенно (защита от
+          // неконсистентного состояния: global role='user', store role='god').
           if (existing.role === 'god') {
             console.log(
               `[SyncService][store ${storeId}] Пользователь #${user.id} — 'god' в магазине, per-store поля не трогаем`
             );
           } else {
+            // Роль в user_stores НЕ трогаем — admin остаётся admin,
+            // moderator — moderator. Обновляем только статус/коэффициент.
+            // Так staff не «понижается» синхронизацией до employee.
             await UserStore.upsert(user.id, storeId, {
               is_fired: 0,
               earnings_factor: data.earningsFactor,
@@ -448,7 +473,7 @@ class SyncService {
           continue;
         }
 
-        // --- Склады магазина ---
+        // Склады магазина
         await Warehouse.clearUserWarehouses(storeId, user.id);
         for (const whId of data.warehouses) {
           await Warehouse.addUserWarehouse(storeId, user.id, whId);
@@ -467,12 +492,10 @@ class SyncService {
           name: data.name,
           phone: data.phonePretty || '',
           capacity: data.capacity,
-          earningsFactor: data.earningsFactor,
-          role: 'user', // глобально всегда 'user' (god назначается только через .env)
+          role: 'user', // глобально всегда 'user'
           tgUserId: data.tgUserId || null,
         });
 
-        // В магазине — сотрудник
         await UserStore.upsert(newUser.id, storeId, {
           role: 'employee',
           is_fired: 0,
@@ -518,18 +541,14 @@ class SyncService {
       );
     }
 
-    // === Увольнение сотрудников магазина, отсутствующих в актуальном файле ===
-    // Активные сотрудники ЭТОГО магазина: user_stores.was_employee=1, is_fired=0.
-    // Исключаем:
-    //   • роль 'god' в user_stores — неприкосновенно;
-    //   • глобальный users.role='god' (Создатель) — неприкосновенно.
-    const excelEmails = new Set(usersData.map((d) => d.email).filter(Boolean));
-    const excelTgIds = new Set(usersData.map((d) => d.tgUserId).filter(Boolean));
-
+    // === Увольнение сотрудников магазина, отсутствующих в файле ===
     // Увольняем ТОЛЬКО сотрудников магазина (us.role = 'employee'), а не
     // admin/moderator/god. Логика паритетна старой версии (users.role =
     // 'employee'): у админов/модераторов членство в Excel не обязательно,
     // их роль назначается вручную и не должна слетать при синхронизации.
+    const excelEmails = new Set(usersData.map((d) => d.email).filter(Boolean));
+    const excelTgIds = new Set(usersData.map((d) => d.tgUserId).filter(Boolean));
+
     const activeEmployees = await usersDb.all(
       `SELECT u.id, u.username, u.name, u.email, u.tg_user_id, us.role AS store_role
        FROM users u
@@ -588,8 +607,13 @@ class SyncService {
     if (!storeId) {
       throw new Error('SyncService.exportTeamInfoXlsx: storeId обязателен (multistore)');
     }
-    const usersDb = getUsersDB();
     const storeDb = getStoreDB(storeId);
+
+    // adminUserId — для логов: кто инициировал экспорт (null — авто/серверный).
+    const startedBy = adminUserId ? `#${adminUserId}` : 'система';
+    console.log(
+      `[SyncService][store ${storeId}] Экспорт ${outputFileName} (запустил ${startedBy}, includeFired=${includeFired})`
+    );
 
     // 1. Синхронизация складов (по умолчанию)
     if (syncWarehouses) {
