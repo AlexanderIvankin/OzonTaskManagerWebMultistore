@@ -175,7 +175,7 @@ export const GlobalProfile = () => {
                 </Button>
               </div>
             )}
-            <CardDescription className="flex items-center gap-2">
+            <CardDescription className="flex flex-col items-center gap-2">
               {user?.role === "god" && <RoleBadge role="god" />}
               <span className="text-xs text-muted-foreground">
                 Глобальный профиль
