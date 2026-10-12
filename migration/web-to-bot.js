@@ -6,6 +6,7 @@ const { openDb, backupDb, transaction, assertTables } = require('./lib/db');
 const Logger = require('./lib/logger');
 const { resolveWebToBot } = require('./lib/identity');
 const { normalizeEmail, normalizeTgId, timestamp } = require('./lib/helpers');
+const { createBotSchema } = require('./lib/schema-bot');
 
 // ============================================================================
 //  КОНФИГУРАЦИЯ
@@ -122,7 +123,28 @@ async function main() {
   let webDb, botDb;
   try {
     webDb = await openDb(CONFIG.webDbPath, { readonly: true });
-    botDb = await openDb(CONFIG.botDbPath, { readonly: opts.dryRun });
+
+    // BOT-БД: если файла нет — создаём.
+    //   • dry-run: файл создать нельзя (мы ничего не пишем) → понятная ошибка.
+    //   • обычный запуск: создаём + прогоняем createBotSchema (idempotent).
+    const botDbExists = fs.existsSync(CONFIG.botDbPath);
+    if (!botDbExists && opts.dryRun) {
+      throw new Error(
+        `BOT-БД не найдена: ${CONFIG.botDbPath}. ` +
+        `В режиме --dry-run файл не создаётся — сначала запустите без флага, ` +
+        `чтобы создать пустую схему.`
+      );
+    }
+
+    botDb = await openDb(CONFIG.botDbPath, {
+      readonly: opts.dryRun,
+      create: !opts.dryRun,
+    });
+
+    if (!opts.dryRun && !botDbExists) {
+      logger.info(`🆕 BOT-БД не найдена — создаём пустую схему: ${CONFIG.botDbPath}`);
+      await createBotSchema(botDb);
+    }
 
     await assertTables(botDb, [
       'employees', 'assignments', 'employee_stats',

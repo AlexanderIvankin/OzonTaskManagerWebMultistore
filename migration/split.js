@@ -324,6 +324,117 @@ async function main() {
       })));
     }
 
+    // ========================================================================
+    //  Ручные override'ы tg_user_id: base (в git) + local (в .gitignore)
+    // ========================================================================
+    //
+    //  Применяются ПОСЛЕ дедупа по email, ПЕРЕД byActivity.
+    //  Смысл: исправить исторические ошибки в данных bot_web-N.db
+    //  (tg висит на неверном аккаунте), которые byActivity разрешить
+    //  не может — ей не хватает контекста.
+    //
+    //  Источники:
+    //    • lib/tg-overrides.js        — базовый, всегда пустой, коммитится;
+    //    • lib/tg-overrides.local.js  — локальный, в .gitignore, содержит
+    //      реальные правила для конкретной машины и прогона.
+    //  Local переопределяет base.
+    //
+    //  Если override задаёт tg, который в итоге окажется занят другим
+    //  user'ом, — сработает штатная логика byActivity (победит активный).
+
+    let tgOverrides = {};
+    try {
+      const base = require('./lib/tg-overrides');
+      if (base && base.overrides) tgOverrides = { ...base.overrides };
+    } catch (err) {
+      logger.warn(`⚠️ lib/tg-overrides.js не загружен: ${err.message}`);
+    }
+    try {
+      const local = require('./lib/tg-overrides.local');
+      if (local && local.overrides) {
+        tgOverrides = { ...tgOverrides, ...local.overrides };
+      }
+      logger.info(
+        `ℹ️ Применены локальные override'ы tg_user_id: ${Object.keys(local.overrides || {}).length}`
+      );
+    } catch (err) {
+      if (err.code !== 'MODULE_NOT_FOUND') {
+        logger.warn(`⚠️ lib/tg-overrides.local.js не загружен: ${err.message}`);
+      }
+    }
+
+    if (Object.keys(tgOverrides).length > 0) {
+      logger.info(
+        `\n=== Ручные override'ы tg_user_id: ${Object.keys(tgOverrides).length} ===`
+      );
+
+      // Пред-валидация: один и тот же tg не должен быть назначен двум email.
+      const tgToOverrideEmail = new Map();
+      for (const [emailRaw, tgRaw] of Object.entries(tgOverrides)) {
+        const email = normalizeEmail(emailRaw);
+        if (tgRaw === null || tgRaw === undefined) continue;
+        const tgStr = String(tgRaw).trim();
+        if (!tgStr) continue;
+        if (tgToOverrideEmail.has(tgStr)) {
+          const prevEmail = tgToOverrideEmail.get(tgStr);
+          logger.error(
+            `❌ tg-overrides: tg=${tgStr} назначен двум email: ` +
+            `"${prevEmail}" и "${email}". Проверьте lib/tg-overrides.js.`
+          );
+          throw new Error(
+            `Конфликт в tg-overrides.js: tg=${tgStr} у двух email. ` +
+            `Каждому tg — один email.`
+          );
+        }
+        tgToOverrideEmail.set(tgStr, email);
+      }
+
+      let applied = 0;
+      let skippedNotFound = 0;
+
+      for (const [emailRaw, tgRaw] of Object.entries(tgOverrides)) {
+        const email = normalizeEmail(emailRaw);
+        const u = emailToUser.get(email);
+
+        if (!u) {
+          logger.warn(
+            `  ⚠️ override для "${email}": email не найден в данных, пропущен`
+          );
+          skippedNotFound++;
+          report.warnings.push({
+            stage: 'users_tg_override_skipped',
+            email,
+            newTg: tgRaw,
+            reason: 'email не найден среди уникальных пользователей',
+          });
+          continue;
+        }
+
+        const prevTg = u.row.tg_user_id ? String(u.row.tg_user_id) : null;
+
+        if (tgRaw === null || tgRaw === undefined) {
+          u.row.tg_user_id = null;
+          logger.info(`  🔧 "${email}": tg ${prevTg || '—'} → NULL`);
+        } else {
+          const tgStr = String(tgRaw).trim();
+          u.row.tg_user_id = tgStr;
+          logger.info(`  🔧 "${email}": tg ${prevTg || '—'} → ${tgStr}`);
+        }
+
+        report.warnings.push({
+          stage: 'users_tg_override',
+          email,
+          previousTg: prevTg,
+          newTg: u.row.tg_user_id,
+        });
+        applied++;
+      }
+
+      logger.info(
+        `  Применено: ${applied}, пропущено (email не найден): ${skippedNotFound}\n`
+      );
+    }
+
     // --- 2. Разрешение коллизий tg_user_id ---
     // Собираем все tg с их владельцами (после дедупликации по email
     // каждый tg может принадлежать только одному человеку, но у нас в

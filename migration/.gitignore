@@ -7,15 +7,28 @@ input/
 output/
 output-merged/
 
-bot-web_input/
-bot-web_output/
+# bot-web
+bot-web_input/*
+!bot-web_input/.gitkeep
+bot-web_output/*
+!bot-web_output/.gitkeep
 
-web-bot_input/
-web-bot_output/
+# web-bot
+web-bot_input/*
+!web-bot_input/.gitkeep
+web-bot_output/*
+!web-bot_output/.gitkeep
 
-web-multistore_input/
-web-multistore_output/
-web-multistore_output-merged/
+# web-multistore
+web-multistore_input/*
+!web-multistore_input/.gitkeep
+web-multistore_output/*
+!web-multistore_output/.gitkeep
+web-multistore_output-merged/*
+!web-multistore_output-merged/.gitkeep
+
+# Локальные override'ы tg_user_id (содержат конкретные данные машин)
+lib/tg-overrides.local.js
 
 MigrationHistory/
 

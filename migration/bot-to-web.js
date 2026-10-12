@@ -7,6 +7,7 @@ const { openDb, backupDb, transaction, assertTables } = require('./lib/db');
 const Logger = require('./lib/logger');
 const { resolveBotToWeb } = require('./lib/identity');
 const { normalizeEmail, normalizeTgId, timestamp } = require('./lib/helpers');
+const { createSingleStoreWebSchema } = require('./lib/schema');
 
 // ============================================================================
 //  КОНФИГУРАЦИЯ
@@ -128,7 +129,22 @@ async function main() {
   let botDb, webDb;
   try {
     botDb = await openDb(CONFIG.botDbPath, { readonly: true });
-    webDb = await openDb(CONFIG.webDbPath, { readonly: opts.dryRun });
+
+    // web-БД — открываем в write-режиме (или readonly при dry-run).
+    // Если файла нет — создаём его с нуля и инициализируем полной схемой
+    // web single-store (все таблицы в одной БД, как в старом backend/
+    // src/config/database.js). CREATE TABLE IF NOT EXISTS — идемпотентно,
+    // безопасно для уже существующих БД.
+    const webDbExisted = fs.existsSync(CONFIG.webDbPath);
+    webDb = await openDb(CONFIG.webDbPath, {
+      readonly: opts.dryRun,
+      create: !opts.dryRun,
+    });
+    if (!opts.dryRun && !webDbExisted) {
+      logger.info(`🆕 ${path.basename(CONFIG.webDbPath)} не найдена — создаю схему web single-store`);
+      await createSingleStoreWebSchema(webDb);
+      logger.info(`✅ Схема создана`);
+    }
 
     // Проверка схемы
     await assertTables(botDb, [
