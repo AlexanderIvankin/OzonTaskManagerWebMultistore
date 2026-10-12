@@ -10,9 +10,23 @@ const { normalizeEmail, normalizeTgId, timestamp } = require('./lib/helpers');
 // ============================================================================
 //  КОНФИГУРАЦИЯ
 // ============================================================================
+// Пути ЗАХАРДКОЖЕНЫ — фиксированная структура папок migration.
+// Имена файлов bot-N.db / bot_web-N.db определяются версией магазина;
+// N задаётся параметром --version (default: 1).
+function resolveVersion() {
+  const arg = process.argv.find(a => a.startsWith('--version='));
+  if (arg) {
+    const v = parseInt(arg.slice(10), 10);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  return 1;
+}
+
+const VERSION = resolveVersion();
+
 const CONFIG = {
-  webDbPath: process.env.WEB_DB || path.join(__dirname, 'output', 'bot_web.db'),
-  botDbPath: process.env.BOT_DB || path.join(__dirname, 'input', 'bot.db'),
+  webDbPath: path.join(__dirname, 'web-bot_input', `bot_web-${VERSION}.db`),
+  botDbPath: path.join(__dirname, 'web-bot_output', `bot-${VERSION}.db`),
   backupDir: path.join(__dirname, 'backups'),
   logsDir: path.join(__dirname, 'logs'),
 };
@@ -76,7 +90,7 @@ async function main() {
   const reportPath = path.join(CONFIG.logsDir, `web-to-bot_${ts}.report.json`);
   const logger = new Logger(logPath);
 
-  logger.info('=== Миграция web → bot ===');
+  logger.info(`=== Миграция web → bot (version=${VERSION}) ===`);
   logger.info(`WEB_DB: ${CONFIG.webDbPath}`);
   logger.info(`BOT_DB: ${CONFIG.botDbPath}`);
   logger.info(`Опции: ${JSON.stringify(opts)}`);
@@ -125,7 +139,7 @@ async function main() {
     logger.info('✅ Схема обеих БД проверена');
 
     if (!opts.dryRun) {
-      const backupPath = await backupDb(CONFIG.botDbPath, CONFIG.backupDir);
+      const backupPath = await backupDb(CONFIG.webDbPath, 'web-to-bot');
       logger.info(`📦 Бэкап output-БД: ${backupPath}`);
       report.backupPath = backupPath;
     } else {
@@ -233,11 +247,55 @@ async function migrateUsers(webDb, botDb, opts, logger, report) {
 
   for (const user of users) {
     const resolved = await resolveWebToBot(user, botDb);
+
+    // Неоднозначное совпадение по email: в bot.employee несколько записей
+    // (email там не UNIQUE), из них активных 0 или >1. Разрешить нельзя —
+    // фиксируем ошибку, пропускаем пользователя, продолжаем миграцию.
+    if (resolved && resolved.ambiguous) {
+      report.counts.users.skipped++;
+      const candStr = resolved.candidates
+        .map((c) => `#${c.id}(is_fired=${c.is_fired})`)
+        .join(', ');
+      const msg =
+        `Неоднозначное совпадение в bot.employee: user #${user.id} ` +
+        `(${user.email}) — ${resolved.reason}. Кандидаты: ${candStr}`;
+      logger.error(`❌ ${msg}`);
+      report.errors.push({
+        stage: 'web-to-bot.resolve',
+        userId: user.id,
+        username: user.username,
+        email: user.email,
+        reason: resolved.reason,
+        candidates: resolved.candidates,
+      });
+      report.skippedUsers.push({
+        webId: user.id, username: user.username, email: user.email, name: user.name,
+        reason: `ambiguous email: ${resolved.reason}`,
+      });
+      continue;
+    }
+
     if (resolved) {
       idMap.set(user.id, resolved.employeeId);
       report.counts.users.matched++;
       if (resolved.matchedBy === 'tg_user_id') report.counts.users.byTg++;
       else report.counts.users.byEmail++;
+
+      // Разрешили коллизию по email (взяли единственного активного) —
+      // логируем, чтобы это было видно в аудите.
+      if (resolved.resolvedFromConflict) {
+        logger.warn(
+          `⚠️ user #${user.id} (${user.email}): в bot найдено ${resolved.conflictTotal} ` +
+          `записей по email, выбрана единственная активная (#${resolved.employeeId})`
+        );
+        report.warnings.push({
+          stage: 'web-to-bot.conflict_resolved',
+          userId: user.id,
+          email: user.email,
+          chosenEmployeeId: resolved.employeeId,
+          totalMatches: resolved.conflictTotal,
+        });
+      }
 
       if (opts.updateExisting && !opts.dryRun) {
         const updates = buildFromMap(USER_FIELD_MAP, user, { skipNull: false });

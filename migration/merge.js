@@ -9,10 +9,14 @@ const { createFullBotWebSchema } = require('./lib/schema-merge');
 
 // ============================================================================
 //  КОНФИГУРАЦИЯ
+//
+//  Пути ЗАХАРДКОЖЕНЫ — фиксированная структура папок migration.
+//  merge читает результат split из web-multistore_output/ и собирает
+//  bot_web-N.db в web-multistore_output-merged/ (для verify-roundtrip).
 // ============================================================================
 const CONFIG = {
-  inputDir: process.env.MERGE_INPUT_DIR || path.join(__dirname, 'output'),
-  outputDir: process.env.MERGE_OUTPUT_DIR || path.join(__dirname, 'output-merged'),
+  inputDir: path.join(__dirname, 'web-multistore_output'),
+  outputDir: path.join(__dirname, 'web-multistore_output-merged'),
   logsDir: path.join(__dirname, 'logs'),
 };
 
@@ -94,7 +98,7 @@ async function main() {
   const storeDbs = {};
 
   try {
-    // 1. Находим users.db и models.db
+    // 1. Проверяем наличие users.db и models.db
     const usersDbPath = path.join(CONFIG.inputDir, 'users.db');
     const modelsDbPath = path.join(CONFIG.inputDir, 'models.db');
 
@@ -134,6 +138,20 @@ async function main() {
       userStoresByStore.get(us.store_id).set(us.user_id, us);
     }
 
+    // Глобальный was_employee: пользователь считался сотрудником, если
+    // он таковой ХОТЯ БЫ в одном магазине. В web single-store это флаг
+    // в users, в multistore — per-store; при merge восстанавливаем как OR.
+    // Без этого уволенный в магазине 1 потеряет флаг при выгрузке в
+    // bot_web-2.db (где его роль уже 'user').
+    const wasEmployeeGlobal = new Set();
+    for (const us of allUserStores) {
+      if (us.was_employee) wasEmployeeGlobal.add(us.user_id);
+    }
+    logger.info(
+      `was_employee global: ${wasEmployeeGlobal.size} пользователей ` +
+      `(были сотрудниками хотя бы в одном магазине)`
+    );
+
     logger.info(
       `USERS: ${users.length}, ` +
       `refresh=${refreshTokens.length}, verify=${emailVerifications.length}, ` +
@@ -160,7 +178,7 @@ async function main() {
     logger.info(`Найдено store-N.db: ${storeFiles.length}`);
     for (const s of storeFiles) logger.info(`  → ${s.name} (version=${s.version})`);
 
-    // 5. Подготавливаем output
+    // 5. Подготавливаем output: чистим старые bot_web-N.db
     if (!opts.dryRun) {
       if (!fs.existsSync(CONFIG.outputDir)) {
         fs.mkdirSync(CONFIG.outputDir, { recursive: true });
@@ -213,8 +231,9 @@ async function main() {
           if (fs.existsSync(botDbPath + sidecar)) fs.unlinkSync(botDbPath + sidecar);
         }
         botDb = await openDb(botDbPath, { readonly: false, create: true });
-        // Отключаем FK на время массовой вставки — проверим целостность вручную.
-        // Включим обратно после коммита.
+        // Отключаем FK на время массовой вставки — проверим целостность вручную
+        // после коммита. Иначе порядок вставки (users → auth → models → store)
+        // будет вызывать ложные SQLITE_CONSTRAINT при промежуточных состояниях.
         await botDb.exec('PRAGMA foreign_keys = OFF');
         await createFullBotWebSchema(botDb);
       }
@@ -237,25 +256,26 @@ async function main() {
           let finalRole, finalIsFired, finalEarningsFactor, finalWasEmployee;
 
           if (u.role === 'god') {
-            // god — сквозной, всегда с ролью god
+            // god — сквозной, всегда с ролью god.
             finalRole = 'god';
             finalIsFired = 0;
             const us = userStoresMap.get(u.id);
             finalEarningsFactor = us ? (us.earnings_factor ?? 1.0) : 999.99;
-            finalWasEmployee = us ? (us.was_employee ?? 1) : 1;
+            // god всегда был сотрудником
+            finalWasEmployee = 1;
           } else {
             const us = userStoresMap.get(u.id);
             if (us) {
               finalRole = us.is_fired ? 'user' : us.role;
               finalIsFired = us.is_fired ?? 0;
               finalEarningsFactor = us.earnings_factor ?? 1.0;
-              finalWasEmployee = us.was_employee ?? 1;
             } else {
               finalRole = u.role;   // 'user' или 'guest'
               finalIsFired = 0;
               finalEarningsFactor = 1.0;
-              finalWasEmployee = 0;
             }
+            // was_employee — ГЛОБАЛЬНЫЙ: OR по всем магазинам.
+            finalWasEmployee = wasEmployeeGlobal.has(u.id) ? 1 : 0;
           }
 
           await runFn(
@@ -277,6 +297,9 @@ async function main() {
         }
 
         // 7.2. AUTH-ХВОСТЫ
+        // Таблица model_download_tokens НЕ мигрируется: токены живут 15 мин,
+        // после переезда инфраструктуры они невалидны, ссылки на старые user_id.
+
         for (const t of refreshTokens) {
           await runFn(
             `INSERT INTO refresh_tokens (id, user_id, token, expires_at) VALUES (?, ?, ?, ?)`,

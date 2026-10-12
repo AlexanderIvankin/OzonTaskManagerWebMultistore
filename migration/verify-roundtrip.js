@@ -11,8 +11,10 @@ const { timestamp } = require('./lib/helpers');
 //  КОНФИГУРАЦИЯ
 // ============================================================================
 const CONFIG = {
-  originalDir: process.env.VERIFY_ORIGINAL_DIR || path.join(__dirname, 'input'),
-  mergedDir: process.env.VERIFY_MERGED_DIR || path.join(__dirname, 'output-merged'),
+  // Оригиналы — те же bot_web-N.db, что подавались на split
+  originalDir: path.join(__dirname, 'web-multistore_input'),
+  // Результат merge
+  mergedDir: path.join(__dirname, 'web-multistore_output-merged'),
   logsDir: path.join(__dirname, 'logs'),
 };
 
@@ -340,9 +342,9 @@ async function main() {
     // --- Проверка user_stores: сверка количества сотрудников в users.db
     //     с количеством staff-ролей в оригинальной bot_web-N.db ---
     if (orig.version === 1) {
-      // читаем user_stores из output/users.db (рядом с output-merged)
+      // читаем user_stores из web-multistore_output/users.db (рядом с output-merged)
       const usersDbPath = path.join(
-        path.dirname(CONFIG.mergedDir), 'output', 'users.db'
+        __dirname, 'web-multistore_output', 'users.db'
       );
       if (fs.existsSync(usersDbPath)) {
         const usersDb = await openDb(usersDbPath, { readonly: true });

@@ -2,7 +2,7 @@
 require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
-const { openDb, transaction } = require('./lib/db');
+const { openDb, transaction, backupDb } = require('./lib/db');
 const Logger = require('./lib/logger');
 const { normalizeEmail, timestamp } = require('./lib/helpers');
 const {
@@ -14,9 +14,12 @@ const {
 // ============================================================================
 //  КОНФИГУРАЦИЯ
 // ============================================================================
+// Пути ЗАХАРДКОЖЕНЫ — фиксированная структура папок migration.
+// Никаких env-переопределений, чтобы случайно не запустить split
+// на чужой папке.
 const CONFIG = {
-  inputDir: process.env.SPLIT_INPUT_DIR || path.join(__dirname, 'input'),
-  outputDir: process.env.SPLIT_OUTPUT_DIR || path.join(__dirname, 'output'),
+  inputDir: path.join(__dirname, 'web-multistore_input'),
+  outputDir: path.join(__dirname, 'web-multistore_output'),
   backupDir: path.join(__dirname, 'backups'),
   logsDir: path.join(__dirname, 'logs'),
 };
@@ -65,7 +68,7 @@ function findInputDbs(inputDir) {
     throw new Error(`Папка input не найдена: ${inputDir}`);
   }
   return fs.readdirSync(inputDir)
-    .filter(f => /^(bot_web|bot)-\d+\.db$/i.test(f))
+    .filter(f => /^bot_web-\d+\.db$/i.test(f))
     .map(f => ({
       name: f,
       path: path.join(inputDir, f),
@@ -183,6 +186,15 @@ async function main() {
     }
     logger.info('✅ Схема всех входных БД проверена');
 
+    // Бэкап каждой входной БД перед split — на всякий случай, если
+    // что-то пойдёт не так и понадобится откатиться.
+    if (!opts.dryRun) {
+      for (const f of inputFiles) {
+        const backupPath = await backupDb(f.path, 'web-multistore');
+        logger.info(`  📦 backup: ${path.basename(backupPath)}`);
+      }
+    }
+
     // 4. Подготавливаем output
     if (!opts.dryRun) {
       if (!fs.existsSync(CONFIG.outputDir)) {
@@ -233,19 +245,172 @@ async function main() {
       }
     }
 
-    // 1.2. Дедупликация по email
+    // 1.2. Дедупликация по EMAIL — по нему определяется «один и тот же
+    // человек в двух магазинах». Username уникален ещё на этапе bot-to-web
+    // (генерируется из email), поэтому здесь дублей по нему быть не должно.
+    // tg_user_id — МОЖЕТ пересекаться (один человек зарегистрировал 2
+    // аккаунта в web), и в users.db он UNIQUE. Значит: первый по порядку
+    // получает tg_user_id, у последующих поле обнуляется. Это осознанно —
+    // оба аккаунта сохраняются, только второй теряет telegram-привязку.
+    // ========================================================================
+    //  Дедупликация пользователей + разрешение коллизий tg_user_id
+    // ========================================================================
+    //
+    //  КЛЮЧЕВЫЕ ПОНЯТИЯ:
+    //    • email — первичный ключ «одного и того же человека» между
+    //      магазинами. Одинаковый email в bot_web-1 и bot_web-2 = один
+    //      человек, оставляем одну запись.
+    //    • tg_user_id — UNIQUE в users.db, но при миграции может «висеть»
+    //      на архивном аккаунте (историческая замена email → tg остался
+    //      на старом user_id). При обнаружении коллизии отдаём tg самому
+    //      «активному» из претендентов, остальным — NULL.
+    //
+    //  ПОРЯДОК ДЕЙСТВИЙ:
+    //    1. Дедуп по email. При отбрасывании ведомой записи переносим её
+    //       непустые поля в главную (tg_user_id, phone, display_name).
+    //    2. Разрешение коллизий tg: если один tg принадлежит нескольким
+    //       разным записям — оставляем у активной, у остальных зануляем.
+    //    3. Единственность god.
+
+    // --- 1. Дедупликация по email с переносом полей ---
     const seenEmails = new Set();
     const uniqueUsers = [];
+    const emailToUser = new Map(); // email → главный user-object
+    const tgCollisionsByEmail = []; // записи о переносах tg
+
+    // Поля, которые переносим от ведомой записи к главной, если у главной
+    // пусто. Порядок не важен — просто перебираем.
+    const FILLABLE = ['tg_user_id', 'phone', 'display_name', 'name'];
+
     for (const u of allUsers) {
-      if (seenEmails.has(u.email)) {
+      const email = u.email;
+
+      if (seenEmails.has(email)) {
+        // Ведомая запись — мерджим её непустые поля в главную.
+        const target = emailToUser.get(email);
+        for (const f of FILLABLE) {
+          if (!target.row[f] && u.row[f]) {
+            // Копируем, только если у главной пусто.
+            target.row[f] = u.row[f];
+            if (f === 'tg_user_id') {
+              tgCollisionsByEmail.push({
+                email,
+                fromFile: u.sourceDbName,
+                fromSourceId: u.sourceId,
+                toFile: target.sourceDbName,
+                toSourceId: target.sourceId,
+                tg: u.row[f],
+              });
+            }
+          }
+        }
         report.counts.users.duplicates++;
         continue;
       }
-      seenEmails.add(u.email);
+
+      seenEmails.add(email);
       uniqueUsers.push(u);
+      emailToUser.set(email, u);
     }
 
-    // 1.3. Сортировка: god → admin → moderator → employee → user → guest
+    if (tgCollisionsByEmail.length) {
+      logger.info(
+        `ℹ️ Перенесено tg_user_id от ведомых записей к главным: ${tgCollisionsByEmail.length}`
+      );
+      report.warnings.push(...tgCollisionsByEmail.map(c => ({
+        stage: 'users_email_merge',
+        ...c,
+        reason: 'tg_user_id был только у ведомой записи (совпал email)',
+      })));
+    }
+
+    // --- 2. Разрешение коллизий tg_user_id ---
+    // Собираем все tg с их владельцами (после дедупликации по email
+    // каждый tg может принадлежать только одному человеку, но у нас в
+    // данных их несколько — из-за описанного сценария).
+    const tgToUsers = new Map();
+    for (const u of uniqueUsers) {
+      const tg = u.row.tg_user_id ? String(u.row.tg_user_id).trim() : null;
+      if (!tg) continue;
+      if (!tgToUsers.has(tg)) tgToUsers.set(tg, []);
+      tgToUsers.get(tg).push(u);
+    }
+
+    // Критерии «активности». Меньше = активнее.
+    const byActivity = (a, b) => {
+      // 1. Не уволенный важнее уволенного
+      const fa = a.row.is_fired ? 1 : 0;
+      const fb = b.row.is_fired ? 1 : 0;
+      if (fa !== fb) return fa - fb;
+
+      // 2. Staff-роль важнее 'user' (в том числе бывшего уволенного)
+      const ra = a.row.role === 'user' || a.row.role === 'guest' ? 1 : 0;
+      const rb = b.row.role === 'user' || b.row.role === 'guest' ? 1 : 0;
+      if (ra !== rb) return ra - rb;
+
+      // 3. Свежее updated_at важнее
+      const ua = Number(a.row.updated_at || 0);
+      const ub = Number(b.row.updated_at || 0);
+      if (ua !== ub) return ub - ua;
+
+      // 4. Ведущий источник (меньший version) важнее
+      if (a.sourceVersion !== b.sourceVersion) {
+        return a.sourceVersion - b.sourceVersion;
+      }
+
+      // 5. Стабильность по id
+      return a.sourceId - b.sourceId;
+    };
+
+    const tgResolutionLog = [];
+    for (const [tg, candidates] of tgToUsers) {
+      if (candidates.length === 1) continue;
+
+      candidates.sort(byActivity);
+      const winner = candidates[0];
+      const losers = candidates.slice(1);
+
+      for (const u of losers) {
+        u.row.tg_user_id = null;
+      }
+
+      tgResolutionLog.push({
+        tg,
+        winner: {
+          email: winner.email,
+          file: winner.sourceDbName,
+          sourceId: winner.sourceId,
+          is_fired: winner.row.is_fired ? 1 : 0,
+          role: winner.row.role,
+        },
+        losers: losers.map(u => ({
+          email: u.email,
+          file: u.sourceDbName,
+          sourceId: u.sourceId,
+          is_fired: u.row.is_fired ? 1 : 0,
+          role: u.row.role,
+        })),
+      });
+    }
+
+    if (tgResolutionLog.length) {
+      logger.warn(
+        `⚠️ Коллизий по tg_user_id: ${tgResolutionLog.length}. ` +
+        `tg оставлен у самого активного из претендентов, у остальных занулён.`
+      );
+      for (const c of tgResolutionLog) {
+        logger.warn(
+          `   tg=${c.tg}: → "${c.winner.email}" (${c.winner.file}#${c.winner.sourceId}, ` +
+          `is_fired=${c.winner.is_fired}, role=${c.winner.role}); ` +
+          `занулено у: ${c.losers.map(l => `"${l.email}"(${l.file}#${l.sourceId})`).join(', ')}`
+        );
+      }
+      report.warnings.push(...tgResolutionLog.map(c => ({
+        stage: 'users_tg_resolution', ...c,
+      })));
+    }
+
+    // --- 3. Сортировка: god → admin → moderator → employee → user → guest ---
     uniqueUsers.sort((a, b) => {
       const pa = getRolePriority(a.row.role || 'user');
       const pb = getRolePriority(b.row.role || 'user');
@@ -254,13 +419,53 @@ async function main() {
       return a.sourceId - b.sourceId;
     });
 
-    // 1.4. Подсчёт по ролям
+    // --- 4. Единственность Создателя ---
+    // GOD_EMAIL/GOD_ID — из .env Migration-проекта.
+    // При нескольких god — оставляем того, чьи идентификаторы совпали;
+    // если не совпал ни один — первого по приоритету. Остальных понижаем
+    // до admin (права сохраняются, god-защита работает для одного).
+    const godEnvEmail = String(process.env.GOD_EMAIL || '').trim().toLowerCase();
+    const godEnvId = String(process.env.GOD_ID || '').trim();
+    const godsInData = uniqueUsers.filter(u => u.row.role === 'god');
+
+    if (godsInData.length > 1) {
+      let chosen = null;
+      if (godEnvEmail || godEnvId) {
+        chosen = godsInData.find(u =>
+          (godEnvEmail && u.email === godEnvEmail) ||
+          (godEnvId && String(u.row.tg_user_id || '').trim() === godEnvId)
+        ) || null;
+      }
+      if (!chosen) chosen = godsInData[0];
+
+      const demoted = godsInData.filter(u => u !== chosen);
+      logger.warn(
+        `⚠️ Найдено ${godsInData.length} god — оставляем #${chosen.sourceId} ` +
+        `(${chosen.email}), понижены до admin: ` +
+        demoted.map(u => u.email).join(', ')
+      );
+      report.warnings.push({
+        stage: 'god_dedup',
+        chosen: { sourceId: chosen.sourceId, email: chosen.email, file: chosen.sourceDbName },
+        demoted: demoted.map(u => ({ sourceId: u.sourceId, email: u.email, file: u.sourceDbName })),
+        godEnvEmail: godEnvEmail || null,
+        godEnvId: godEnvId || null,
+      });
+      for (const u of demoted) u.row.role = 'admin';
+    } else if (godsInData.length === 0) {
+      logger.info(
+        `ℹ️ Ни одного role='god' в исходных данных. ` +
+        `Создателя можно назначить через sync из Excel.`
+      );
+    }
+
+    // 1.3. Подсчёт по ролям
     for (const u of uniqueUsers) {
       const role = u.row.role || 'user';
       report.counts.users.byRole[role] = (report.counts.users.byRole[role] || 0) + 1;
     }
 
-    // 1.5. Вставка в users.db — role приводится к 'god'|'user'|'guest'
+    // 1.4. Вставка в users.db — role приводится к 'god'|'user'|'guest'
     const emailToNewId = new Map();
 
     for (const u of uniqueUsers) {
@@ -296,7 +501,7 @@ async function main() {
       .map(([role, n]) => `${role}=${n}`)
       .join(', ')}`);
 
-    // 1.6. user_stores — по одной записи на (user_id, store_id)
+    // 1.5. user_stores — по одной записи на (user_id, store_id)
     for (const f of inputFiles) {
       const db = openedDbs[f.name];
       const rows = await db.all('SELECT * FROM users ORDER BY id ASC');

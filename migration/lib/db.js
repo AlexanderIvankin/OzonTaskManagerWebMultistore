@@ -35,7 +35,13 @@ async function openDb(dbPath, { readonly = false, create = false } = {}) {
   });
 }
 
-async function backupDb(dbPath, backupDir) {
+/**
+ * Бэкап БД в подпапку по имени миграции (например, backups/bot-to-web/).
+ * @param {string} dbPath - путь к живой БД
+ * @param {string} backupSubdir - имя подпапки внутри backups/
+ */
+async function backupDb(dbPath, backupSubdir) {
+  const backupDir = path.join(__dirname, '..', 'backups', backupSubdir);
   fs.mkdirSync(backupDir, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const base = path.basename(dbPath, path.extname(dbPath));

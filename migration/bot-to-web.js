@@ -11,9 +11,23 @@ const { normalizeEmail, normalizeTgId, timestamp } = require('./lib/helpers');
 // ============================================================================
 //  КОНФИГУРАЦИЯ
 // ============================================================================
+// Пути ЗАХАРДКОЖЕНЫ — фиксированная структура папок migration.
+// Имена файлов bot-N.db / bot_web-N.db определяются версией магазина;
+// N задаётся параметром --version (default: 1).
+function resolveVersion() {
+  const arg = process.argv.find(a => a.startsWith('--version='));
+  if (arg) {
+    const v = parseInt(arg.slice(10), 10);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  return 1;
+}
+
+const VERSION = resolveVersion();
+
 const CONFIG = {
-  botDbPath: process.env.BOT_DB || path.join(__dirname, 'input', 'bot-1.db'),
-  webDbPath: process.env.WEB_DB || path.join(__dirname, 'output', 'bot_web-1.db'),
+  botDbPath: path.join(__dirname, 'bot-web_input', `bot-${VERSION}.db`),
+  webDbPath: path.join(__dirname, 'bot-web_output', `bot_web-${VERSION}.db`),
   backupDir: path.join(__dirname, 'backups'),
   logsDir: path.join(__dirname, 'logs'),
 };
@@ -82,7 +96,7 @@ async function main() {
   const reportPath = path.join(CONFIG.logsDir, `bot-to-web_${ts}.report.json`);
   const logger = new Logger(logPath);
 
-  logger.info('=== Миграция bot → web ===');
+  logger.info(`=== Миграция bot → web (version=${VERSION}) ===`);
   logger.info(`BOT_DB: ${CONFIG.botDbPath}`);
   logger.info(`WEB_DB: ${CONFIG.webDbPath}`);
   logger.info(`Опции: ${JSON.stringify(opts)}`);
@@ -132,7 +146,7 @@ async function main() {
     logger.info('✅ Схема обеих БД проверена');
 
     if (!opts.dryRun) {
-      const backupPath = await backupDb(CONFIG.webDbPath, CONFIG.backupDir);
+      const backupPath = await backupDb(CONFIG.webDbPath, 'bot-to-web');
       logger.info(`📦 Бэкап output-БД: ${backupPath}`);
       report.backupPath = backupPath;
     } else {
