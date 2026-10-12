@@ -96,6 +96,7 @@ function isDevHostname(hostname) {
 
 function dynamicCors(req, res, next) {
   const hostname = hostnameFromHostHeader(req.headers.host);
+  const rootDomain = (process.env.ROOT_DOMAIN || '').trim().toLowerCase();
   const storeId = resolveStoreId(hostname);
   const store = storeId ? stores[storeId] : null;
 
@@ -104,13 +105,19 @@ function dynamicCors(req, res, next) {
       if (!origin) return callback(null, true);
       if (DEV_ORIGINS.includes(origin)) return callback(null, true);
 
-      // Разрешаем любые dev-поддомены (lvh.me / nip.io / localhost)
-      const actualHost = hostnameFromOrigin(origin);
-      if (isDevHostname(actualHost)) return callback(null, true);
+      const actual = hostnameFromOrigin(origin);
 
+      // Prod: clientOrigin магазина (если запрос на поддомен магазина)
       if (store && store.clientOrigin) {
         const allowed = hostnameFromOrigin(store.clientOrigin);
-        if (allowed && actualHost === allowed) return callback(null, true);
+        if (allowed && actual === allowed) return callback(null, true);
+      }
+
+      // Корневой домен (глобальный профиль) — запросы на /api/auth/*,
+      // /api/user/stores, /api/notifications и т.д. Резолвер не находит
+      // магазин (store = null), но CORS обязан разрешить.
+      if (rootDomain && (actual === rootDomain || actual === `www.${rootDomain}`)) {
+        return callback(null, true);
       }
 
       console.warn(
