@@ -610,15 +610,30 @@ exports.getAwaitingOrders = async (req, res, next) => {
     const assignedSet = new Set(assigned.map(a => a.order_id));
     const freeOrders = allOrders.filter(order => !assignedSet.has(order.posting_number));
 
-    const ordersWithImages = await Promise.all(freeOrders.map(async (order) => {
+    // Фаза 1: последовательно получаем детали всех заказов.
+    // getOrderDetails уже под rate-limit в OzonService, поэтому шторма не будет.
+    const withDetails = [];
+    for (const order of freeOrders) {
       const details = await OzonService.getOrderDetails(storeId, order.posting_number);
       const sourceProducts = (details && Array.isArray(details.products) && details.products.length)
         ? details.products
         : (order.products || []);
-      const products = await OrderService.attachProductImages(storeId, sourceProducts);
-      await OrderService.attachProductStats(storeId, products);
-      return { ...order, products, details };
-    }));
+      withDetails.push({ order, details, products: sourceProducts });
+    }
+
+    // Фаза 2: ОДИН запрос картинок на все sku всех заказов.
+    await OrderService.prefetchProductImages(
+      storeId,
+      withDetails.map((w) => w.products)
+    );
+
+    // Фаза 3: attachProductImages теперь берёт картинки из кэша без сети.
+    const ordersWithImages = [];
+    for (const { order, details, products } of withDetails) {
+      const withImages = await OrderService.attachProductImages(storeId, products);
+      await OrderService.attachProductStats(storeId, withImages);
+      ordersWithImages.push({ ...order, products: withImages, details });
+    }
 
     res.json(ordersWithImages);
   } catch (err) {
@@ -691,9 +706,21 @@ exports.getActiveOrdersAll = async (req, res, next) => {
     const storeCfg = stores.getStore(storeId);
     const result = [];
 
+    // Фаза 1: детали всех заказов (последовательно, под rate-limit).
+    const withDetails = [];
     for (const a of active) {
       const details = await OzonService.getOrderDetails(storeId, a.order_id);
+      withDetails.push({ a, details, products: details?.products || [] });
+    }
 
+    // Фаза 2: один запрос картинок на все sku.
+    await OrderService.prefetchProductImages(
+      storeId,
+      withDetails.map((w) => w.products)
+    );
+
+    // Фаза 3: собираем результат из кэша.
+    for (const { a, details, products } of withDetails) {
       let statsStatus = 'filled';
       const missingStats = [];
       if (details && details.products) {
@@ -707,13 +734,14 @@ exports.getActiveOrdersAll = async (req, res, next) => {
         }
       }
 
-      const products = await OrderService.attachProductImages(storeId, details?.products || []);
+      const productsWithImages = await OrderService.attachProductImages(storeId, products);
+
       if (!storeCfg.features.disableModels) {
-        await ModelService.attachToProducts(products);
+        await ModelService.attachToProducts(productsWithImages);
       } else {
-        for (const p of products) p.model = null;
+        for (const p of productsWithImages) p.model = null;
       }
-      await OrderService.attachProductStats(storeId, products);
+      await OrderService.attachProductStats(storeId, productsWithImages);
 
       result.push({
         orderId: a.order_id,

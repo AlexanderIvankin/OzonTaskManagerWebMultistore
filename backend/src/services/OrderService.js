@@ -719,6 +719,75 @@ class OrderService {
     await this.checkNewOrders(storeId);
   }
 
+  /**
+ * Предзагрузка картинок для набора заказов ОДНИМ запросом к Ozon.
+ *
+ * Зачем: без этой функции `attachProductImages` для каждого заказа
+ * вызывает `OzonService.fetchProductsImages` со своим набором SKU →
+ * N запросов. С rate-limit они идут последовательно, но всё равно
+ * медленно. Здесь собираем ВСЕ SKU со всех заказов в один Set и делаем
+ * ОДИН запрос — Ozon спокойно принимает до 1000 SKU за раз.
+ *
+ * После предзагрузки картинки лежат в `productImagesCache` под ключом
+ * `storeId:offer_id`, и `attachProductImages` берёт их оттуда без сети.
+ *
+ * @param {string|number} storeId
+ * @param {Array<Array<object>>} productLists - массив списков товаров
+ *   (по одному на заказ). Может быть `[order1.products, order2.products, ...]`.
+ */
+  static async prefetchProductImages(storeId, productLists) {
+    const allSkus = new Set();
+    // Собираем sku, которых ещё нет в кэше.
+    for (const products of productLists) {
+      if (!Array.isArray(products)) continue;
+      for (const p of products) {
+        if (!p || !p.sku) continue;
+        // Если у товара есть offer_id и он уже кэширован — не запрашиваем.
+        if (p.offer_id) {
+          const key = stateKey(storeId, String(p.offer_id));
+          const cached = productImagesCache.get(key);
+          if (cached && Array.isArray(cached.images) && cached.images.length) continue;
+        }
+        allSkus.add(String(p.sku));
+      }
+    }
+    if (!allSkus.size) return;
+
+    try {
+      const imageMap = await OzonService.fetchProductsImages(
+        storeId,
+        Array.from(allSkus)
+      );
+      // Кэшируем результат по offer_id (картинки общие для артикула).
+      for (const products of productLists) {
+        if (!Array.isArray(products)) continue;
+        for (const p of products) {
+          if (!p || !p.offer_id || !p.sku) continue;
+          const key = stateKey(storeId, String(p.offer_id));
+          const cached = productImagesCache.get(key);
+          if (cached && cached.images && cached.images.length) continue;
+          const urls = imageMap[String(p.sku)];
+          if (!urls || !urls.length) continue;
+          productImagesCache.set(key, {
+            sku: String(p.sku),
+            images: urls,
+            updatedAt: Date.now(),
+          });
+        }
+      }
+      console.log(
+        `[OrderService][store ${storeId}] prefetchProductImages: ` +
+        `запрошено ${allSkus.size} SKU, кэшировано ${imageMap && Object.keys(imageMap).length || 0}`
+      );
+    } catch (err) {
+      // Не критично: attachProductImages потом попробует сам, для каждого
+      // заказа — с rate-limit, медленно, но надёжно.
+      console.error(
+        `[OrderService][store ${storeId}] prefetchProductImages: ${err.message}`
+      );
+    }
+  }
+
   // =================================================================
   // 7.5 ПРИВЯЗКА ФОТОГРАФИЙ К ТОВАРАМ (per-store кэш)
   // =================================================================

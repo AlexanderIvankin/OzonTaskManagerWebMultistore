@@ -73,6 +73,52 @@ async function requestWithRetry(requestFn, options = {}) {
   }
 }
 
+// ============================================================================
+//  RATE LIMITER для Ozon API (по магазинам).
+//
+//  Проблема: при загрузке страницы с 10+ заказами каждая карточка отдельно
+//  запрашивает фото/SKU-инфо у Ozon. Promise.all запускает их ПАРАЛЛЕЛЬНО —
+//  Ozon отвечает 429, retry делает ещё хуже.
+//
+//  Решение: обёртка `withRateLimit(storeId, fn)`, которая выстраивает все
+//  обёрнутые вызовы в ПОСЛЕДОВАТЕЛЬНУЮ цепочку (по магазину) с минимальным
+//  интервалом 1000/N мс. N настраивается через OZON_RATE_LIMIT_PER_SEC
+//  (по умолчанию 3 запроса/сек — безопасно для Ozon).
+//
+//  Обёрнуты только «пачечные» методы (картинки, детали, полная информация
+//  о товарах). Одиночные (создание задачи этикетки, подпись сборки) — без
+//  ограничения: они и так вызываются по одному.
+// ============================================================================
+const RATE_LIMIT_PER_SEC = Math.max(
+  1,
+  parseInt(process.env.OZON_RATE_LIMIT_PER_SEC, 10) || 3
+);
+const RATE_LIMIT_INTERVAL_MS = Math.max(50, Math.floor(1000 / RATE_LIMIT_PER_SEC));
+
+// Цепочка промисов по storeId. Каждый новый вызов «прикрепляется» к хвосту.
+const rateLimitChains = new Map();
+
+/**
+ * Обернуть вызов Ozon в общую очередь с ограничением N запросов/сек.
+ * Гарантирует порядок и паузу между запросами внутри магазина.
+ * @param {string|number} storeId
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ * @template T
+ */
+function withRateLimit(storeId, fn) {
+  const key = String(storeId);
+  const prev = rateLimitChains.get(key) || Promise.resolve();
+  // Ждём завершения предыдущего + пауза RATE_LIMIT_INTERVAL_MS, затем fn().
+  const next = prev
+    .catch(() => { }) // ошибки предыдущего не должны блокировать очередь
+    .then(() => new Promise((r) => setTimeout(r, RATE_LIMIT_INTERVAL_MS)))
+    .then(() => fn());
+  // Храним «хвост» без reject — иначе одна ошибка сломает цепочку.
+  rateLimitChains.set(key, next.catch(() => { }));
+  return next;
+}
+
 class OzonService {
   // ==========================================================================
   //  Тестовые хуки: позволяют подменить клиент конкретного магазина.
@@ -328,12 +374,14 @@ class OzonService {
     }
     const client = getClient(storeId);
     try {
-      const response = await requestWithRetry(
-        () => client.post('/v3/posting/fbs/get', {
-          posting_number: orderId,
-          with: { financial_data: true, analytics_data: true }
-        }),
-        { context: `getOrderDetails[${storeId}]_${orderId}` }
+      const response = await withRateLimit(storeId, () =>
+        requestWithRetry(
+          () => client.post('/v3/posting/fbs/get', {
+            posting_number: orderId,
+            with: { financial_data: true, analytics_data: true }
+          }),
+          { context: `getOrderDetails[${storeId}]_${orderId}` }
+        )
       );
       return response.data.result;
     } catch (error) {
@@ -347,11 +395,13 @@ class OzonService {
     if (!skuList.length || MOCK_MODE) return {};
     const client = getClient(storeId);
     try {
-      const response = await requestWithRetry(
-        () => client.post('/v3/product/info/list', {
-          sku: skuList.map(s => String(s))
-        }),
-        { context: `fetchProductsImages[${storeId}]` }
+      const response = await withRateLimit(storeId, () =>
+        requestWithRetry(
+          () => client.post('/v3/product/info/list', {
+            sku: skuList.map(s => String(s))
+          }),
+          { context: `fetchProductsImages[${storeId}]` }
+        )
       );
       const items = response.data.items || [];
       const imageMap = {};
@@ -397,9 +447,11 @@ class OzonService {
     const client = getClient(storeId);
     const uniqueOffers = [...new Set(offerIds)];
     try {
-      const response = await requestWithRetry(
-        () => client.post('/v3/product/info/list', { offer_id: uniqueOffers }),
-        { context: `getProductsFullInfo[${storeId}]` }
+      const response = await withRateLimit(storeId, () =>
+        requestWithRetry(
+          () => client.post('/v3/product/info/list', { offer_id: uniqueOffers }),
+          { context: `getProductsFullInfo[${storeId}]` }
+        )
       );
       const items = response.data.items || [];
       const productInfo = {};
@@ -745,3 +797,4 @@ class OzonService {
 
 module.exports = OzonService;
 module.exports.invalidateClient = invalidateClient;
+OzonService.withRateLimit = withRateLimit;
