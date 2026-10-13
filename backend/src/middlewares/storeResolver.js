@@ -12,7 +12,7 @@
 //
 // Резолвер НЕ падает, если Host не пришёл (например, служебный healthcheck):
 // в single-store режиме отдаст единственный магазин, в multi-store — 404.
-const { normalizeRootDomain } = require('./utils');
+const { normalizeRootDomain } = require('../utils');
 const stores = require('../config/stores');
 const { getStoreIds } = stores;
 
