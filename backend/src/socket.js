@@ -17,31 +17,64 @@ function initSocket(server) {
     cors: {
       origin: (origin, callback) => {
         if (!origin) return callback(null, true);
-        // dev-порты и любые *.lvh.me / *.nip.io / localhost
+
+        // dev-порты
         const devPatterns = [
           "http://localhost:3000",
           "http://localhost:5173",
         ];
         if (devPatterns.includes(origin)) return callback(null, true);
+
+        let host = null;
         try {
-          const host = new URL(origin).hostname;
-          if (
-            host === "localhost" ||
-            host === "127.0.0.1" ||
-            host === "lvh.me" ||
-            host.endsWith(".lvh.me") ||
-            host.endsWith(".nip.io")
-          ) {
-            return callback(null, true);
-          }
+          host = new URL(origin).hostname.toLowerCase();
         } catch { /* ignore */ }
-        // prod: только CLIENT_ORIGIN / CLIENT_URL
+
+        // dev-поддомены (lvh.me / nip.io)
+        if (
+          host === "localhost" ||
+          host === "127.0.0.1" ||
+          host === "lvh.me" ||
+          host.endsWith(".lvh.me") ||
+          host.endsWith(".nip.io")
+        ) {
+          return callback(null, true);
+        }
+
+        // Прод: корневой домен (глобальный профиль). Резолвер не находит
+        // магазин для na3d.ru, значит store = null, но сокет на нём тоже
+        // нужен (live-тосты из GlobalProfile, общий inbox уведомлений).
+        const rootDomain = (process.env.ROOT_DOMAIN || "").trim().toLowerCase();
+        if (
+          rootDomain &&
+          (host === rootDomain || host === `www.${rootDomain}`)
+        ) {
+          return callback(null, true);
+        }
+
+        // Прод: clientOrigin конкретного магазина
         if (
           origin === process.env.CLIENT_ORIGIN ||
           origin === process.env.CLIENT_URL
         ) {
           return callback(null, true);
         }
+
+        // Прод: поддомен магазина (shop1.na3d.ru и т.п.) — берём из реестра
+        // через stores: у каждого есть clientOrigin. Если origin совпал
+        // с любым clientOrigin — пропускаем.
+        try {
+          const stores = require("./config/stores");
+          for (const storeId of stores.getStoreIds()) {
+            const clientOrigin = stores.getStore(storeId).clientOrigin;
+            if (!clientOrigin) continue;
+            try {
+              const coHost = new URL(clientOrigin).hostname.toLowerCase();
+              if (coHost === host) return callback(null, true);
+            } catch { /* ignore */ }
+          }
+        } catch { /* ignore */ }
+
         return callback(null, false);
       },
       methods: ["GET", "POST"],
