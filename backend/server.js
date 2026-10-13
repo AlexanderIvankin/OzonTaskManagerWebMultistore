@@ -1,4 +1,4 @@
-const { getLocalTimestamp } = require('./src/utils');
+const { getLocalTimestamp, normalizeRootDomain } = require('./src/utils');
 require('dotenv').config();
 
 // ============================================================
@@ -82,7 +82,8 @@ function hostnameFromOrigin(origin) {
 
 function dynamicCors(req, res, next) {
   const hostname = hostnameFromHostHeader(req.headers.host);
-  const rootDomain = (process.env.ROOT_DOMAIN || '').trim().toLowerCase();
+  const rootDomain = normalizeRootDomain(process.env.ROOT_DOMAIN);
+
   const storeId = resolveStoreId(hostname);
   const store = storeId ? stores[storeId] : null;
 

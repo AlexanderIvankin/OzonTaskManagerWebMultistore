@@ -12,6 +12,7 @@
 //
 // Резолвер НЕ падает, если Host не пришёл (например, служебный healthcheck):
 // в single-store режиме отдаст единственный магазин, в multi-store — 404.
+const { normalizeRootDomain } = require('./utils');
 const stores = require('../config/stores');
 const { getStoreIds } = stores;
 
@@ -106,7 +107,7 @@ function isGlobalPath(path) {
  */
 function storeResolver(req, res, next) {
   const hostname = hostnameFromHostHeader(req.headers.host);
-  const rootDomain = (process.env.ROOT_DOMAIN || '').trim().toLowerCase();
+  const rootDomain = normalizeRootDomain(process.env.ROOT_DOMAIN);
 
   // 1. Корневой домен = ГЛОБАЛЬНЫЙ контекст (магазина нет).
   //    Здесь работает только глобальный набор путей: /auth/*, /user/stores,

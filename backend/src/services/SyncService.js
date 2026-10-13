@@ -244,7 +244,7 @@ class SyncService {
 
     const headerRow = rows[1];
     const emailHeader = (headerRow[1] || '').toLowerCase();
-    if (!emailHeader.includes('email')) {
+    if (!emailHeader.includes('E-mail')) {
       console.warn('[Sync] Второй столбец, возможно, не email. Проверьте файл.');
     }
 
@@ -441,11 +441,36 @@ class SyncService {
           phone: data.phoneRaw === '' ? (user.phone || '') : (data.phonePretty || ''),
           capacity: data.capacity,
         };
+
+        // ── Мягкое разрешение коллизии по tg_user_id ──────────────────────
+        // users.tg_user_id UNIQUE. Если Excel хочет поставить этот tg
+        // текущему user, а он уже занят ДРУГИМ (архивным) аккаунтом — не
+        // падаем, а забираем tg у архивного (Excel — источник истины:
+        // строка с tg в team-info-N.xlsx означает, что сейчас сотрудник
+        // работает именно под этим аккаунтом). Оба user'а сохраняются,
+        // у старого просто обнуляется tg_user_id.
         if (data.tgUserId && user.tg_user_id !== data.tgUserId) {
+          const holder = await usersDb.get(
+            'SELECT id, email, name FROM users WHERE tg_user_id = ? AND id != ?',
+            data.tgUserId, user.id
+          );
+          if (holder) {
+            console.warn(
+              `[SyncService][store ${storeId}] tg_user_id=${data.tgUserId} ` +
+              `уже привязан к user #${holder.id} (${holder.email || 'без email'}). ` +
+              `Обнуляем у него, ставим у #${user.id} (${data.email}).`
+            );
+            await usersDb.run(
+              'UPDATE users SET tg_user_id = NULL, updated_at = ? WHERE id = ?',
+              Date.now(), holder.id
+            );
+            // Опционально — уведомить персонал (см. ниже, если хочешь).
+          }
           globalFields.tg_user_id = data.tgUserId;
         } else if (!data.tgUserId && data.tgRaw) {
           globalFields.tg_user_id = '';
         }
+
         // Гость (email не подтверждён) — не активируем
         if (user.role !== 'guest') {
           globalFields.taking_orders = 1;

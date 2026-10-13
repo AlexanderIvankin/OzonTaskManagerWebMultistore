@@ -17,6 +17,27 @@ require('dotenv').config();
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow';
 
 /**
+ * Нормализует корневой домен из .env: убирает протокол, www, путь, порт.
+ * Принимает 'na3d.ru', 'https://na3d.ru', 'https://www.na3d.ru/', 'na3d.ru:443'
+ * — всё даёт 'na3d.ru'.
+ *
+ * Сравнивается с hostname (без протокола/порта/пути), поэтому типичная
+ * ошибка — написать в .env 'https://na3d.ru' — молча ломала CORS.
+ *
+ * @param {string} value
+ * @returns {string} нормализованный домен или '' если вход пустой
+ */
+function normalizeRootDomain(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')   // снять протокол
+    .replace(/\/.*$/, '')          // снять путь
+    .replace(/:\d+$/, '')          // снять порт
+    .replace(/^www\./, '');        // снять www
+}
+
+/**
  * Объединяет несколько PDF-буферов в один.
  * @param {Buffer[]} pdfBuffers
  * @returns {Promise<Buffer|null>}
@@ -320,6 +341,8 @@ function disableCache(res) {
 }
 
 module.exports = {
+  // Domain Parser
+  normalizeRootDomain,
   // PDF
   mergePdfs,
   // Дата/время

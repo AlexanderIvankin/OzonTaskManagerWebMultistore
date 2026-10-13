@@ -1,3 +1,4 @@
+const { normalizeRootDomain } = require('./utils');
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const config = require('./config');
@@ -41,10 +42,8 @@ function initSocket(server) {
           return callback(null, true);
         }
 
-        // Прод: корневой домен (глобальный профиль). Резолвер не находит
-        // магазин для na3d.ru, значит store = null, но сокет на нём тоже
-        // нужен (live-тосты из GlobalProfile, общий inbox уведомлений).
-        const rootDomain = (process.env.ROOT_DOMAIN || "").trim().toLowerCase();
+        const rootDomain = normalizeRootDomain(process.env.ROOT_DOMAIN);
+
         if (
           rootDomain &&
           (host === rootDomain || host === `www.${rootDomain}`)
