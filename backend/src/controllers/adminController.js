@@ -531,7 +531,9 @@ exports.syncEmployeesServerFile = async (req, res, next) => {
   try {
     const storeId = req.storeId;
     const fileName = getVersionedFileName('team-info', 'xlsx', storeId);
-    const filePath = path.join(__dirname, '../../', fileName);
+    // Файл лежит рядом с экспортированными outputs магазина:
+    // backend/outputs/store-N/team-info-N.xlsx
+    const filePath = path.join(__dirname, '../../outputs', `store-${storeId}`, fileName);
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({
         error: `Файл ${fileName} не найден на сервере. Сначала выгрузите его через «Экспорт данных».`,

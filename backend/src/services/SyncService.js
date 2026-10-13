@@ -406,6 +406,24 @@ class SyncService {
               `[SyncService][store ${storeId}] god #${user.id}: заполнены пустые поля: ${Object.keys(godUpdates).join(', ')}`
             );
           }
+
+          // КЛЮЧЕВОЕ: гарантируем god-роль В ЭТОМ МАГАЗИНЕ.
+          // Раньше код считал, что user_stores уже 'god', но при миграции
+          // из single-store в мультистор бывает 'employee' (в bot_web-N.db роль
+          // могла быть сотрудником). Синхронизация должна это выравнивать.
+          const existing = await UserStore.get(user.id, storeId);
+          if (!existing || existing.role !== 'god' || existing.is_fired) {
+            await UserStore.upsert(user.id, storeId, {
+              role: 'god',
+              is_fired: 0,
+              was_employee: 1,
+            });
+            console.log(
+              `[SyncService][store ${storeId}] god #${user.id}: роль в магазине выровнена на 'god'` +
+              (existing ? ` (было: ${existing.role}${existing.is_fired ? ' / is_fired' : ''})` : ' (записи не было)')
+            );
+          }
+
           // Склад — не «критичное» поле, обновляем как у всех
           await Warehouse.clearUserWarehouses(storeId, user.id);
           for (const whId of data.warehouses) {
