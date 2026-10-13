@@ -62,7 +62,7 @@ console.log(`[RATE LIMIT] trust proxy = ${app.get('trust proxy')}`);
 app.use(helmet());
 
 // ============================================================
-//  CORS (per-store)
+//  CORS (per-store + глобальный домен)
 // ============================================================
 const DEV_ORIGINS = ['http://localhost:3000', 'http://localhost:5173'];
 
@@ -80,20 +80,6 @@ function hostnameFromOrigin(origin) {
   }
 }
 
-// Хосты, которые считаем «dev-окружением» (любой поддомен разрешён для CORS).
-// Сделано для разработки через lvh.me / nip.io: store1.lvh.me:5173 должен
-// ходить в backend на localhost:5000 без настройки clientOrigin.
-function isDevHostname(hostname) {
-  if (!hostname) return false;
-  return (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "lvh.me" ||
-    hostname.endsWith(".lvh.me") ||
-    hostname.endsWith(".nip.io")
-  );
-}
-
 function dynamicCors(req, res, next) {
   const hostname = hostnameFromHostHeader(req.headers.host);
   const rootDomain = (process.env.ROOT_DOMAIN || '').trim().toLowerCase();
@@ -102,22 +88,32 @@ function dynamicCors(req, res, next) {
 
   cors({
     origin: function (origin, callback) {
+      // Запросы без Origin (curl, Postman) — пропускаем
       if (!origin) return callback(null, true);
+
+      // Dev-порты
       if (DEV_ORIGINS.includes(origin)) return callback(null, true);
 
       const actual = hostnameFromOrigin(origin);
 
-      // Prod: clientOrigin магазина (если запрос на поддомен магазина)
+      // Prod: clientOrigin конкретного магазина
       if (store && store.clientOrigin) {
         const allowed = hostnameFromOrigin(store.clientOrigin);
         if (allowed && actual === allowed) return callback(null, true);
       }
 
-      // Корневой домен (глобальный профиль) — запросы на /api/auth/*,
-      // /api/user/stores, /api/notifications и т.д. Резолвер не находит
-      // магазин (store = null), но CORS обязан разрешить.
+      // Prod: корневой домен (глобальный профиль)
       if (rootDomain && (actual === rootDomain || actual === `www.${rootDomain}`)) {
         return callback(null, true);
+      }
+
+      // Prod: любой clientOrigin из реестра магазинов
+      // (на случай, если host — не поддомен, а сам clientOrigin)
+      for (const sid of stores.getStoreIds()) {
+        const co = stores.getStore(sid).clientOrigin;
+        if (!co) continue;
+        const coHost = hostnameFromOrigin(co);
+        if (coHost && actual === coHost) return callback(null, true);
       }
 
       console.warn(
@@ -126,9 +122,9 @@ function dynamicCors(req, res, next) {
       return callback(null, false);
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    exposedHeaders: ["Content-Disposition"],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Disposition'],
   })(req, res, next);
 }
 
