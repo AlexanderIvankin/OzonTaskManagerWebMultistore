@@ -143,26 +143,28 @@ class PushService {
     return Math.max(1, parseInt(process.env.PUSH_MAX_SUBS_PER_USER, 10) || 10);
   }
 
-  static async subscribe(userId, subscription, userAgent = null) {
+  static async subscribe(userId, subscription, userAgent = null, origin = null) {
     if (!PushService.isValidSubscription(subscription)) return false;
     try {
       const db = getUsersDB();
       const now = Date.now();
       await db.run(
         `INSERT INTO push_subscriptions
-           (user_id, endpoint, p256dh, auth, user_agent, created_at, last_used_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+           (user_id, endpoint, p256dh, auth, user_agent, origin, created_at, last_used_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(endpoint) DO UPDATE SET
            user_id = excluded.user_id,
            p256dh = excluded.p256dh,
            auth = excluded.auth,
            user_agent = excluded.user_agent,
+           origin = COALESCE(excluded.origin, push_subscriptions.origin),
            last_used_at = excluded.last_used_at`,
         userId,
         subscription.endpoint,
         subscription.keys.p256dh,
         subscription.keys.auth,
         userAgent || null,
+        origin ? String(origin).trim() : null,
         now,
         now
       );
@@ -259,23 +261,54 @@ class PushService {
   }
 
   /**
+   * Отправить push во ВСЕ подписки пользователя (или в подписки конкретного
+   * origin — см. opts.origin).
+   *
    * @param {number} userId
    * @param {object} payload
-   * @param {{ storeId?: string|number|null }} [opts]
-   *   storeId — магазин, от лица которого идёт push. Используется для выбора
-   *   per-store VAPID-subject (см. getVapidDetails). Может быть null — тогда
-   *   берётся глобальный fallback-контакт.
+   * @param {object} [opts]
+   *   storeId — для VAPID subject (per-store).
+   *   origin  — фильтр по origin (например, 'https://store1.na3d.ru').
+   *             Если задан — шлём ТОЛЬКО на подписки с этим origin.
+   *             Если null/undefined — шлём на все origin (системные события).
+   *             Fallback: если для заданного origin подписок НЕТ, но есть
+   *             подписки с origin = NULL (старые записи до миграции) —
+   *             шлём на них, чтобы не потерять пользователей.
    */
-  static async sendToUser(userId, payload, { storeId = null } = {}) {
+  static async sendToUser(userId, payload, { storeId = null, origin = null } = {}) {
     const result = { sent: 0, failed: 0, removed: 0 };
     if (!webpush || !PushService.enabled) return result;
 
     try {
       const db = getUsersDB();
-      const subs = await db.all(
-        'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?',
-        userId
-      );
+
+      let subs;
+      if (origin) {
+        subs = await db.all(
+          `SELECT id, endpoint, p256dh, auth FROM push_subscriptions
+           WHERE user_id = ? AND origin = ?`,
+          userId, String(origin)
+        );
+        // Обратная совместимость: у старых подписок origin = NULL (до миграции).
+        // Если по origin не нашли, но есть NULL-подписки — шлём на них.
+        if (!subs.length) {
+          subs = await db.all(
+            `SELECT id, endpoint, p256dh, auth FROM push_subscriptions
+             WHERE user_id = ? AND origin IS NULL`,
+            userId
+          );
+          if (subs.length) {
+            console.log(
+              `[Push] user=${userId}: подписок для origin=${origin} нет, шлю на legacy (origin IS NULL): ${subs.length}`
+            );
+          }
+        }
+      } else {
+        subs = await db.all(
+          'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?',
+          userId
+        );
+      }
       if (!subs.length) return result;
 
       const data = JSON.stringify(payload || {});

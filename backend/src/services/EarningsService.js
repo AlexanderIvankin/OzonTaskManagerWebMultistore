@@ -176,9 +176,13 @@ class EarningsService {
   }
 
   /**
-   * Добавить корректировку и оповестить сотрудника + журнал персонала.
+   * @param {object} [opts]
+   *   adminUserId — id того, кто делает корректировку (req.user.id).
+   *   Если adminUserId === userId (сам себе), не шлём staff-дубль:
+   *   админ и так увидит своё действие в «Личных» — не нужно ещё и
+   *   в «Действиях сотрудников» (иначе приходит 2 push на одно действие).
    */
-  static async addAdjustment(storeId, userId, amount, reason = '', adminName = null) {
+  static async addAdjustment(storeId, userId, amount, reason = '', adminName = null, { adminUserId = null } = {}) {
     await Earnings.addAdjustment(storeId, userId, amount, reason);
     await Earnings.addActiveAdjustment(storeId, userId, amount, reason);
 
@@ -187,14 +191,24 @@ class EarningsService {
     const payload = { amount, reason, adminName, userName };
 
     NotificationService.notifyUser(userId, 'earnings_adjusted', payload, { storeId });
-    NotificationService.notifyStaff('earnings_adjusted', payload, { storeId });
+
+    // Staff-оповещение не дублируем, если админ скорректировал СВОЙ заработок.
+    const isSelfAction = adminUserId != null && String(adminUserId) === String(userId);
+    if (!isSelfAction) {
+      NotificationService.notifyStaff('earnings_adjusted', payload, { storeId });
+    }
   }
 
   /**
-   * Произвести расчёт с сотрудником (обнуляет активный заработок и
-   * активные корректировки) и оповестить его.
+   * Произвести расчёт с сотрудником: обнуляет активный заработок и активные
+   * корректировки, оповещает сотрудника и журнал персонала.
+   *
+   * @param {object} [opts]
+   *   adminUserId — id того, кто делает расчёт (req.user.id). Если совпадает
+   *   с userId (сам себе), staff-оповещение НЕ шлём: админ и так получит
+   *   личное уведомление, а staff-дубль превращался в 2 push на одно действие.
    */
-  static async settleEmployee(storeId, userId, adminName = null) {
+  static async settleEmployee(storeId, userId, adminName = null, { adminUserId = null } = {}) {
     const baseActive = await Earnings.getActiveSum(storeId, userId, 0, Date.now());
     const adjustmentsActive = await Earnings.getActiveAdjustmentsSum(storeId, userId, 0, Date.now());
     const totalActive = baseActive + adjustmentsActive;
@@ -205,11 +219,17 @@ class EarningsService {
     const user = await User.getById(userId).catch(() => null);
     const userName = user?.name || null;
 
+    const isSelfAction =
+      adminUserId != null && String(adminUserId) === String(userId);
+
     if (totalActive > 0) {
       const payload = { amount: totalActive, adminName, userName };
       NotificationService.notifyUser(userId, 'earnings_settled', payload, { storeId });
-      NotificationService.notifyStaff('earnings_settled', payload, { storeId });
+      if (!isSelfAction) {
+        NotificationService.notifyStaff('earnings_settled', payload, { storeId });
+      }
     } else {
+      // Пустой расчёт — только личное уведомление, staff не нужен.
       NotificationService.notifyUser(
         userId,
         'earnings_settled_zero',

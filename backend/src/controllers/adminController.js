@@ -1223,6 +1223,7 @@ exports.addEarningsAdjustment = async (req, res, next) => {
       amount,
       reason || '',
       req.user?.name || null,
+      { adminUserId: req.user?.id || null },
     );
     res.json({ message: 'Adjustment added successfully' });
   } catch (err) {
@@ -1238,6 +1239,7 @@ exports.settleEarnings = async (req, res, next) => {
       storeId,
       userId,
       req.user?.name || null,
+      { adminUserId: req.user?.id || null },
     );
     res.json({ message: 'Settled', clearedAmount });
   } catch (err) {

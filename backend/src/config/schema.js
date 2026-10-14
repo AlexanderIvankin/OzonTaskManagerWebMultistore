@@ -95,11 +95,23 @@ async function createUsersSchema(db) {
       p256dh TEXT NOT NULL,
       auth TEXT NOT NULL,
       user_agent TEXT,
+      -- origin подписки (https://store1.na3d.ru, https://na3d.ru).
+      -- Один браузер = отдельная подписка на каждый origin (SW per-origin).
+      -- Нужен, чтобы store-уведомление уходило только в контекст магазина,
+      -- а не светилось ещё и на основном домене (и наоборот).
+      origin TEXT,
       created_at INTEGER NOT NULL,
       last_used_at INTEGER,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+
+  // --- Мягкая миграция: origin в push_subscriptions (multi-origin push) ---
+  const pushCols = await db.all('PRAGMA table_info(push_subscriptions)');
+  if (!pushCols.some((c) => c.name === 'origin')) {
+    await db.exec('ALTER TABLE push_subscriptions ADD COLUMN origin TEXT');
+    console.log('✅ push_subscriptions: добавлена колонка origin');
+  }
 
   // Индексы
   await db.exec('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)');

@@ -1,6 +1,7 @@
 const { getUsersDB } = require('../config/database');
 const Notification = require('../models/Notification');
 const PushService = require('./PushService');
+const stores = require('../config/stores');
 const {
   notifyUser,
   notifyUsers,
@@ -522,10 +523,20 @@ async function deliverLive(storeId, userId, event, data, { push = true } = {}) {
   if (!storeId) return 'none';
   if (notifyUser(storeId, userId, event, data)) return 'socket';
   if (!push) return 'none';
+
+  // origin магазина — чтобы store-уведомление шло только в SW магазина,
+  // а не дублировалось на основном домене (и на других поддоменах).
+  let storeOrigin = null;
+  try {
+    storeOrigin = stores.getStore(String(storeId))?.clientOrigin || null;
+  } catch {
+    // Магазин не найден — шлём без фильтра (fallback).
+  }
+
   const res = await PushService.sendToUser(
     userId,
     buildPushPayload({ ...data, storeId }),
-    { storeId }
+    { storeId, origin: storeOrigin }
   );
   return res.sent > 0 ? 'push' : 'none';
 }
@@ -538,9 +549,19 @@ async function deliverLiveBatch(storeId, userIds, event, data, { push = true } =
   const delivered = notifyUsers(storeId, userIds, event, data);
   if (!push || delivered.length === (userIds || []).length) return delivered;
   const offline = (userIds || []).filter((id) => !delivered.includes(id));
+
+  let storeOrigin = null;
+  try {
+    storeOrigin = stores.getStore(String(storeId))?.clientOrigin || null;
+  } catch { /* магазин не найден — без фильтра */ }
+
   await Promise.allSettled(
     offline.map((id) =>
-      PushService.sendToUser(id, buildPushPayload({ ...data, storeId }), { storeId })
+      PushService.sendToUser(
+        id,
+        buildPushPayload({ ...data, storeId }),
+        { storeId, origin: storeOrigin }
+      )
     )
   );
   return delivered;
