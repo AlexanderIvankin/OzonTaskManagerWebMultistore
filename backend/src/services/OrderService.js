@@ -486,7 +486,6 @@ class OrderService {
       }
 
       // 3. Подтверждение сборки
-      let labelBuffer = null;
       try {
         await OzonService.confirmPostingShip(storeId, orderId);
       } catch (shipError) {
@@ -497,7 +496,10 @@ class OrderService {
         }
       }
 
-      labelBuffer = await OzonService.getPackageLabel(storeId, orderId);
+      // Этикетка запрашивается клиентом отдельно (GET /api/user/orders/:orderId/label),
+      // когда status перейдёт в "awaiting_deliver" (см. их рекомендацию: 45–60 сек после сборки).
+
+      // let labelBuffer = await OzonService.getPackageLabel(storeId, orderId);
 
       // ========== ТРАНЗАКЦИЯ БД (store-N.db) ==========
       await db.run('BEGIN TRANSACTION');
@@ -554,7 +556,8 @@ class OrderService {
 
       const finishedPayload = {
         orderId,
-        labelAvailable: !!labelBuffer,
+        labelAvailable: false,
+        labelPending: true,
         earnings: earningsData?.total || 0,
         earningsDetails: (earningsData?.details || []).map((item) => ({
           offerId: item.offerId,
@@ -578,7 +581,19 @@ class OrderService {
       await this.clearOrderState(storeId, orderId);
 
       console.log(`[FINISH][store ${storeId}] === Заказ ${orderId} успешно завершён ===`);
-      return { success: true, earnings: earningsData?.total || 0, labelAvailable: !!labelBuffer };
+
+      // Фоновая доготовка этикетки: Ozon переводит заказ в "awaiting_deliver" асинхронно.
+      // Через ~60 сек пробуем получить этикетку и уведомить сотрудника,
+      // чтобы ему не пришлось вручную жать «Обновить» в «Завершённых заказах».
+      setTimeout(() => {
+        this.tryFetchLabelWithNotification(storeId, orderId, userId)
+          .catch((err) => console.warn(
+            `[FINISH][store ${storeId}] Фоновая доготовка этикетки ${orderId}:`,
+            err.message
+          ));
+      }, 60000);
+
+      return { success: true, earnings: earningsData?.total || 0, labelAvailable: false };
 
     } catch (err) {
       console.error(`[FINISH][store ${storeId}] Ошибка при завершении заказа ${orderId}:`, err);
@@ -665,10 +680,49 @@ class OrderService {
     if (!assignment) throw new Error('Заказ не найден или не завершён');
 
     const details = await OzonService.getOrderDetails(storeId, orderId);
-    if (!details || details.status !== 'awaiting_deliver') {
-      throw new Error('Этикетка ещё не доступна');
+    if (!details) throw new Error('Не удалось получить данные заказа из Ozon');
+
+    // ждём перехода заказа в статус "awaiting_deliver"
+    if (details.status !== 'awaiting_deliver') {
+      throw new Error(
+        `Этикетка ещё не доступна: заказ в статусе "${details.status}". Повторите через минуту.`
+      );
     }
-    return await OzonService.getPackageLabel(storeId, orderId);
+    return await OzonService.getPackageLabel(storeId, orderId, {
+      pollDelays: [2000, 3000, 3000, 3000, 5000],  // ~16 сек макс вместо 105
+      taskRetries: 1,                               // 1 попытка вместо 3×30 сек
+    });
+  }
+
+  /**
+   * Фоновая доготовка этикетки после finishOrder.
+   * Вызывается через setTimeout (не блокирует HTTP-ответ).
+   * Если этикетка ещё не готова — молча выходим, сотрудник повторит сам.
+   */
+  static async tryFetchLabelWithNotification(storeId, orderId, userId) {
+    const details = await OzonService.getOrderDetails(storeId, orderId);
+    if (!details || details.status !== 'awaiting_deliver') {
+      console.log(
+        `[LABEL-READY][store ${storeId}] Заказ ${orderId} ещё не в awaiting_deliver (${details?.status || '—'}), фоновая доготовка пропущена`
+      );
+      return;
+    }
+
+    const labelBuffer = await OzonService.getPackageLabel(storeId, orderId, {
+      pollDelays: [2000, 3000, 3000],
+      taskRetries: 1,
+    });
+    if (!labelBuffer) {
+      console.log(
+        `[LABEL-READY][store ${storeId}] Заказ ${orderId}: этикетка ещё не готова, сотрудник повторит вручную`
+      );
+      return;
+    }
+
+    await NotificationService.notifyUser(userId, 'label_ready', { orderId }, { storeId });
+    console.log(
+      `[LABEL-READY][store ${storeId}] Заказ ${orderId}: этикетка готова, сотрудник ${userId} уведомлён`
+    );
   }
 
   static async getAllLabels(storeId, userId) {
@@ -1011,10 +1065,24 @@ class OrderService {
   }
 
   static async syncOrderStatuses(storeId) {
-    const [packaging, deliver] = await Promise.all([
+    const [pkgRes, delRes] = await Promise.allSettled([
       OzonService.fetchAwaitingOrders(storeId),
       OzonService.fetchAwaitingDeliverOrders(storeId),
     ]);
+
+    const packaging = pkgRes.status === 'fulfilled' ? pkgRes.value : [];
+    const deliver = delRes.status === 'fulfilled' ? delRes.value : [];
+
+    if (pkgRes.status === 'rejected' && delRes.status === 'rejected') {
+      // Оба упали — реальная проблема с Ozon, отдаём ошибку наверх.
+      throw pkgRes.reason;
+    }
+    if (pkgRes.status === 'rejected') {
+      console.warn(`[SYNC][store ${storeId}] fetchAwaitingOrders упал: ${pkgRes.reason.message}`);
+    }
+    if (delRes.status === 'rejected') {
+      console.warn(`[SYNC][store ${storeId}] fetchAwaitingDeliverOrders упал: ${delRes.reason.message}`);
+    }
 
     const statusByOrderId = new Map();
     for (const order of packaging || []) {

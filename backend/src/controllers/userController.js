@@ -602,3 +602,22 @@ exports.getMaterialsForForm = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.getOrdersBundle = async (req, res) => {
+  try {
+    const storeId = req.storeId;
+    const userId = req.user.id;
+    const [a, c] = await Promise.allSettled([
+      OrderService.buildActiveOrders(storeId, userId),
+      OrderService.buildCompletedOrdersAwaitingDeliver(storeId, userId),
+    ]);
+    res.json({
+      active: a.status === 'fulfilled' ? a.value : [],
+      completed: c.status === 'fulfilled' ? c.value : [],
+      errors: {
+        active: a.status === 'rejected' ? a.reason.message : null,
+        completed: c.status === 'rejected' ? c.reason.message : null,
+      },
+    });
+  } catch (err) { next(err); }
+};

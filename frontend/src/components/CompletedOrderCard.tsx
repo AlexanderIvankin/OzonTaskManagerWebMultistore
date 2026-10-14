@@ -40,17 +40,28 @@ export const CompletedOrderCard = ({ order }: CompletedOrderCardProps) => {
       window.URL.revokeObjectURL(url);
       toast.success(`Этикетка заказа ${order.orderId} скачана`);
     } catch (err: unknown) {
-      // Кулдаун: при подключённом сокете live-тост уже ушёл по WebSocket —
-      // локальный не дублируем; сокет отключён -> показываем локально (fallback)
       const payload = await readApiErrorPayload(err);
       if (payload?.cooldown && isSocketConnected()) return;
-      toast.error(
+
+      const msg =
         payload?.error ||
-          (err as Error)?.message ||
-          "Не удалось скачать этикетку",
-      );
-    } finally {
-      setDownloading(false);
+        (err as Error)?.message ||
+        "Не удалось скачать этикетку";
+
+      // Этикетка формируется в Ozon асинхронно.
+      // Это НЕ ошибка — просто ещё рано.
+      const isPending =
+        typeof msg === "string" &&
+        (msg.includes("Этикетка ещё не доступна") ||
+          msg.includes("формируется") ||
+          msg.includes("не удалось сформировать") ||
+          msg.includes("не готова"));
+
+      if (isPending) {
+        toast.info(msg, { description: "Повторите через минуту" });
+      } else {
+        toast.error(msg);
+      }
     }
   };
 

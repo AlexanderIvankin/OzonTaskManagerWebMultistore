@@ -168,6 +168,14 @@ const TEMPLATES = {
     },
   }),
 
+  label_ready: (p) => ({
+    user: {
+      title: `🏷️ Этикетка заказа ${p.orderId} готова`,
+      message: `Этикетка заказа ${p.orderId} сформирована. Откройте «Завершённые заказы» и скачайте PDF.`,
+    },
+    staff: null,
+  }),
+
   label_sent: (p) => ({
     user: {
       title: `🏷️ Этикетка заказа ${p.orderId}`,

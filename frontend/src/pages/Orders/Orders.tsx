@@ -121,20 +121,31 @@ export const Orders = () => {
       window.URL.revokeObjectURL(url);
       toast.success("Все этикетки скачаны");
     } catch (err: unknown) {
-      // Кулдаун: при подключённом сокете live-тост уже ушёл по WebSocket —
-      // локальный не дублируем; сокет отключён -> показываем локально (fallback)
       const payload = await readApiErrorPayload(err);
       if (payload?.cooldown && isSocketConnected()) return;
-      const message =
+
+      const msg =
         payload?.error ||
         (err as Error)?.message ||
         "Не удалось скачать этикетки";
-      toast.error(message);
+
+      const isEmpty =
+        typeof msg === "string" &&
+        (msg.includes("Нет этикеток") ||
+          msg.includes("нет завершённых заказов"));
+
+      if (isEmpty) {
+        toast.info(msg, {
+          description:
+            "Возможно, Ozon ещё формирует этикетки. Повторите через минуту.",
+        });
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setDownloadingLabels(false);
     }
   };
-
 
   return (
     <div className="container mx-auto py-6 space-y-6">
@@ -209,7 +220,6 @@ export const Orders = () => {
         </div>
       </div>
 
-
       {loading ? (
         <div className="text-center py-10 text-muted-foreground">
           Загрузка заказов...
@@ -252,4 +262,3 @@ export const Orders = () => {
     </div>
   );
 };
-

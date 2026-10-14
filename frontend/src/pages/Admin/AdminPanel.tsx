@@ -196,9 +196,21 @@ export const AdminPanel = () => {
       downloadBlob(res.data, `label_${orderId}.pdf`);
       toast.success(`Этикетка заказа ${orderId} скачана`);
     } catch (err: any) {
-      toast.error(
-        await getBlobErrorMessage(err, "Не удалось скачать этикетку"),
-      );
+      const msg = await getBlobErrorMessage(err, "Не удалось скачать этикетку");
+      const isPending =
+        typeof msg === "string" &&
+        (msg.includes("Этикетка ещё не доступна") ||
+          msg.includes("формируется") ||
+          msg.includes("не готова"));
+
+      if (isPending) {
+        toast.info(msg, {
+          description:
+            "Заказ ещё не в awaiting_deliver. Повторите через минуту.",
+        });
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setLabelBusy(false);
     }

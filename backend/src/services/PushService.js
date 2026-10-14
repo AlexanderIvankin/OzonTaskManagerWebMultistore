@@ -10,10 +10,10 @@ try {
 } catch (err) {
   console.warn(
     `[Push] Web Push выключен: пакет web-push недоступен (${err.message}). ` +
-      'Выполните `npm install` в папке backend/ и перезапустите процесс.'
+    'Выполните `npm install` в папке backend/ и перезапустите процесс.'
   );
 }
-const { getUsersDB } = require('../config/database'); 
+const { getUsersDB } = require('../config/database');
 
 // ============================================================================
 // PushService — обёртка над web-push: доставка оповещений тем, кто ОФЛАЙН.
@@ -48,7 +48,12 @@ let vapidReady = false;
 
 /** Подписка больше не валидна: браузер отписался / удалил данные. */
 function isGone(err) {
-  return err?.statusCode === 404 || err?.statusCode === 410;
+  const s = err?.statusCode;
+  // 404/410 — подписка удалена браузером;
+  // 400 — битые ключи (дешифровка не удалась);
+  // 403 — VAPID subject отклонён push-сервисом;
+  // 413 — payload слишком большой (FCM 4KB), толку не будет.
+  return s === 404 || s === 410 || s === 400 || s === 403 || s === 413;
 }
 
 if (!webpush) {
@@ -90,13 +95,13 @@ class PushService {
     const keys = subscription?.keys;
     return Boolean(
       subscription &&
-        typeof subscription.endpoint === 'string' &&
-        subscription.endpoint.trim() &&
-        keys &&
-        typeof keys.p256dh === 'string' &&
-        keys.p256dh &&
-        typeof keys.auth === 'string' &&
-        keys.auth
+      typeof subscription.endpoint === 'string' &&
+      subscription.endpoint.trim() &&
+      keys &&
+      typeof keys.p256dh === 'string' &&
+      keys.p256dh &&
+      typeof keys.auth === 'string' &&
+      keys.auth
     );
   }
   /**
@@ -229,12 +234,13 @@ class PushService {
             sub.id
           );
         } catch (err) {
+          const code = err?.statusCode ?? '?';
           if (isGone(err)) {
-            // 404/410 — браузер отписался: строку удаляем сразу
             expired.push(sub.id);
+            console.warn(`[Push] Подписка #${sub.id} удалена (status=${code})`);
           } else {
             result.failed++;
-            console.error(`[Push] Ошибка доставки #${sub.id}:`, err.message);
+            console.error(`[Push] Ошибка доставки #${sub.id} (status=${code}):`, err.message);
           }
         }
       }

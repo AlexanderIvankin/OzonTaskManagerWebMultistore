@@ -43,6 +43,10 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
       const result = await ordersApi.finishOrder(order.orderId);
       toast.success(
         `Заказ ${order.orderId} завершён! Заработок: ${result.earnings} руб.`,
+        {
+          description:
+            "Этикетка будет готова через ~минуту — она появится в «Завершённых»",
+        },
       );
       onOrderUpdated();
     } catch (err: any) {

@@ -61,7 +61,10 @@ router.use(requireEmployee);
 // Тонкий payload: без цен за грамм (они — только для персонала).
 router.get('/materials', userController.getMaterialsForForm);
 
-// Активные заказы
+// Получить bundle "📮 Активных" и "🗳️ Завершённых" заказов сотрудника
+router.get('/orders/bundle', userController.getOrdersBundle);
+
+// "📮 Активные заказы"
 router.get('/orders/active', userController.getActiveOrders);
 
 // Завершённые заказы сотрудника, ещё ожидающие отправки (awaiting_deliver) —

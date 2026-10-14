@@ -534,9 +534,10 @@ class OzonService {
   // --- Получение PDF этикетки (асинхронная пара методов) ---
   static async getPackageLabel(storeId, postingNumberOrNumbers, options = {}) {
     const {
-      pollDelays = [45000, 15000, 15000, 15000, 15000],
+      pollDelays = [45000, 15000, 15000, 15000, 15000],  // для batch (getAllLabels)
       downloadTimeout = 30000,
       downloader = null,
+      taskRetries = 3,                                    // NEW
     } = options;
     if (MOCK_MODE) {
       return Buffer.from('%PDF-1.4\n%EOF', 'binary');
@@ -576,10 +577,8 @@ class OzonService {
         let statusResponse;
         try {
           statusResponse = await requestWithRetry(
-            () => client.post('/v2/posting/fbs/package-label/get', {
-              task_id: taskId,
-            }),
-            { context: `getPackageLabelTask[${storeId}]` }
+            () => client.post('/v2/posting/fbs/package-label/get', { task_id: taskId }),
+            { context: `getPackageLabelTask[${storeId}]`, retries: taskRetries }
           );
         } catch (statusError) {
           const httpStatus = statusError?.response?.status;
