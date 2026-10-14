@@ -44,40 +44,67 @@ const { getUsersDB } = require('../config/database');
 // уведомление до суток и доставит его, когда он снова появится в сети.
 const PUSH_TTL_SEC = 86400;
 
-let vapidReady = false;
+// VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY — ГЛОБАЛЬНЫЕ (одни на всё приложение):
+// все подписки создаются с одним applicationServerKey, менять нельзя.
+// VAPID_SUBJECT — PER-STORE (подставляется per-call в sendNotification через
+// options.vapidDetails). Fallback — нейтральный контакт администратора.
+const config = require('../config');
+const { getStore } = require('../config/stores');
 
-/** Подписка больше не валидна: браузер отписался / удалил данные. */
+/** Подписка больше не валидна. */
 function isGone(err) {
   const s = err?.statusCode;
   // 404/410 — подписка удалена браузером;
   // 400 — битые ключи (дешифровка не удалась);
   // 403 — VAPID subject отклонён push-сервисом;
-  // 413 — payload слишком большой (FCM 4KB), толку не будет.
+  // 413 — payload слишком большой (FCM 4KB).
   return s === 404 || s === 410 || s === 400 || s === 403 || s === 413;
+}
+
+/**
+ * VAPID-детали для конкретной отправки.
+ * Ключи глобальные, subject — per-store (если магазин известен).
+ * Никогда не бросает: если магазин не найден или поле пустое — отдаём
+ * дефолтный контакт из .env (DEFAULT_VAPID_SUBJECT).
+ *
+ * @param {string|number|null} storeId
+ * @returns {{ subject: string, publicKey: string, privateKey: string }}
+ */
+function getVapidDetails(storeId) {
+  let subject = config.push.vapidDefaultSubject || 'mailto:admin@your-domain.com';
+
+  if (storeId) {
+    try {
+      const store = getStore(String(storeId));
+      if (store?.push?.vapidSubject) subject = store.push.vapidSubject;
+    } catch (err) {
+      // Магазин не найден — не роняем push, используем дефолт.
+      console.warn(`[Push] Магазин ${storeId} не найден, использую DEFAULT_VAPID_SUBJECT`);
+    }
+  }
+
+  return {
+    subject,
+    publicKey: process.env.VAPID_PUBLIC_KEY,
+    privateKey: process.env.VAPID_PRIVATE_KEY,
+  };
 }
 
 if (!webpush) {
   // Пакет не установлен — Web Push отключён (см. warning выше).
-} else {
-  try {
-    webpush.setVapidDetails(
-      process.env.VAPID_SUBJECT || 'mailto:admin@your-domain.ru',
-      process.env.VAPID_PUBLIC_KEY,
-      process.env.VAPID_PRIVATE_KEY,
-    );
-    vapidReady = true;
-  } catch (err) {
-    // Сервер продолжает работать, но Web Push отключён (ошибка видна в логе).
-    console.warn(
-      `[Push] Web Push выключен — проверьте VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY в .env: ${err.message}`
-    );
-  }
+} else if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) {
+  console.warn(
+    '[Push] Web Push выключен — VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY не заданы в .env'
+  );
 }
 
 class PushService {
   /** Настроен ли Web Push на сервере (пакет установлен + валидные VAPID-ключи). */
+  /** Настроен ли Web Push на сервере (пакет + оба ключа присутствуют). */
   static get enabled() {
-    return Boolean(webpush) && vapidReady && Boolean(process.env.VAPID_PUBLIC_KEY);
+    return Boolean(webpush)
+      && Boolean(process.env.VAPID_PUBLIC_KEY)
+      && Boolean(process.env.VAPID_PRIVATE_KEY);
   }
 
   /** Публичный VAPID-ключ для клиента (applicationServerKey). */
@@ -195,16 +222,15 @@ class PushService {
   }
 
   /**
-   * Отправить push во ВСЕ подписки пользователя (сценарий «несколько устройств»).
-   * Никогда не бросает исключений — сбой push не должен ломать бизнес-логику.
    * @param {number} userId
-   * @param {object} payload - данные для Service Worker (title/body/url/tag/...)
-   * @returns {Promise<{sent:number, failed:number, removed:number}>}
+   * @param {object} payload
+   * @param {{ storeId?: string|number|null }} [opts]
+   *   storeId — магазин, от лица которого идёт push. Используется для выбора
+   *   per-store VAPID-subject (см. getVapidDetails). Может быть null — тогда
+   *   берётся глобальный fallback-контакт.
    */
-  static async sendToUser(userId, payload) {
+  static async sendToUser(userId, payload, { storeId = null } = {}) {
     const result = { sent: 0, failed: 0, removed: 0 };
-    // !webpush — пакет не установлен: отправлять нечем. Сервер при этом работает
-    // (см. защищённый require выше), просто без Web Push.
     if (!webpush || !PushService.enabled) return result;
 
     try {
@@ -218,13 +244,14 @@ class PushService {
       const data = JSON.stringify(payload || {});
       const now = Date.now();
       const expired = [];
+      const vapidDetails = getVapidDetails(storeId);
 
       for (const sub of subs) {
         try {
           await webpush.sendNotification(
             { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
             data,
-            { TTL: PUSH_TTL_SEC }
+            { TTL: PUSH_TTL_SEC, vapidDetails }
           );
           result.sent++;
           // Отметка «живости» подписки: по ней pruneStale чистит мёртвые
@@ -236,11 +263,15 @@ class PushService {
         } catch (err) {
           const code = err?.statusCode ?? '?';
           if (isGone(err)) {
+            // 4xx «мёртвая» подписка — строку удаляем сразу
             expired.push(sub.id);
             console.warn(`[Push] Подписка #${sub.id} удалена (status=${code})`);
           } else {
             result.failed++;
-            console.error(`[Push] Ошибка доставки #${sub.id} (status=${code}):`, err.message);
+            console.error(
+              `[Push] Ошибка доставки #${sub.id} (status=${code}, store=${storeId ?? '—'}):`,
+              err.message
+            );
           }
         }
       }

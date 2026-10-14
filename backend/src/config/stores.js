@@ -76,7 +76,8 @@ function buildStore(storeId) {
     // Используется в OzonService.fetchAwaitingOrders.
     filterOrderSuffix: filterOrderSuffix || null,
 
-    // Web Push subject (уникальный mailto на поддомен)
+    // Web Push subject — per-store контакт администратора для push-сервисов.
+    // Приоритет: VAPID_SUBJECT из .env.storeN → auto-mailto по CLIENT_ORIGIN
     push: {
       vapidSubject:
         env.VAPID_SUBJECT ||

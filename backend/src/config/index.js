@@ -82,6 +82,7 @@ module.exports = {
     vapidPublicKey: str('VAPID_PUBLIC_KEY'),
     vapidPrivateKey: str('VAPID_PRIVATE_KEY'),
     subRetentionDays: int('PUSH_SUB_RETENTION_DAYS', 180),
+    vapidDefaultSubject: str('DEFAULT_VAPID_SUBJECT'),
   },
 
   // --- Guest cleanup ---

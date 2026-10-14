@@ -522,7 +522,11 @@ async function deliverLive(storeId, userId, event, data, { push = true } = {}) {
   if (!storeId) return 'none';
   if (notifyUser(storeId, userId, event, data)) return 'socket';
   if (!push) return 'none';
-  const res = await PushService.sendToUser(userId, buildPushPayload({ ...data, storeId }));
+  const res = await PushService.sendToUser(
+    userId,
+    buildPushPayload({ ...data, storeId }),
+    { storeId }
+  );
   return res.sent > 0 ? 'push' : 'none';
 }
 
@@ -535,7 +539,9 @@ async function deliverLiveBatch(storeId, userIds, event, data, { push = true } =
   if (!push || delivered.length === (userIds || []).length) return delivered;
   const offline = (userIds || []).filter((id) => !delivered.includes(id));
   await Promise.allSettled(
-    offline.map((id) => PushService.sendToUser(id, buildPushPayload({ ...data, storeId })))
+    offline.map((id) =>
+      PushService.sendToUser(id, buildPushPayload({ ...data, storeId }), { storeId })
+    )
   );
   return delivered;
 }
@@ -777,7 +783,8 @@ class NotificationService {
                 ...data,
                 type: 'server_error_new',
                 title: `🚨 Ошибка сервера (${source})`,
-              })
+              }),
+              { storeId }
             )
           )
         );
