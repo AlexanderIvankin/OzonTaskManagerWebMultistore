@@ -55,6 +55,15 @@ export interface PushSubscriptionJSON {
   keys: { p256dh: string; auth: string };
 }
 
+export interface PushStatusResponse {
+  /** Настроен ли Web Push на сервере (VAPID-ключи валидны). */
+  enabled: boolean;
+  /** Сколько УСТРОЙСТВ подписано (уникальных user_agent). */
+  count: number;
+  /** Пользователь отключил push глобально (users.push_disabled=1). */
+  globallyDisabled: boolean;
+}
+
 export const pushApi = {
   /** Публичный VAPID-ключ сервера (applicationServerKey для pushManager.subscribe) */
   publicKey: () =>
@@ -74,10 +83,20 @@ export const pushApi = {
       .post<{ ok: true; removed: number }>("/user/push-unsubscribe", body)
       .then((res) => res.data),
 
-  /** Сколько устройств подписано (для UI профиля) */
+  // Статус push:
+  //   enabled           — VAPID-ключи валидны на сервере (push вообще работает);
+  //   count             — сколько УСТРОЙСТВ пользователя подписано
+  //                       (уникальных user_agent, а не подписок);
+  //   globallyDisabled  — пользователь отключил push глобально
+  //                       (users.push_disabled=1): subscribe() не сохраняет
+  //                       новые подписки, пока флаг не снят.
   status: () =>
     api
-      .get<{ enabled: boolean; count: number }>("/user/push-status")
+      .get<{
+        enabled: boolean;
+        count: number;
+        globallyDisabled: boolean;
+      }>("/user/push-status")
       .then((res) => res.data),
 
   // Разрешить push обратно (снять серверный флаг push_disabled).

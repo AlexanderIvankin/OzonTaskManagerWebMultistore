@@ -48,6 +48,9 @@ export const GlobalProfile = () => {
 
   const {
     status: pushStatus,
+    globallyDisabled,
+    deviceCount,
+    serverEnabled,
     enable: enablePush,
     disable: disablePush,
   } = usePushSubscription();
@@ -105,8 +108,17 @@ export const GlobalProfile = () => {
 
   const handleDisablePush = async () => {
     await disablePush();
-    toast.success("Уведомления отключены на этом устройстве");
+    toast.success("Push-уведомления отключены на всех устройствах");
   };
+
+  /** «1 устройство», «2 устройства», «5 устройств» — для подписи под статусом. */
+function pluralDevices(n: number): string {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return `${n} устройство`;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return `${n} устройства`;
+  return `${n} устройств`;
+}
 
   const isGuest = user?.role === "guest";
 
@@ -248,60 +260,112 @@ export const GlobalProfile = () => {
 
             <Separator />
 
-            <div className="flex flex-col items-center gap-2 text-center mb-2">
+            {/* === Push — ГЛОБАЛЬНАЯ настройка === */}
+            <div className="flex flex-col items-center gap-3 text-center mb-2">
               <p className="font-medium text-balance">
                 <span className="text-lg mr-2 inline-block" aria-hidden="true">
                   🔔
                 </span>
-                Уведомления на устройстве
+                Push-уведомления
               </p>
               <p className="text-sm text-muted-foreground max-w-md">
-                Пока сайт открыт, оповещения приходят мгновенно. Включите
-                уведомления, чтобы получать их со звуком и вибрацией, когда
-                приложение закрыто.
+                Настройка действует на всех устройствах, где вы вошли в аккаунт.
+                Отключение уберёт push со всех устройств сразу.
               </p>
 
+              {/* Браузер не поддерживает — тупик, ничего не сделать */}
               {pushStatus === "unsupported" && (
                 <p className="text-sm text-muted-foreground">
                   Браузер не поддерживает push-уведомления.
                 </p>
               )}
+
+              {/* Permission запрещён в этом браузере — per-device, юзер должен
+      разобраться в настройках сайта. Даже если глобально включено. */}
               {pushStatus === "denied" && (
-                <p className="text-sm text-destructive">
-                  Уведомления запрещены в настройках браузера.
-                </p>
-              )}
-              {pushStatus === "subscribed" && (
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  <span className="text-sm text-green-600">
-                    ✅ Уведомления включены на этом устройстве
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void handleDisablePush()}
-                  >
-                    Отключить
-                  </Button>
+                <div className="flex flex-col items-center gap-1 max-w-md">
+                  <p className="text-sm text-destructive">
+                    Уведомления запрещены в настройках этого браузера.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Разрешите их в настройках сайта — тогда push снова придут на
+                    это устройство.
+                  </p>
                 </div>
               )}
-              {(pushStatus === "prompt" ||
-                pushStatus === "error" ||
-                pushStatus === "subscribing") && (
+
+              {/* Остальные случаи: либо глобально включено, либо отключено. */}
+              {pushStatus !== "unsupported" && pushStatus !== "denied" && (
                 <>
-                  <Button
-                    size="sm"
-                    onClick={() => void enablePush()}
-                    disabled={pushStatus === "subscribing"}
-                  >
-                    {pushStatus === "subscribing"
-                      ? "Подключаем..."
-                      : "🔔 Включить уведомления"}
-                  </Button>
-                  {pushStatus === "error" && (
+                  {/* Сервер без VAPID — тут ничего не сделать юзеру */}
+                  {!serverEnabled && (
                     <p className="text-sm text-destructive">
-                      Не удалось подписаться — попробуйте ещё раз.
+                      Push-сервер не настроен. Обратитесь к администратору.
                     </p>
+                  )}
+
+                  {/* Глобально отключено */}
+                  {serverEnabled && globallyDisabled && (
+                    <>
+                      <span className="text-sm text-muted-foreground">
+                        ❌ Push-уведомления отключены
+                      </span>
+                      <Button
+                        size="sm"
+                        onClick={() => void enablePush()}
+                        disabled={pushStatus === "subscribing"}
+                      >
+                        {pushStatus === "subscribing"
+                          ? "Подключаем..."
+                          : "🔔 Включить push"}
+                      </Button>
+                    </>
+                  )}
+
+                  {/* Глобально включено */}
+                  {serverEnabled && !globallyDisabled && (
+                    <>
+                      <div className="flex flex-col items-center gap-1">
+                        <span className="text-sm text-green-600">
+                          ✅ Push-уведомления включены
+                        </span>
+                        {deviceCount > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            {pluralDevices(deviceCount)}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        {/* Это устройство ещё не подключено — предложить разрешение */}
+                        {pushStatus === "prompt" && (
+                          <Button size="sm" onClick={() => void enablePush()}>
+                            Подключить это устройство
+                          </Button>
+                        )}
+
+                        {pushStatus === "subscribing" && (
+                          <span className="text-xs text-muted-foreground">
+                            Подключаем это устройство...
+                          </span>
+                        )}
+
+                        {pushStatus === "error" && (
+                          <p className="text-sm text-destructive">
+                            Не удалось подписать это устройство — попробуйте ещё
+                            раз.
+                          </p>
+                        )}
+
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void handleDisablePush()}
+                        >
+                          Отключить на всех устройствах
+                        </Button>
+                      </div>
+                    </>
                   )}
                 </>
               )}

@@ -132,33 +132,54 @@ export async function disablePush(): Promise<void> {
   }
 }
 
-export function usePushSubscription() {
+export interface UsePushSubscriptionResult {
+  /** Локальный статус этого устройства (SW + permission). */
+  status: PushStatus;
+  /** true — пользователь отключил push глобально (users.push_disabled=1). */
+  globallyDisabled: boolean;
+  /** Сколько УСТРОЙСТВ пользователя подписано (по уникальным user_agent). */
+  deviceCount: number;
+  /** false — сервер без VAPID-ключей, push не работает вообще. */
+  serverEnabled: boolean;
+  /** Явно включить push (глобально) — запросит разрешение браузера. */
+  enable: () => Promise<void>;
+  /** Явно отключить push (глобально, на всех устройствах). */
+  disable: () => Promise<void>;
+}
+
+export function usePushSubscription(): UsePushSubscriptionResult {
   const [status, setStatus] = useState<PushStatus>("prompt");
-  // Защита от повторного запуска: React.StrictMode монтирует эффект дважды
+  const [globallyDisabled, setGloballyDisabled] = useState(false);
+  const [deviceCount, setDeviceCount] = useState(0);
+  const [serverEnabled, setServerEnabled] = useState(true);
   const started = useRef(false);
+
+  // Серверное состояние: глобальный флаг + число устройств + сам факт,
+  // что VAPID настроен на бэкенде.
+  const loadServerState = useCallback(async () => {
+    try {
+      const data = await pushApi.status();
+      setGloballyDisabled(Boolean(data.globallyDisabled));
+      setDeviceCount(data.count || 0);
+      setServerEnabled(data.enabled !== false);
+    } catch {
+      // Счётчики некритичны — не показываем ошибку из-за них.
+    }
+  }, []);
 
   const register = useCallback(
     async (requestPermission: boolean): Promise<PushStatus> => {
       if (!isPushSupported()) return "unsupported";
       if (Notification.permission === "denied") return "denied";
-      // Пользователь сам отключил уведомления на этом устройстве: молчаливая
-      // автоподписка (requestPermission: false) не должна возвращать их обратно —
-      // иначе кнопка «Отключить» отменяется сама собой после перезагрузки страницы.
-      // Повторное включение — только явной кнопкой «Включить».
       if (!requestPermission && isPushOptedOut()) return "prompt";
 
       try {
-        // 1. Service Worker (public/sw.js → /sw.js, scope '/')
         const registration = await navigator.serviceWorker.register("/sw.js");
         await navigator.serviceWorker.ready;
 
-        // 2. Публичный VAPID-ключ сервера (applicationServerKey)
         const { publicKey } = await pushApi.publicKey();
-
-        // 3. Существующая подписка устройства
         let subscription = await registration.pushManager.getSubscription();
 
-        // Ключи сервера сменились — подписка недействительна, оформляем заново
         const currentKey = keyToBase64Url(
           subscription?.options?.applicationServerKey as
             | ArrayBuffer
@@ -170,7 +191,6 @@ export function usePushSubscription() {
           subscription = null;
         }
 
-        // 4. Подписки нет — создаём (разрешение спрашиваем только по кнопке)
         if (!subscription) {
           if (Notification.permission !== "granted") {
             if (!requestPermission) return "prompt";
@@ -185,7 +205,6 @@ export function usePushSubscription() {
           });
         }
 
-        // 5. Отправляем подписку на сервер (upsert по endpoint)
         await pushApi.subscribe(
           subscription.toJSON() as unknown as PushSubscriptionJSON,
         );
@@ -198,47 +217,58 @@ export function usePushSubscription() {
     [],
   );
 
-  // Автоподписка при входе: попап разрешения НЕ показываем (текущее разрешение
-  // уже выдано — просто молча обновляем подписку на сервере).
+  // Первый прогон: параллельно автоподписка на этом устройстве и загрузка
+  // серверного состояния.
   useEffect(() => {
     if (started.current) return;
     started.current = true;
     register(false).then(setStatus);
-  }, [register]);
+    loadServerState();
+  }, [register, loadServerState]);
 
-  /** Включить уведомления кнопкой — здесь браузер спросит разрешение. */
+  /** Включить push глобально. Тут же браузер спросит разрешение. */
   const enable = useCallback(async () => {
     setPushOptedOut(false);
     setStatus("subscribing");
+
+    // 1. Снять серверный флаг — иначе subscribe() отклонит новую подписку.
     try {
-      // Снять серверный флаг — иначе subscribe() отвергнет новую подписку.
       await pushApi.enable();
     } catch (err) {
-      console.warn(
-        "[Push] enable: не удалось снять push_disabled на сервере:",
-        err,
-      );
+      console.warn("[Push] enable: не удалось снять push_disabled:", err);
     }
-    setStatus(await register(true));
-  }, [register]);
 
-  /** Отключить уведомления на этом устройстве. */
+    // 2. Локально подписать текущее устройство.
+    const next = await register(true);
+    setStatus(next);
+
+    // 3. Обновить счётчики (deviceCount изменится, globallyDisabled → false).
+    await loadServerState();
+  }, [register, loadServerState]);
+
+  /**
+   * Отключить push глобально: сервер удалит все подписки всех устройств
+   * и поставит users.push_disabled=1. Локально гасим SW текущего origin.
+   */
   const disable = useCallback(async () => {
     setPushOptedOut(true);
     try {
-      // 1. Сервер: глобальный opt-out (users.push_disabled=1 + удаление всех
-      //    подписок всех origin'ов всех устройств).
       await pushApi.unsubscribe({ all: true });
-      // 2. Локально: погасить SW текущего origin (остальные origin'ы погасить
-      //    нельзя — у каждого свой SW; но они и не получат push, потому что
-      //    на сервере подписок уже нет).
       await disablePush();
     } catch (err) {
       console.warn("[Push] disable: сервер не ответил, чищу локально:", err);
       await disablePush();
     }
     setStatus(Notification.permission === "denied" ? "denied" : "prompt");
-  }, []);
+    await loadServerState();
+  }, [loadServerState]);
 
-  return { status, enable, disable };
+  return {
+    status,
+    globallyDisabled,
+    deviceCount,
+    serverEnabled,
+    enable,
+    disable,
+  };
 }

@@ -499,7 +499,11 @@ exports.getPushStatus = async (req, res) => {
   try {
     const count = await PushService.countForUser(req.user.id);
     const status = await PushService.getGlobalStatus(req.user.id);
-    res.json({ enabled: PushService.enabled, count, globallyDisabled: status.disabled });
+    res.json({
+      enabled: PushService.enabled,
+      count,
+      globallyDisabled: status.disabled,
+    });
   } catch (err) {
     console.error(`[getPushStatus][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
