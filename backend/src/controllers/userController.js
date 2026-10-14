@@ -464,16 +464,26 @@ exports.pushSubscribe = async (req, res) => {
 
 exports.pushUnsubscribe = async (req, res) => {
   try {
-    const { endpoint, all } = req.body || {};
+    const { endpoint, all, device } = req.body || {};
     let removed;
+
     if (all) {
-      removed = await PushService.unsubscribeAll(req.user.id);
+      // Полное отключение push для пользователя: флаг push_disabled=1
+      // + удаление всех подписок (все устройства × все origin'ы).
+      removed = await PushService.disableForUser(req.user.id);
+    } else if (device) {
+      // Logout: удаляем подписки ЭТОГО устройства (по user_agent).
+      // Так push не «утечёт» на origin'ы, с которых юзер уже вышел.
+      const ua = req.headers['user-agent'] || null;
+      removed = await PushService.unsubscribeAllForDevice(req.user.id, ua);
     } else {
+      // Точечное удаление одной подписки (endpoint текущего origin).
       if (typeof endpoint !== 'string' || !endpoint.trim()) {
         return res.status(400).json({ error: 'Укажите endpoint подписки' });
       }
       removed = await PushService.unsubscribe(req.user.id, endpoint.trim());
     }
+
     res.json({ ok: true, removed });
   } catch (err) {
     console.error(`[pushUnsubscribe][store ${req.storeId}] Ошибка:`, err);
@@ -488,9 +498,20 @@ exports.pushUnsubscribe = async (req, res) => {
 exports.getPushStatus = async (req, res) => {
   try {
     const count = await PushService.countForUser(req.user.id);
-    res.json({ enabled: PushService.enabled, count });
+    const status = await PushService.getGlobalStatus(req.user.id);
+    res.json({ enabled: PushService.enabled, count, globallyDisabled: status.disabled });
   } catch (err) {
     console.error(`[getPushStatus][store ${req.storeId}] Ошибка:`, err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.pushEnable = async (req, res) => {
+  try {
+    await PushService.enableForUser(req.user.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(`[pushEnable][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
   }
 };

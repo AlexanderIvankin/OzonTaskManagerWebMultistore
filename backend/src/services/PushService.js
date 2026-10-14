@@ -160,6 +160,16 @@ class PushService {
     if (!PushService.isValidSubscription(subscription)) return false;
     try {
       const db = getUsersDB();
+
+      // Глобальный opt-out: если пользователь отключил push — не сохраняем
+      // новые подписки и не воскрешаем старые. Снять флаг может только явное
+      // включение через UI (см. userController.pushEnable).
+      const u = await db.get('SELECT push_disabled FROM users WHERE id = ?', userId);
+      if (u && u.push_disabled) {
+        console.log(`[Push] user=${userId}: push_disabled=1, подписка проигнорирована`);
+        return false;
+      }
+
       const now = Date.now();
       await db.run(
         `INSERT INTO push_subscriptions
@@ -270,6 +280,86 @@ class PushService {
   }
 
   /**
+ * Удалить все подписки пользователя, связанные с конкретным устройством
+ * (user_agent). Используется при logout: один origin — текущий SW, но
+ * подписок у устройства может быть несколько (na3d.ru + все поддомены).
+ * Удаляем все разом.
+ *
+ * Оговорка: два устройства с одинаковым user_agent (например, два iPhone
+ * одной модели/iOS) схлопнутся. На практике это редко — детали UA обычно
+ * различаются (версия ОС, сборка браузера).
+ *
+ * @param {number} userId
+ * @param {string} userAgent
+ * @returns {Promise<number>}
+ */
+  static async unsubscribeAllForDevice(userId, userAgent) {
+    if (!userAgent || typeof userAgent !== 'string') return 0;
+    try {
+      const db = getUsersDB();
+      const result = await db.run(
+        'DELETE FROM push_subscriptions WHERE user_id = ? AND user_agent = ?',
+        userId, userAgent
+      );
+      console.log(
+        `[Push] user=${userId}: logout с устройства ua="${userAgent.slice(0, 40)}…", удалено ${result.changes} подписок`
+      );
+      return result.changes || 0;
+    } catch (err) {
+      console.error('[Push] unsubscribeAllForDevice:', err.message);
+      return 0;
+    }
+  }
+
+  /**
+ * Полное отключение push для пользователя: ставит users.push_disabled = 1
+ * и удаляет ВСЕ его подписки (все устройства × все origin'ы).
+ *
+ * С этого момента subscribe() не сохраняет новые подписки, даже если
+ * пользователь зайдёт на другой домен или переустановит браузер.
+ * Включить обратно — только через pushEnable().
+ */
+  static async disableForUser(userId) {
+    try {
+      const db = getUsersDB();
+      await db.run('UPDATE users SET push_disabled = 1, updated_at = ? WHERE id = ?', Date.now(), userId);
+      const res = await db.run('DELETE FROM push_subscriptions WHERE user_id = ?', userId);
+      console.log(`[Push] user=${userId}: push отключён глобально, удалено ${res.changes} подписок`);
+      return res.changes || 0;
+    } catch (err) {
+      console.error('[Push] disableForUser:', err.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Обратное включение: снимает users.push_disabled. Сами подписки создаст
+   * браузер при следующем заходе (usePushSubscription → subscribe).
+   */
+  static async enableForUser(userId) {
+    try {
+      const db = getUsersDB();
+      await db.run('UPDATE users SET push_disabled = 0, updated_at = ? WHERE id = ?', Date.now(), userId);
+      console.log(`[Push] user=${userId}: push разрешён, браузер переподпишется при входе`);
+      return true;
+    } catch (err) {
+      console.error('[Push] enableForUser:', err.message);
+      return false;
+    }
+  }
+
+  /** Текущее состояние (для UI): отключён ли push глобально. */
+  static async getGlobalStatus(userId) {
+    try {
+      const db = getUsersDB();
+      const u = await db.get('SELECT push_disabled FROM users WHERE id = ?', userId);
+      return { disabled: !!(u && u.push_disabled) };
+    } catch {
+      return { disabled: false };
+    }
+  }
+
+  /**
    * Удалить ВСЕ подписки пользователя (на всех устройствах).
    * @returns {Promise<number>} число удалённых строк
    */
@@ -287,12 +377,19 @@ class PushService {
     }
   }
 
-  /** Количество подписанных устройств пользователя. */
+  /**
+   * Количество УСТРОЙСТВ пользователя (по уникальным user_agent).
+   *
+   * ВАЖНО: не путать с количеством подписок. Одно устройство = один
+   * user_agent и несколько подписок (по одной на каждый origin, где юзер
+   * заходил). Для UI «У вас N устройств» считаем именно устройства.
+   */
   static async countForUser(userId) {
     try {
       const db = getUsersDB();
       const row = await db.get(
-        'SELECT COUNT(*) AS count FROM push_subscriptions WHERE user_id = ?',
+        `SELECT COUNT(DISTINCT COALESCE(user_agent, '')) AS count
+         FROM push_subscriptions WHERE user_id = ?`,
         userId
       );
       return row ? row.count : 0;

@@ -33,6 +33,10 @@ router.get('/push-status', userController.getPushStatus);
 router.post('/push-subscribe', userController.pushSubscribe);
 router.post('/push-unsubscribe', userController.pushUnsubscribe);
 
+// Разрешить push обратно (снять глобальный флаг push_disabled).
+// Браузер переподпишется при следующем входе, subscribe() увидит флаг=0.
+router.post('/push-enable', userController.pushEnable);
+
 // Приём заказов — сквозной флаг users.taking_orders (глобальный).
 // Работает и на глобальном домене (req.storeId = null): сотрудник может
 // отключить приём заказов сразу во всех магазинах, где он числится.

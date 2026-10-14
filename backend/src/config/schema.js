@@ -21,10 +21,18 @@ async function createUsersSchema(db) {
       tg_user_id TEXT UNIQUE,
       email_verified INTEGER DEFAULT 0,
       display_name TEXT,
+      push_disabled INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
   `);
+
+  // Мягкая миграция: push_disabled в users
+  const userCols = await db.all('PRAGMA table_info(users)');
+  if (!userCols.some((c) => c.name === 'push_disabled')) {
+    await db.exec('ALTER TABLE users ADD COLUMN push_disabled INTEGER NOT NULL DEFAULT 0');
+    console.log('✅ users: добавлена колонка push_disabled');
+  }
 
   // Per-store роли и статусы.
   // Нет записи = пользователь не имеет отношения к магазину

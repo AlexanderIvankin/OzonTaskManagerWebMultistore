@@ -69,9 +69,9 @@ export const pushApi = {
       .then((res) => res.data),
 
   /** Удалить подписку: одного устройства (endpoint) или всех (all: true) */
-  unsubscribe: (payload: { endpoint?: string; all?: boolean }) =>
+  unsubscribe: (body: { endpoint?: string; all?: boolean; device?: boolean }) =>
     api
-      .post<{ ok: boolean; removed: number }>("/user/push-unsubscribe", payload)
+      .post<{ ok: true; removed: number }>("/user/push-unsubscribe", body)
       .then((res) => res.data),
 
   /** Сколько устройств подписано (для UI профиля) */
@@ -79,4 +79,8 @@ export const pushApi = {
     api
       .get<{ enabled: boolean; count: number }>("/user/push-status")
       .then((res) => res.data),
+
+  // Разрешить push обратно (снять серверный флаг push_disabled).
+  enable: () =>
+    api.post<{ ok: true }>("/user/push-enable").then((res) => res.data),
 };

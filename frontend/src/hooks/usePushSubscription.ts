@@ -70,7 +70,9 @@ function keyToBase64Url(key?: ArrayBuffer | null): string | null {
   if (!key) return null;
   try {
     let binary = "";
-    new Uint8Array(key).forEach((byte) => (binary += String.fromCharCode(byte)));
+    new Uint8Array(key).forEach(
+      (byte) => (binary += String.fromCharCode(byte)),
+    );
     return btoa(binary)
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
@@ -98,21 +100,33 @@ export function isPushSupported(): boolean {
 }
 
 /**
- * Отписаться от Web Push на этом устройстве.
- * Без React — вызывается и из Layout при выходе из системы.
+ * Отписка от push на ТЕКУЩЕМ устройстве при выходе из системы.
+ *
+ * Один browser + OS = один user_agent, но у устройства МОЖЕТ быть несколько
+ * подписок — по одной на каждый origin (na3d.ru + все поддомены магазинов),
+ * потому что SW регистрируется per-origin. С фронта дотянуться до SW других
+ * origin'ов нельзя, поэтому чистим на сервере по (user_id, user_agent) —
+ * удаляются все подписки этого устройства, не только текущего origin.
+ *
+ * НЕ ставит push_disabled=1 — юзер вышел с устройства, а не «отключил push
+ * навсегда». При следующем входе подписки создадутся заново.
  */
 export async function disablePush(): Promise<void> {
   if (!isPushSupported()) return;
   try {
     const registration = await navigator.serviceWorker.getRegistration();
     const subscription = await registration?.pushManager.getSubscription();
-    if (!subscription) return;
 
-    // Сначала сервер (пока валиден access-токен), затем браузер
-    await pushApi
-      .unsubscribe({ endpoint: subscription.endpoint })
-      .catch(() => undefined);
-    await subscription.unsubscribe();
+    // 1. Сервер: удаляем ВСЕ подписки этого устройства (по user_agent).
+    // Передаём device:true — сервер берёт UA из заголовка запроса.
+    await pushApi.unsubscribe({ device: true }).catch(() => undefined);
+
+    // 2. Локально: гасим текущий SW. Подписки на других origin'ах
+    //    останутся зарегистрированы, но push не придёт — их записей на
+    //    сервере больше нет. При следующем входе endpoint перепривяжется.
+    if (subscription) {
+      await subscription.unsubscribe().catch(() => undefined);
+    }
   } catch (err) {
     console.warn("[Push] Не удалось отписаться:", err);
   }
@@ -146,8 +160,10 @@ export function usePushSubscription() {
 
         // Ключи сервера сменились — подписка недействительна, оформляем заново
         const currentKey = keyToBase64Url(
-          subscription?.options
-            ?.applicationServerKey as ArrayBuffer | null | undefined,
+          subscription?.options?.applicationServerKey as
+            | ArrayBuffer
+            | null
+            | undefined,
         );
         if (subscription && currentKey !== publicKey) {
           await subscription.unsubscribe().catch(() => undefined);
@@ -194,15 +210,33 @@ export function usePushSubscription() {
   const enable = useCallback(async () => {
     setPushOptedOut(false);
     setStatus("subscribing");
+    try {
+      // Снять серверный флаг — иначе subscribe() отвергнет новую подписку.
+      await pushApi.enable();
+    } catch (err) {
+      console.warn(
+        "[Push] enable: не удалось снять push_disabled на сервере:",
+        err,
+      );
+    }
     setStatus(await register(true));
   }, [register]);
 
   /** Отключить уведомления на этом устройстве. */
   const disable = useCallback(async () => {
-    // Выбор запоминаем ДО отписки: даже если отписка в браузере не удалась,
-    // автоподписка при следующей загрузке страницы уведомления не вернёт.
     setPushOptedOut(true);
-    await disablePush();
+    try {
+      // 1. Сервер: глобальный opt-out (users.push_disabled=1 + удаление всех
+      //    подписок всех origin'ов всех устройств).
+      await pushApi.unsubscribe({ all: true });
+      // 2. Локально: погасить SW текущего origin (остальные origin'ы погасить
+      //    нельзя — у каждого свой SW; но они и не получат push, потому что
+      //    на сервере подписок уже нет).
+      await disablePush();
+    } catch (err) {
+      console.warn("[Push] disable: сервер не ответил, чищу локально:", err);
+      await disablePush();
+    }
     setStatus(Notification.permission === "denied" ? "denied" : "prompt");
   }, []);
 
