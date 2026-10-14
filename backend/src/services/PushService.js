@@ -50,6 +50,7 @@ const PUSH_TTL_SEC = 86400;
 // options.vapidDetails). Fallback — нейтральный контакт администратора.
 const config = require('../config');
 const { getStore } = require('../config/stores');
+const { normalizeRootDomain } = require('../utils');
 
 /** Подписка больше не валидна. */
 function isGone(err) {
@@ -432,70 +433,63 @@ class PushService {
       // SQL ниже для каждой пары (user_id, user_agent, origin) выбирает
       // ровно одну строку — с максимальным last_used_at, а при равенстве —
       // с максимальным id (последняя вставленная).
-      let subs;
-      if (origin) {
-        subs = await db.all(
+      // Общий SELECT с дедупом по устройству (одна подписка на UA).
+      // Подставляем разные WHERE через параметры.
+      const selectOnePerDevice = async (whereSql, params) =>
+        db.all(
           `SELECT id, endpoint, p256dh, auth
            FROM push_subscriptions ps
            WHERE ps.user_id = ?
-             AND ps.origin = ?
+             AND ${whereSql}
              AND ps.id = (
                SELECT ps2.id FROM push_subscriptions ps2
                WHERE ps2.user_id = ps.user_id
-                 AND ps2.origin = ps.origin
+                 AND ${whereSql.replace(/ps\./g, 'ps2.')}
                  AND COALESCE(ps2.user_agent, '') = COALESCE(ps.user_agent, '')
                ORDER BY COALESCE(ps2.last_used_at, ps2.created_at) DESC,
                         ps2.id DESC
                LIMIT 1
              )`,
-          userId, String(origin)
+          userId, ...params
         );
 
-        // Обратная совместимость: если у пользователя ещё нет подписок с
-        // этим origin (юзер не перезаходил после деплоя origin-фикса),
-        // используем NULL-origin подписки — по одной на устройство.
+      let subs = [];
+      if (origin) {
+        // 1. Подписки конкретного origin (напр. https://store1.na3d.ru).
+        subs = await selectOnePerDevice('ps.origin = ?', [String(origin)]);
+
+        // 2. Fallback на корневой домен: если у пользователя есть подписка
+        //    на главный домен, а на конкретный магазин — нет, шлём через
+        //    неё. Баннер придёт от SW na3d.ru, но URL в payload абсолютный
+        //    (https://store1.na3d.ru/notifications) — клик откроет магазин.
         if (!subs.length) {
-          subs = await db.all(
-            `SELECT id, endpoint, p256dh, auth
-             FROM push_subscriptions ps
-             WHERE ps.user_id = ?
-               AND ps.origin IS NULL
-               AND ps.id = (
-                 SELECT ps2.id FROM push_subscriptions ps2
-                 WHERE ps2.user_id = ps.user_id
-                   AND ps2.origin IS NULL
-                   AND COALESCE(ps2.user_agent, '') = COALESCE(ps.user_agent, '')
-                 ORDER BY COALESCE(ps2.last_used_at, ps2.created_at) DESC,
-                          ps2.id DESC
-                 LIMIT 1
-               )`,
-            userId
-          );
+          const rootDomain = normalizeRootDomain(process.env.ROOT_DOMAIN);
+          const rootOrigin = rootDomain ? `https://${rootDomain}` : null;
+          if (rootOrigin && rootOrigin !== String(origin)) {
+            subs = await selectOnePerDevice('ps.origin = ?', [rootOrigin]);
+            if (subs.length) {
+              console.log(
+                `[Push] user=${userId}: подписок для origin=${origin} нет, ` +
+                `использую fallback на root (${rootOrigin}): ${subs.length}`
+              );
+            }
+          }
+        }
+
+        // 3. Legacy (origin IS NULL): старые подписки до миграции origin.
+        if (!subs.length) {
+          subs = await selectOnePerDevice('ps.origin IS NULL', []);
           if (subs.length) {
             console.log(
-              `[Push] user=${userId}: подписок для origin=${origin} нет, шлю на legacy (origin IS NULL): ${subs.length}`
+              `[Push] user=${userId}: ни store-origin, ни root не найдены, ` +
+              `шлю на legacy (origin IS NULL): ${subs.length}`
             );
           }
         }
       } else {
         // Системное событие (storeId=null): по одной подписке на устройство,
-        // независимо от origin — какое бы устройство ни получило push,
-        // баннер один. При этом origin может быть любым (берётся самый
-        // свежий), на UX это не влияет — важно лишь «дойти до устройства».
-        subs = await db.all(
-          `SELECT id, endpoint, p256dh, auth
-           FROM push_subscriptions ps
-           WHERE ps.user_id = ?
-             AND ps.id = (
-               SELECT ps2.id FROM push_subscriptions ps2
-               WHERE ps2.user_id = ps.user_id
-                 AND COALESCE(ps2.user_agent, '') = COALESCE(ps.user_agent, '')
-               ORDER BY COALESCE(ps2.last_used_at, ps2.created_at) DESC,
-                        ps2.id DESC
-               LIMIT 1
-             )`,
-          userId
-        );
+        // независимо от origin.
+        subs = await selectOnePerDevice('1 = 1', []);
       }
       if (!subs.length) return result;
 
@@ -553,6 +547,32 @@ class PushService {
     }
 
     return result;
+  }
+
+  /**
+ * Относительный путь (который обычно ждёт SW) → абсолютный URL магазина
+ * (или корневого домена, если магазин неизвестен).
+ *
+ * Зачем: push может прийти через SW другого origin'а (например, через
+ * подписку root-домена, когда для конкретного магазина подписки нет).
+ * SW откроет ровно тот URL, что мы пришлём — значит, он должен быть
+ * абсолютным и указывать на нужный магазин.
+ *
+ * @param {string|number|null} storeId
+ * @param {string} path — относительный путь, обычно '/notifications'
+ * @returns {string}
+ */
+  static buildAbsoluteUrl(storeId, path = '/notifications') {
+    if (storeId) {
+      try {
+        const store = getStore(String(storeId));
+        if (store?.clientOrigin) {
+          return `${store.clientOrigin.replace(/\/+$/, '')}${path}`;
+        }
+      } catch { /* магазин не найден — уходим на root */ }
+    }
+    const root = normalizeRootDomain(process.env.ROOT_DOMAIN);
+    return root ? `https://${root}${path}` : path;
   }
 
   /** Удалить подписки по id (внутреннее). */

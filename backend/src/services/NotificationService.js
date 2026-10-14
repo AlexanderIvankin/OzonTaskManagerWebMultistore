@@ -501,14 +501,18 @@ function extractSearchFields(payload) {
 function buildPushPayload(data = {}) {
   const id = data.id != null ? data.id : null;
   const type = data.type || 'notification';
+  const storeId = data.storeId || null;
   return {
     id,
     type,
     audience: data.audience || 'user',
-    storeId: data.storeId || null,
+    storeId,
     title: data.title || 'Ozon Manager',
     body: data.body || data.message || '',
-    url: data.url || '/notifications',
+    // URL АБСОЛЮТНЫЙ и ведёт в контекст магазина, откуда пришло событие.
+    // Это важно для fallback-сценария: push может прийти через SW
+    // главного домена, а открыть нужно страницу магазина.
+    url: data.url || PushService.buildAbsoluteUrl(storeId, '/notifications'),
     tag: id != null ? `notification-${id}` : `notification-${type}`,
     vibrate: [200, 100, 200],
     createdAt: data.createdAt || Date.now(),

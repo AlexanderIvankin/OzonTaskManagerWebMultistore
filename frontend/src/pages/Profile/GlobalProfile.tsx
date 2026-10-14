@@ -112,13 +112,14 @@ export const GlobalProfile = () => {
   };
 
   /** «1 устройство», «2 устройства», «5 устройств» — для подписи под статусом. */
-function pluralDevices(n: number): string {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return `${n} устройство`;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return `${n} устройства`;
-  return `${n} устройств`;
-}
+  function pluralDevices(n: number): string {
+    const m10 = n % 10;
+    const m100 = n % 100;
+    if (m10 === 1 && m100 !== 11) return `${n} устройство`;
+    if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20))
+      return `${n} устройства`;
+    return `${n} устройств`;
+  }
 
   const isGuest = user?.role === "guest";
 
@@ -307,17 +308,20 @@ function pluralDevices(n: number): string {
                   {/* Глобально отключено */}
                   {serverEnabled && globallyDisabled && (
                     <>
-                      <span className="text-sm text-muted-foreground">
+                      <span className="text-sm text-muted-foreground text-center sm:text-left">
                         ❌ Push-уведомления отключены
                       </span>
                       <Button
                         size="sm"
                         onClick={() => void enablePush()}
                         disabled={pushStatus === "subscribing"}
+                        className="min-w-0 w-full sm:w-auto"
                       >
-                        {pushStatus === "subscribing"
-                          ? "Подключаем..."
-                          : "🔔 Включить push"}
+                        <span className="truncate">
+                          {pushStatus === "subscribing"
+                            ? "Подключаем..."
+                            : "🔔 Включить push"}
+                        </span>
                       </Button>
                     </>
                   )}
@@ -336,22 +340,28 @@ function pluralDevices(n: number): string {
                         )}
                       </div>
 
-                      <div className="flex flex-wrap items-center justify-center gap-2">
+                      <div className="flex w-full flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-center">
                         {/* Это устройство ещё не подключено — предложить разрешение */}
                         {pushStatus === "prompt" && (
-                          <Button size="sm" onClick={() => void enablePush()}>
-                            Подключить это устройство
+                          <Button
+                            size="sm"
+                            onClick={() => void enablePush()}
+                            className="min-w-0 w-full sm:w-auto"
+                          >
+                            <span className="truncate">
+                              Подключить это устройство
+                            </span>
                           </Button>
                         )}
 
                         {pushStatus === "subscribing" && (
-                          <span className="text-xs text-muted-foreground">
+                          <span className="text-xs text-muted-foreground text-center sm:text-left">
                             Подключаем это устройство...
                           </span>
                         )}
 
                         {pushStatus === "error" && (
-                          <p className="text-sm text-destructive">
+                          <p className="text-sm text-destructive text-center sm:text-left">
                             Не удалось подписать это устройство — попробуйте ещё
                             раз.
                           </p>
@@ -361,8 +371,11 @@ function pluralDevices(n: number): string {
                           size="sm"
                           variant="outline"
                           onClick={() => void handleDisablePush()}
+                          className="min-w-0 w-full sm:w-auto"
                         >
-                          Отключить на всех устройствах
+                          <span className="truncate">
+                            Отключить на всех устройствах
+                          </span>
                         </Button>
                       </div>
                     </>
