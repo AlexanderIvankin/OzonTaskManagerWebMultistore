@@ -487,11 +487,24 @@ class OrderService {
 
       // 3. Подтверждение сборки
       try {
-        await OzonService.confirmPostingShip(storeId, orderId);
+        const shipResult = await OzonService.confirmPostingShip(storeId, orderId);
+        // Явный лог — что вернул Ozon. Даже при ПОДТВЕРЖДЁН полезно видеть,
+        // вернул ли Ozon предупреждения (например, mandatory_mark missing).
+        console.log(
+          `[FINISH][store ${storeId}] ship для ${orderId} — OK, ` +
+          `result=${JSON.stringify(shipResult?.result || [])}`
+        );
       } catch (shipError) {
         if (shipError.message && shipError.message.includes('не в статусе awaiting_packaging')) {
           console.warn(`[FINISH][store ${storeId}] Заказ ${orderId} уже подтверждён (статус не awaiting_packaging)`);
         } else {
+          // Явно логируем body ошибки, если axios её приложил
+          if (shipError.response?.data) {
+            console.error(
+              `[FINISH][store ${storeId}] ship ${orderId} упал: HTTP ${shipError.response.status}, ` +
+              `data=${JSON.stringify(shipError.response.data)}`
+            );
+          }
           throw shipError;
         }
       }
@@ -677,7 +690,18 @@ class OrderService {
       'SELECT * FROM assignments WHERE order_id = ? AND user_id = ? AND status = "completed"',
       orderId, userId
     );
-    if (!assignment) throw new Error('Заказ не найден или не завершён');
+    if (!assignment) {
+      // Диагностика: что реально лежит в assignments по этому orderId?
+      const any = await db.get(
+        'SELECT user_id, status, completed_at, earnings_revoked_at FROM assignments WHERE order_id = ?',
+        orderId
+      );
+      console.warn(
+        `[getLabel][store ${storeId}] assignment не найден: orderId=${orderId}, userId=${userId}, ` +
+        `что есть в БД по этому orderId: ${any ? JSON.stringify(any) : 'пусто'}`
+      );
+      throw new Error('Заказ не найден или не завершён');
+    }
 
     const details = await OzonService.getOrderDetails(storeId, orderId);
     if (!details) throw new Error('Не удалось получить данные заказа из Ozon');

@@ -523,7 +523,21 @@ class OzonService {
         }),
         { context: `confirmPostingShip[${storeId}]` }
       );
+      // Диагностика: Ozon отвечает 200 даже когда ship не принят —
+      // признак "принят" — наличие posting_number в массиве result.
+      const result = Array.isArray(response.data?.result) ? response.data.result : [];
+      const ok = result.includes(String(postingNumber));
+      console.log(
+        `[SHIP][store ${storeId}] ${postingNumber} → ${ok ? 'ПОДТВЕРЖДЁН' : 'ОТКЛОНЁН'}` +
+        (ok ? '' : ` (result: ${JSON.stringify(result)})`)
+      );
       console.log(`[SHIP][store ${storeId}] Ответ:`, JSON.stringify(response.data, null, 2));
+
+      if (!ok) {
+        throw new Error(
+          `Ozon не подтвердил сборку ${postingNumber}: result=${JSON.stringify(result)}`
+        );
+      }
       return response.data;
     } catch (error) {
       console.error(`[SHIP][store ${storeId}] Ошибка подтверждения сборки:`, error.message);
