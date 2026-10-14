@@ -131,16 +131,29 @@ class PushService {
       keys.auth
     );
   }
+
   /**
-   * Сохранить/обновить подписку устройства.
-   * endpoint UNIQUE: повторная подписка того же браузера ОБНОВЛЯЕТ строку, а
-   * вход ДРУГОГО пользователя на этом устройстве ПЕРЕприсваивает подписку ему —
-   * иначе прежний владелец продолжал бы получать чужие оповещения.
-   * @returns {Promise<boolean>} true — подписка сохранена
+   * Максимум УСТРОЙСТВ на одного пользователя.
+   *
+   * ВАЖНО: это НЕ максимум подписок. Одно устройство = один user_agent и
+   * несколько подписок — по одной на каждый origin (главный домен + каждый
+   * поддомен магазина), потому что браузер регистрирует отдельный Service
+   * Worker для каждого origin и выдаёт разные endpoint'ы.
+   *
+   * Пример: у сотрудника 2 устройства, он работает в 3 магазинах.
+   * Origins: your-domain.com + store1 + store2 + store3 = 4.
+   * Подписок: 2 × 4 = 8. Все восемь должны жить.
    */
-  /** Максимум подписок на одного пользователя (защита от накопления мусора). */
-  static get MAX_SUBS_PER_USER() {
-    return Math.max(1, parseInt(process.env.PUSH_MAX_SUBS_PER_USER, 10) || 10);
+  static get MAX_DEVICES_PER_USER() {
+    return Math.max(1, parseInt(process.env.PUSH_MAX_DEVICES_PER_USER, 10) || 5);
+  }
+
+  /**
+   * Жёсткий предохранитель от «бесконечного» роста (баг, миграция, дубликаты).
+   * Считается в подписках, а не устройствах — срабатывает только при аномалии.
+   */
+  static get MAX_SUBS_HARD_LIMIT() {
+    return Math.max(20, parseInt(process.env.PUSH_MAX_SUBS_HARD_LIMIT, 10) || 100);
   }
 
   static async subscribe(userId, subscription, userAgent = null, origin = null) {
@@ -169,17 +182,46 @@ class PushService {
         now
       );
 
-      // Защита от накопления мусора: у пользователя не должно быть больше
-      // N подписок. Если больше — удаляем самые старые (по created_at).
-      // Иначе push-доставка шлёт 50+ запросов подряд, push-сервис отдаёт
-      // 429 и часть устройств НЕ получает уведомление.
-      const max = PushService.MAX_SUBS_PER_USER;
-      const countRow = await db.get(
+      // --- 1. Лимит УСТРОЙСТВ -----------------------------------------------
+      // Одно устройство = один user_agent (браузер + ОС). Все подписки одного
+      // UA (разные origin'ы) считаются одним устройством. Если устройств
+      // больше лимита — удаляем все подписки самого СТАРОГО устройства
+      // (того UA, у которого минимальный last_used_at/created_at).
+      const maxDevices = PushService.MAX_DEVICES_PER_USER;
+      const deviceGroups = await db.all(
+        `SELECT COALESCE(user_agent, '') AS ua,
+                COUNT(*)                 AS cnt,
+                MIN(COALESCE(last_used_at, created_at)) AS oldest
+         FROM push_subscriptions
+         WHERE user_id = ?
+         GROUP BY COALESCE(user_agent, '')
+         ORDER BY oldest ASC`,
+        userId
+      );
+      if (deviceGroups.length > maxDevices) {
+        const excessDevices = deviceGroups.slice(0, deviceGroups.length - maxDevices);
+        for (const d of excessDevices) {
+          const res = await db.run(
+            `DELETE FROM push_subscriptions
+             WHERE user_id = ? AND COALESCE(user_agent, '') = ?`,
+            userId, d.ua
+          );
+          console.log(
+            `[Push] user=${userId}: устройств > ${maxDevices}, удалено старое ` +
+            `устройство (ua="${(d.ua || '—').slice(0, 40)}", подписок: ${res.changes})`
+          );
+        }
+      }
+
+      // --- 2. Safety-net по общему количеству подписок ----------------------
+      // На случай бага/миграции — не даём таблице расти бесконечно.
+      const hardLimit = PushService.MAX_SUBS_HARD_LIMIT;
+      const totalRow = await db.get(
         'SELECT COUNT(*) AS cnt FROM push_subscriptions WHERE user_id = ?',
         userId
       );
-      if (countRow && countRow.cnt > max) {
-        const toDelete = countRow.cnt - max;
+      if (totalRow && totalRow.cnt > hardLimit) {
+        const toDelete = totalRow.cnt - hardLimit;
         const old = await db.all(
           `SELECT id FROM push_subscriptions
            WHERE user_id = ?
@@ -194,8 +236,8 @@ class PushService {
             `DELETE FROM push_subscriptions WHERE id IN (${ph})`,
             ...ids
           );
-          console.log(
-            `[Push] user=${userId}: лимит подписок ${max}, удалено старых: ${res.changes}`
+          console.warn(
+            `[Push] user=${userId}: подписок > ${hardLimit} (аномалия), удалено ${res.changes} старых`
           );
         }
       }
@@ -282,19 +324,54 @@ class PushService {
     try {
       const db = getUsersDB();
 
+      // Выбор подписок с дедупликацией по УСТРОЙСТВУ.
+      //
+      // Правило: на КАЖДОЕ устройство (user_agent) — не больше одной
+      // отправки. Если у одного UA накопилось N подписок с одинаковым
+      // origin (Firefox пересоздавал endpoint, миграция, ручной insert) —
+      // отправляем только на самую свежую. Иначе на одно событие прилетит
+      // N баннеров на одно устройство.
+      //
+      // SQL ниже для каждой пары (user_id, user_agent, origin) выбирает
+      // ровно одну строку — с максимальным last_used_at, а при равенстве —
+      // с максимальным id (последняя вставленная).
       let subs;
       if (origin) {
         subs = await db.all(
-          `SELECT id, endpoint, p256dh, auth FROM push_subscriptions
-           WHERE user_id = ? AND origin = ?`,
+          `SELECT id, endpoint, p256dh, auth
+           FROM push_subscriptions ps
+           WHERE ps.user_id = ?
+             AND ps.origin = ?
+             AND ps.id = (
+               SELECT ps2.id FROM push_subscriptions ps2
+               WHERE ps2.user_id = ps.user_id
+                 AND ps2.origin = ps.origin
+                 AND COALESCE(ps2.user_agent, '') = COALESCE(ps.user_agent, '')
+               ORDER BY COALESCE(ps2.last_used_at, ps2.created_at) DESC,
+                        ps2.id DESC
+               LIMIT 1
+             )`,
           userId, String(origin)
         );
-        // Обратная совместимость: у старых подписок origin = NULL (до миграции).
-        // Если по origin не нашли, но есть NULL-подписки — шлём на них.
+
+        // Обратная совместимость: если у пользователя ещё нет подписок с
+        // этим origin (юзер не перезаходил после деплоя origin-фикса),
+        // используем NULL-origin подписки — по одной на устройство.
         if (!subs.length) {
           subs = await db.all(
-            `SELECT id, endpoint, p256dh, auth FROM push_subscriptions
-             WHERE user_id = ? AND origin IS NULL`,
+            `SELECT id, endpoint, p256dh, auth
+             FROM push_subscriptions ps
+             WHERE ps.user_id = ?
+               AND ps.origin IS NULL
+               AND ps.id = (
+                 SELECT ps2.id FROM push_subscriptions ps2
+                 WHERE ps2.user_id = ps.user_id
+                   AND ps2.origin IS NULL
+                   AND COALESCE(ps2.user_agent, '') = COALESCE(ps.user_agent, '')
+                 ORDER BY COALESCE(ps2.last_used_at, ps2.created_at) DESC,
+                          ps2.id DESC
+                 LIMIT 1
+               )`,
             userId
           );
           if (subs.length) {
@@ -304,8 +381,22 @@ class PushService {
           }
         }
       } else {
+        // Системное событие (storeId=null): по одной подписке на устройство,
+        // независимо от origin — какое бы устройство ни получило push,
+        // баннер один. При этом origin может быть любым (берётся самый
+        // свежий), на UX это не влияет — важно лишь «дойти до устройства».
         subs = await db.all(
-          'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?',
+          `SELECT id, endpoint, p256dh, auth
+           FROM push_subscriptions ps
+           WHERE ps.user_id = ?
+             AND ps.id = (
+               SELECT ps2.id FROM push_subscriptions ps2
+               WHERE ps2.user_id = ps.user_id
+                 AND COALESCE(ps2.user_agent, '') = COALESCE(ps.user_agent, '')
+               ORDER BY COALESCE(ps2.last_used_at, ps2.created_at) DESC,
+                        ps2.id DESC
+               LIMIT 1
+             )`,
           userId
         );
       }

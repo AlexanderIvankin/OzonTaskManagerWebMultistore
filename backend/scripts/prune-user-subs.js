@@ -73,16 +73,21 @@ async function main() {
   // =============================================================
   console.log('═══ Проход 1: дедупликация по (user_id, user_agent, origin) ═══');
 
-  // Группы, где больше 1 подписки на одинаковый UA+origin.
-  // COALESCE(NULLIF(...)) — пустые/незаданные значения в одну группу.
+  // ВАЖНО: дедуплицируем ТОЛЬКО строки с ЗАПОЛНЕННЫМ origin.
+  // При origin = NULL нельзя понять — это дубликаты одной подписки или
+  // РАЗНЫЕ origin'ы (na3d.ru vs store1.na3d.ru) одного браузера.
+  // Такие строки не трогаем — они и так схлопнутся, когда юзер перезайдёт
+  // на каждый домен (origin заполнится через subscribe()).
   const dupGroups = await db.all(`
     SELECT user_id,
            COALESCE(user_agent, '') AS ua,
-           COALESCE(origin, '')     AS og,
+           origin                   AS og,
            COUNT(*)                 AS cnt
     FROM push_subscriptions
     WHERE ${userFilter()}
-    GROUP BY user_id, COALESCE(user_agent, ''), COALESCE(origin, '')
+      AND origin IS NOT NULL
+      AND origin != ''
+    GROUP BY user_id, COALESCE(user_agent, ''), origin
     HAVING cnt > 1
     ORDER BY cnt DESC, user_id
   `);
@@ -120,60 +125,57 @@ async function main() {
   }
 
   // =============================================================
-  // ПРОХОД 2 — лимит на пользователя (после дедупликации)
+  // ПРОХОД 2 — лимит УСТРОЙСТВ на пользователя (после дедупликации)
   // =============================================================
+  //
+  // Одно устройство = один user_agent. У устройства может быть МНОГО
+  // подписок (по одной на origin: na3d.ru + каждый поддомен магазина).
+  // Лимит — на устройства, а не на подписки.
   console.log('');
-  console.log(`═══ Проход 2: лимит на пользователя (${KEEP}) ═══`);
+  console.log(`═══ Проход 2: лимит УСТРОЙСТВ на пользователя (${KEEP}) ═══`);
 
-  // Считаем «эффективное» количество — сколько останется после дедупликации.
-  // Это позволяет не удалять лишнее, если после прохода 1 всё уже в норме.
-  const dupsByUser = new Map();
-  for (const d of dupsToDelete) {
-    dupsByUser.set(d.userId, (dupsByUser.get(d.userId) || 0) + 1);
+  // Собираем «выживших» после Прохода 1 — чтобы не учитывать уже удалённых.
+  const dupIdsSet = new Set(dupsToDelete.map((d) => d.id));
+  const allRows = await db.all(
+    `SELECT id, user_id, COALESCE(user_agent,'') AS ua,
+            COALESCE(last_used_at, created_at) AS fresh
+     FROM push_subscriptions
+     WHERE ${userFilter()}
+     ORDER BY user_id, fresh ASC, id ASC`
+  );
+  const survivors = allRows.filter((r) => !dupIdsSet.has(r.id));
+
+  // Группируем по user_id → ua
+  const devicesByUser = new Map(); // user_id -> [{ua, ids, oldest}]
+  for (const r of survivors) {
+    if (!devicesByUser.has(r.user_id)) devicesByUser.set(r.user_id, new Map());
+    const m = devicesByUser.get(r.user_id);
+    if (!m.has(r.ua)) m.set(r.ua, { ua: r.ua, ids: [], oldest: r.fresh });
+    const d = m.get(r.ua);
+    d.ids.push(r.id);
+    if (r.fresh < d.oldest) d.oldest = r.fresh;
   }
-
-  const userRows = await db.all(`
-    SELECT user_id, COUNT(*) AS cnt
-    FROM push_subscriptions
-    WHERE ${userFilter()}
-    GROUP BY user_id
-    ORDER BY cnt DESC
-  `);
 
   const overflowToDelete = []; // [{id, userId}]
 
-  for (const u of userRows) {
-    const effective = u.cnt - (dupsByUser.get(u.user_id) || 0);
-    if (effective <= KEEP) continue;
+  for (const [userId, devMap] of devicesByUser) {
+    const devices = [...devMap.values()].sort((a, b) => a.oldest - b.oldest);
+    if (devices.length <= KEEP) continue;
 
-    // Полный отсортированный список подписок пользователя (свежие первыми).
-    const rows = await db.all(
-      `SELECT id FROM push_subscriptions
-       WHERE user_id = ?
-       ORDER BY COALESCE(last_used_at, created_at) DESC, id DESC`,
-      u.user_id
-    );
-
-    // Отбрасываем те, что и так уже в dupsToDelete.
-    const dupIds = new Set(
-      dupsToDelete.filter((d) => d.userId === u.user_id).map((d) => d.id)
-    );
-    const survivors = rows.filter((r) => !dupIds.has(r.id));
-
-    if (survivors.length <= KEEP) continue;
-
-    const overflow = survivors.slice(KEEP);
-    console.log(
-      `  user=${u.user_id}: было ${u.cnt}, после дедупа ${effective}, ` +
-      `оставляю ${KEEP}, удаляю сверх: ${overflow.map((r) => '#' + r.id).join(', ')}`
-    );
-    for (const r of overflow) {
-      overflowToDelete.push({ id: r.id, userId: u.user_id });
+    const excess = devices.slice(0, devices.length - KEEP);
+    for (const d of excess) {
+      const uaShort = d.ua ? d.ua.slice(0, 45) : '—';
+      console.log(
+        `  user=${userId}: устройств ${devices.length} > ${KEEP}, ` +
+        `удаляю старое устройство ua="${uaShort}" ` +
+        `(подписок: ${d.ids.length}, ids: ${d.ids.map((x) => '#' + x).join(', ')})`
+      );
+      for (const id of d.ids) overflowToDelete.push({ id, userId });
     }
   }
 
   if (!overflowToDelete.length) {
-    console.log('  превышений лимита нет ✅');
+    console.log('  превышений лимита устройств нет ✅');
   }
 
   // =============================================================
@@ -188,7 +190,7 @@ async function main() {
   console.log('');
   console.log('═══════════════════ ИТОГ ═══════════════════');
   console.log(`  Дубликатов (проход 1):  ${dupsToDelete.length}`);
-  console.log(`  Сверх лимита (проход 2): ${overflowToDelete.length}`);
+  console.log(`  Подписок старых устройств:   ${overflowToDelete.length}`);
   console.log(`  Всего к удалению:        ${uniqueIds.length}`);
 
   if (!uniqueIds.length) {
