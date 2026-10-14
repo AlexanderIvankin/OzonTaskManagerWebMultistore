@@ -138,6 +138,11 @@ class PushService {
    * иначе прежний владелец продолжал бы получать чужие оповещения.
    * @returns {Promise<boolean>} true — подписка сохранена
    */
+  /** Максимум подписок на одного пользователя (защита от накопления мусора). */
+  static get MAX_SUBS_PER_USER() {
+    return Math.max(1, parseInt(process.env.PUSH_MAX_SUBS_PER_USER, 10) || 10);
+  }
+
   static async subscribe(userId, subscription, userAgent = null) {
     if (!PushService.isValidSubscription(subscription)) return false;
     try {
@@ -161,6 +166,38 @@ class PushService {
         now,
         now
       );
+
+      // Защита от накопления мусора: у пользователя не должно быть больше
+      // N подписок. Если больше — удаляем самые старые (по created_at).
+      // Иначе push-доставка шлёт 50+ запросов подряд, push-сервис отдаёт
+      // 429 и часть устройств НЕ получает уведомление.
+      const max = PushService.MAX_SUBS_PER_USER;
+      const countRow = await db.get(
+        'SELECT COUNT(*) AS cnt FROM push_subscriptions WHERE user_id = ?',
+        userId
+      );
+      if (countRow && countRow.cnt > max) {
+        const toDelete = countRow.cnt - max;
+        const old = await db.all(
+          `SELECT id FROM push_subscriptions
+           WHERE user_id = ?
+           ORDER BY COALESCE(last_used_at, created_at) ASC
+           LIMIT ?`,
+          userId, toDelete
+        );
+        if (old.length) {
+          const ids = old.map((r) => r.id);
+          const ph = ids.map(() => '?').join(',');
+          const res = await db.run(
+            `DELETE FROM push_subscriptions WHERE id IN (${ph})`,
+            ...ids
+          );
+          console.log(
+            `[Push] user=${userId}: лимит подписок ${max}, удалено старых: ${res.changes}`
+          );
+        }
+      }
+
       return true;
     } catch (err) {
       console.error('[Push] subscribe:', err.message);
@@ -260,12 +297,23 @@ class PushService {
             now,
             sub.id
           );
+          // Небольшая пауза между отправками: FCM чувствителен к всплескам.
+          // 50 мс на 10 подписок = 0.5 сек — незаметно для UX, но резко снижает 429.
+          if (subs.length > 1) {
+            await new Promise((r) => setTimeout(r, 50));
+          }
         } catch (err) {
           const code = err?.statusCode ?? '?';
           if (isGone(err)) {
-            // 4xx «мёртвая» подписка — строку удаляем сразу
             expired.push(sub.id);
             console.warn(`[Push] Подписка #${sub.id} удалена (status=${code})`);
+          } else if (code === 429) {
+            // Rate limit push-сервиса: не долбим дальше, не считаем провалом,
+            // не удаляем подписку. Уведомление на этом endpoint уйдёт в следующий раз.
+            result.failed++;
+            console.warn(
+              `[Push] #${sub.id} (user=${userId}, store=${storeId ?? '—'}) — 429 rate limit, пропускаю`
+            );
           } else {
             result.failed++;
             console.error(
