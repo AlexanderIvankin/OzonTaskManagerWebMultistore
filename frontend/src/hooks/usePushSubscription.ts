@@ -1,6 +1,7 @@
 // src/hooks/usePushSubscription.ts
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pushApi, PushSubscriptionJSON } from "../api/user";
+import { getRootOrigin } from "../lib/urls";
 
 // ============================================================================
 // Подписка браузера на Web Push (вторая половина пары к Socket.IO).
@@ -32,6 +33,28 @@ import { pushApi, PushSubscriptionJSON } from "../api/user";
 // системы: логаут — не отказ от уведомлений.
 // ============================================================================
 const PUSH_OPT_OUT_KEY = "pushNotificationsDisabled";
+
+/**
+ * Мы на корневом домене? Push-подписки живут ТОЛЬКО здесь.
+ *
+ * На поддоменах (store1.na3d.ru) мы ничего не подписываем: одна подписка
+ * на устройство, живёт на root-domain. Клик по баннеру открывает нужный
+ * магазин через absolute URL в payload.
+ */
+function isRootDomain(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const root = new URL(getRootOrigin()).origin; // "https://na3d.ru"
+    const current = window.location.origin; // "https://store1.na3d.ru"
+    if (current === root) return true;
+    // www.root — тоже корневой
+    const www = root.replace("://", "://www.");
+    if (current === www) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 /** Пользователь осознанно отключил push на этом устройстве? */
 function isPushOptedOut(): boolean {
@@ -84,6 +107,7 @@ function keyToBase64Url(key?: ArrayBuffer | null): string | null {
 
 export type PushStatus =
   | "unsupported" // браузер не поддерживает Web Push
+  | "not-root" // мы на поддомене магазина — push тут не подписываем
   | "denied" // пользователь запретил уведомления в настройках браузера
   | "prompt" // нужно разрешение — показываем кнопку «Включить»
   | "subscribing"
@@ -170,10 +194,16 @@ export function usePushSubscription(): UsePushSubscriptionResult {
   const register = useCallback(
     async (requestPermission: boolean): Promise<PushStatus> => {
       if (!isPushSupported()) return "unsupported";
+
+      // На поддомене магазина push НЕ подписываем. Единственная подписка
+      // живёт на корневом домене (na3d.ru) — see isRootDomain above.
+      if (!isRootDomain()) return "not-root";
+
       if (Notification.permission === "denied") return "denied";
       if (!requestPermission && isPushOptedOut()) return "prompt";
 
       try {
+        // Service Worker
         const registration = await navigator.serviceWorker.register("/sw.js");
         await navigator.serviceWorker.ready;
 

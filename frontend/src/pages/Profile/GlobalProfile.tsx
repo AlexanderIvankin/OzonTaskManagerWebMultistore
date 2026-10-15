@@ -281,6 +281,13 @@ export const GlobalProfile = () => {
                 </p>
               )}
 
+              {pushStatus === "not-root" && (
+                <p className="text-sm text-muted-foreground">
+                  Управление push-уведомлениями доступно в глобальном профиле на
+                  главном домене.
+                </p>
+              )}
+
               {/* Permission запрещён в этом браузере — per-device, юзер должен
       разобраться в настройках сайта. Даже если глобально включено. */}
               {pushStatus === "denied" && (

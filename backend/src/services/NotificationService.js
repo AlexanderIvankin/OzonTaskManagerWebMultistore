@@ -1,7 +1,6 @@
 const { getUsersDB } = require('../config/database');
 const Notification = require('../models/Notification');
 const PushService = require('./PushService');
-const stores = require('../config/stores');
 const {
   notifyUser,
   notifyUsers,
@@ -528,19 +527,13 @@ async function deliverLive(storeId, userId, event, data, { push = true } = {}) {
   if (notifyUser(storeId, userId, event, data)) return 'socket';
   if (!push) return 'none';
 
-  // origin магазина — чтобы store-уведомление шло только в SW магазина,
-  // а не дублировалось на основном домене (и на других поддоменах).
-  let storeOrigin = null;
-  try {
-    storeOrigin = stores.getStore(String(storeId))?.clientOrigin || null;
-  } catch {
-    // Магазин не найден — шлём без фильтра (fallback).
-  }
-
+  // Подписки теперь только на root-domain. Absolute URL в payload
+  // (см. buildPushPayload) отвечает за то, чтобы клик открыл нужный
+  // магазин. Никакого origin-фильтра — шлём на все подписки юзера.
   const res = await PushService.sendToUser(
     userId,
     buildPushPayload({ ...data, storeId }),
-    { storeId, origin: storeOrigin }
+    { storeId }
   );
   return res.sent > 0 ? 'push' : 'none';
 }
@@ -554,17 +547,12 @@ async function deliverLiveBatch(storeId, userIds, event, data, { push = true } =
   if (!push || delivered.length === (userIds || []).length) return delivered;
   const offline = (userIds || []).filter((id) => !delivered.includes(id));
 
-  let storeOrigin = null;
-  try {
-    storeOrigin = stores.getStore(String(storeId))?.clientOrigin || null;
-  } catch { /* магазин не найден — без фильтра */ }
-
   await Promise.allSettled(
     offline.map((id) =>
       PushService.sendToUser(
         id,
         buildPushPayload({ ...data, storeId }),
-        { storeId, origin: storeOrigin }
+        { storeId }
       )
     )
   );

@@ -415,82 +415,34 @@ class PushService {
    *             подписки с origin = NULL (старые записи до миграции) —
    *             шлём на них, чтобы не потерять пользователей.
    */
-  static async sendToUser(userId, payload, { storeId = null, origin = null } = {}) {
+  static async sendToUser(userId, payload, { storeId = null } = {}) {
     const result = { sent: 0, failed: 0, removed: 0 };
     if (!webpush || !PushService.enabled) return result;
 
     try {
       const db = getUsersDB();
 
-      // Выбор подписок с дедупликацией по УСТРОЙСТВУ.
+      // Одна подписка на устройство. Все подписки — root-domain (по новой
+      // модели). Дедуп по user_agent: если у устройства накопились дубли
+      // (старые endpoint'ы, миграция) — берём самую свежую.
       //
-      // Правило: на КАЖДОЕ устройство (user_agent) — не больше одной
-      // отправки. Если у одного UA накопилось N подписок с одинаковым
-      // origin (Firefox пересоздавал endpoint, миграция, ручной insert) —
-      // отправляем только на самую свежую. Иначе на одно событие прилетит
-      // N баннеров на одно устройство.
-      //
-      // SQL ниже для каждой пары (user_id, user_agent, origin) выбирает
-      // ровно одну строку — с максимальным last_used_at, а при равенстве —
-      // с максимальным id (последняя вставленная).
-      // Общий SELECT с дедупом по устройству (одна подписка на UA).
-      // Подставляем разные WHERE через параметры.
-      const selectOnePerDevice = async (whereSql, params) =>
-        db.all(
-          `SELECT id, endpoint, p256dh, auth
-           FROM push_subscriptions ps
-           WHERE ps.user_id = ?
-             AND ${whereSql}
-             AND ps.id = (
-               SELECT ps2.id FROM push_subscriptions ps2
-               WHERE ps2.user_id = ps.user_id
-                 AND ${whereSql.replace(/ps\./g, 'ps2.')}
-                 AND COALESCE(ps2.user_agent, '') = COALESCE(ps.user_agent, '')
-               ORDER BY COALESCE(ps2.last_used_at, ps2.created_at) DESC,
-                        ps2.id DESC
-               LIMIT 1
-             )`,
-          userId, ...params
-        );
-
-      let subs = [];
-      if (origin) {
-        // 1. Подписки конкретного origin (напр. https://store1.na3d.ru).
-        subs = await selectOnePerDevice('ps.origin = ?', [String(origin)]);
-
-        // 2. Fallback на корневой домен: если у пользователя есть подписка
-        //    на главный домен, а на конкретный магазин — нет, шлём через
-        //    неё. Баннер придёт от SW na3d.ru, но URL в payload абсолютный
-        //    (https://store1.na3d.ru/notifications) — клик откроет магазин.
-        if (!subs.length) {
-          const rootDomain = normalizeRootDomain(process.env.ROOT_DOMAIN);
-          const rootOrigin = rootDomain ? `https://${rootDomain}` : null;
-          if (rootOrigin && rootOrigin !== String(origin)) {
-            subs = await selectOnePerDevice('ps.origin = ?', [rootOrigin]);
-            if (subs.length) {
-              console.log(
-                `[Push] user=${userId}: подписок для origin=${origin} нет, ` +
-                `использую fallback на root (${rootOrigin}): ${subs.length}`
-              );
-            }
-          }
-        }
-
-        // 3. Legacy (origin IS NULL): старые подписки до миграции origin.
-        if (!subs.length) {
-          subs = await selectOnePerDevice('ps.origin IS NULL', []);
-          if (subs.length) {
-            console.log(
-              `[Push] user=${userId}: ни store-origin, ни root не найдены, ` +
-              `шлю на legacy (origin IS NULL): ${subs.length}`
-            );
-          }
-        }
-      } else {
-        // Системное событие (storeId=null): по одной подписке на устройство,
-        // независимо от origin.
-        subs = await selectOnePerDevice('1 = 1', []);
-      }
+      // Никакого фильтра по origin: store-события всё равно летят через
+      // root-подписку (клик по абсолютному URL откроет нужный магазин),
+      // а системные — тем более. Одно устройство = один push.
+      const subs = await db.all(
+        `SELECT id, endpoint, p256dh, auth
+         FROM push_subscriptions ps
+         WHERE ps.user_id = ?
+           AND ps.id = (
+             SELECT ps2.id FROM push_subscriptions ps2
+             WHERE ps2.user_id = ps.user_id
+               AND COALESCE(ps2.user_agent, '') = COALESCE(ps.user_agent, '')
+             ORDER BY COALESCE(ps2.last_used_at, ps2.created_at) DESC,
+                      ps2.id DESC
+             LIMIT 1
+           )`,
+        userId
+      );
       if (!subs.length) return result;
 
       const data = JSON.stringify(payload || {});
