@@ -29,7 +29,7 @@ class StorageService {
   }
 
   static keyFor(offerId) {
-    // s3://bucket/[S3_MODELS_PREFIX]{offer_id}.zip — по умолчанию файлы в корне бакета
+    // s3://bucket/[MODELS_S3_PREFIX]{offer_id}.zip — по умолчанию файлы в корне бакета
     return `${MODELS_PREFIX}${offerId}.zip`;
   }
 

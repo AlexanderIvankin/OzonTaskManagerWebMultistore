@@ -24,6 +24,20 @@ module.exports = {
   debugOrdersMode: bool('DEBUG_ORDERS_MODE', false),
   ozonMockMode: bool('OZON_MOCK_MODE', false),
 
+  // --- Создатель (глобально, один на всю систему) ---
+  god: {
+    id: str('GOD_ID', '').trim(),
+    email: str('GOD_EMAIL', '').trim().toLowerCase(),
+  },
+
+  // --- Ozon (общий идентификатор для ship) ---
+  shipIdentifier: str('SHIP_IDENTIFIER', 'offer_id'),
+
+  // --- Контексты (для отображения в UI) ---
+  // rootName — название глобального домена (показывается в сайдбаре,
+  // когда мы без магазина). Аналог STORE_NAME для поддомена магазина.
+  rootName: str('ROOT_NAME', 'Global').trim() || 'Global',
+
   // --- Пути к общим БД ---
   usersDbPath: str('USERS_DB_PATH', './users.db'),
   modelsDbPath: str('MODELS_DB_PATH', './models.db'),
@@ -38,12 +52,53 @@ module.exports = {
 
   // --- S3 (модели — общие для всех магазинов) ---
   s3: {
-    endpoint: str('S3_ENDPOINT'),
-    region: str('S3_REGION'),
-    bucket: str('S3_BUCKET'),
-    accessKey: str('S3_ACCESS_KEY'),
-    secretKey: str('S3_SECRET_KEY'),
-    prefix: str('S3_MODELS_PREFIX', ''),
+    endpoint: str('MODELS_S3_ENDPOINT'),
+    region: str('MODELS_S3_REGION'),
+    bucket: str('MODELS_S3_BUCKET'),
+    accessKey: str('MODELS_S3_ACCESS_KEY'),
+    secretKey: str('MODELS_S3_SECRET_KEY'),
+    prefix: str('MODELS_S3_PREFIX', ''),
+  },
+
+  // --- Модели (S3-zip first) ---
+  models: {
+    maxUploadMb: int('MODELS_MAX_UPLOAD_MB', 1024),
+    tokenTtlMin: int('MODELS_TOKEN_TTL_MIN', 15),
+    cacheTtlMin: int('MODELS_CACHE_TTL_MIN', 60),
+  },
+
+  // --- Бэкапы БД (локально + S3) ---
+  backup: {
+    // Включить выгрузку архива всех БД на S3 после ежедневного бэкапа
+    s3Enabled: bool('BACKUP_S3_ENABLED', false),
+
+    // Имя bucket'а для бэкапов (ОТДЕЛЬНЫЙ от моделей!).
+    // Если пусто — S3-выгрузка пропускается, даже если s3Enabled=true.
+    s3Bucket: str('BACKUP_S3_BUCKET', ''),
+
+    // Префикс ключей внутри bucket'а (папка). Например 'backups/'.
+    s3Prefix: str('BACKUP_S3_PREFIX', 'backups/'),
+
+    // Отдельные endpoint/region/credentials для bucket'а бэкапов.
+    // Если задан ХОТЯ БЫ ОДИН из них — создаётся отдельный S3Client
+    // (см. src/config/s3.js). Если все пусты — используется основной клиент
+    // (тот же, что для моделей). Это позволяет:
+    //   • один пользователь + два bucket  → оставить эти поля пустыми;
+    //   • два пользователя / два провайдера → заполнить все три.
+    s3Endpoint: str('BACKUP_S3_ENDPOINT', ''),
+    s3Region: str('BACKUP_S3_REGION', ''),
+    s3AccessKey: str('BACKUP_S3_ACCESS_KEY', ''),
+    s3SecretKey: str('BACKUP_S3_SECRET_KEY', ''),
+
+    // Сколько дней хранить архивы на S3 (по дате в имени файла).
+    // 0 — не удалять (хранить вечно).
+    s3RetentionDays: int('BACKUP_S3_RETENTION_DAYS', 30),
+
+    // Сколько дней хранить локальные .db в backups/. 0 — не удалять.
+    localRetentionDays: int('BACKUP_LOCAL_RETENTION_DAYS', 14),
+
+    // Таймаут на одну S3-операцию (PutObject/ListObjectsV2), мс.
+    s3TimeoutMs: int('BACKUP_S3_TIMEOUT_MS', 60000),
   },
 
   // --- SMTP (общий для всех магазинов) ---
@@ -54,27 +109,6 @@ module.exports = {
     user: str('SMTP_USER'),
     pass: str('SMTP_PASS'),
     from: str('SMTP_FROM'),
-  },
-
-  // --- Контексты (для отображения в UI) ---
-  // rootName — название глобального домена (показывается в сайдбаре,
-  // когда мы без магазина). Аналог STORE_NAME для поддомена магазина.
-  rootName: str('ROOT_NAME', 'Global').trim() || 'Global',
-
-  // --- Создатель (глобально, один на всю систему) ---
-  god: {
-    id: str('GOD_ID', '').trim(),
-    email: str('GOD_EMAIL', '').trim().toLowerCase(),
-  },
-
-  // --- Ozon (общий идентификатор для ship) ---
-  shipIdentifier: str('SHIP_IDENTIFIER', 'offer_id'),
-
-  // --- Модели (S3-zip first) ---
-  models: {
-    maxUploadMb: int('MODELS_MAX_UPLOAD_MB', 1024),
-    tokenTtlMin: int('MODELS_TOKEN_TTL_MIN', 15),
-    cacheTtlMin: int('MODELS_CACHE_TTL_MIN', 60),
   },
 
   // --- Web Push (VAPID ключи глобальные; subject — per-store) ---

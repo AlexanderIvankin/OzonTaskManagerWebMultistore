@@ -766,7 +766,12 @@ class OzonService {
       }
       return combined;
     } catch (error) {
-      console.error(`[Ozon][store ${storeId}] Ошибка удаления товаров из акции ${actionId}:`, error.message);
+      const httpStatus = error.response?.status;
+      const body = error.response?.data;
+      console.error(
+        `[Ozon][store ${storeId}] Ошибка удаления товаров из акции ${actionId}:`,
+        `HTTP ${httpStatus} — ${JSON.stringify(body)}`
+      );
       throw new Error(`Ошибка удаления товаров: ${error.message}`);
     }
   }
