@@ -50,6 +50,66 @@ function invalidateClient(storeId) {
 /**
  * Универсальная функция повторных попыток.
  */
+// ============================================================================
+//  ОБНАРУЖЕНИЕ УСТАРЕВШИХ ЭНДПОИНТОВ OZON
+//
+//  Ozon регулярно «замораживает» старые версии API. Признак:
+//    HTTP 400 + { code: 9, message: "the method is blocked ..." }
+//  или похожие сообщения ("deprecated", "not supported").
+//
+//  Единая точка проверки — requestWithRetry: ВСЕ вызовы Ozon идут через неё,
+//  поэтому достаточно ловить тут, чтобы:
+//    • не ретраить бессмысленный вызов (3 попытки × 30 сек = 90 сек зря);
+//    • в логах было ЯВНО видно «[OZON DEPRECATED] контекст ...» — легко
+//      grep'ать и находить все устаревшие методы для обновления;
+//    • caller мог решить (skip / warn / throw), проверив err.deprecatedApi.
+// ============================================================================
+
+/**
+ * Ответ Ozon означает «метод устарел / заблокирован»?
+ * @param {any} error — ошибка из axios
+ * @returns {boolean}
+ */
+function isDeprecatedApiResponse(error) {
+  const status = error?.response?.status;
+  // Ozon обычно отвечает 400, но на всякий случай ловим и 404/410
+  // (бывает при удалении эндпоинта без миграционного сообщения).
+  if (status !== 400 && status !== 404 && status !== 410) return false;
+  const data = error.response?.data;
+  if (!data || typeof data !== 'object') return false;
+
+  if (data.code === 9) return true;
+
+  const msg = String(data.message || data.error || '').toLowerCase();
+  return (
+    msg.includes('method is blocked') ||
+    msg.includes('deprecated') ||
+    msg.includes('not supported') ||
+    msg.includes('unified price logic')
+  );
+}
+
+/**
+ * Явный лог устаревшего эндпоинта — заметный в pm2-логах. Одна строка на
+ * вызов, не спамит (сам вызов бросает err.deprecatedApi — caller решает,
+ * повторять или нет).
+ */
+function logDeprecatedEndpoint(context, error) {
+  const data = error?.response?.data || {};
+  const status = error?.response?.status;
+  console.error(
+    `\n` +
+    `╔═══════════════════════════════════════════════════════════════════════\n` +
+    `║ ⚠️  OZON DEPRECATED API — вызов требует обновления\n` +
+    `║ context:  ${context}\n` +
+    `║ HTTP:     ${status ?? '—'}\n` +
+    `║ code:     ${data.code ?? '—'}\n` +
+    `║ message:  ${data.message || error.message}\n` +
+    `║ docs:     https://docs.ozon.ru/api/seller/\n` +
+    `╚═══════════════════════════════════════════════════════════════════════\n`
+  );
+}
+
 async function requestWithRetry(requestFn, options = {}) {
   const { retries = 3, delay = 1000, context = 'Ozon API' } = options;
   let attempt = 0;
@@ -58,6 +118,21 @@ async function requestWithRetry(requestFn, options = {}) {
       return await requestFn();
     } catch (error) {
       attempt++;
+
+      // 1. Устаревший метод — ретраить бессмысленно, сразу наверх.
+      if (isDeprecatedApiResponse(error)) {
+        logDeprecatedEndpoint(context, error);
+        const err = new Error(
+          `Ozon API: метод устарел или заблокирован (${context}). ` +
+          `Ответ: ${error.response?.data?.message || error.message}`
+        );
+        err.deprecatedApi = true;
+        err.context = context;
+        err.ozonResponse = error.response?.data;
+        throw err;
+      }
+
+      // 2. Обычные ретраи
       const isRetryable = error.response
         ? [429, 500, 502, 503, 504].includes(error.response.status)
         : true;
@@ -720,14 +795,14 @@ class OzonService {
       if (lastId) requestBody.last_id = lastId;
 
       const response = await requestWithRetry(
-        () => client.post('/v1/actions/products', requestBody),
+        () => client.post('/v2/actions/products', requestBody),
         { context: `getActionProducts[${storeId}]_${actionId}` }
       );
       const result = response.data.result || {};
       return {
         products: result.products || [],
-        total: result.total || 0,
-        lastId: result.last_id || null
+        lastId: result.last_id || null,
+        total: result.total || 0
       };
     } catch (error) {
       console.error(`[Ozon][store ${storeId}] Ошибка получения товаров акции ${actionId}:`, error.message);
@@ -748,7 +823,7 @@ class OzonService {
       const allResults = [];
       for (const batch of batches) {
         const response = await requestWithRetry(
-          () => client.post('/v1/actions/products/deactivate', {
+          () => client.post('/v2/actions/products/deactivate', {
             action_id: actionId,
             product_ids: batch
           }),
@@ -804,10 +879,23 @@ class OzonService {
         continue;
       }
       await progressCallback(`📦 Найдено ${allProductIds.length} товаров. Удаление...`);
-      const result = await this.deactivateActionProducts(storeId, actionId, allProductIds);
-      totalProductsRemoved += result.product_ids.length;
-      actionsProcessed++;
-      await progressCallback(`✅ Удалено ${result.product_ids.length} товаров.`);
+      try {
+        const result = await this.deactivateActionProducts(storeId, actionId, allProductIds);
+        totalProductsRemoved += result.product_ids.length;
+        actionsProcessed++;
+        await progressCallback(`✅ Удалено ${result.product_ids.length} товаров.`);
+      } catch (err) {
+        if (err.deprecatedApi) {
+          await progressCallback(
+            `⚠️ Ozon заблокировал старый API акций — очистка пропущена до перехода на Promos API.`
+          );
+          console.warn(
+            `[PROMOTION_CLEAN][store ${storeId}] API акций устарел — нужен переход на Promos API`
+          );
+          return { actionsProcessed, totalProductsRemoved, skippedDeprecated: true };
+        }
+        throw err;
+      }
     }
     return { actionsProcessed, totalProductsRemoved };
   }
@@ -816,3 +904,4 @@ class OzonService {
 module.exports = OzonService;
 module.exports.invalidateClient = invalidateClient;
 OzonService.withRateLimit = withRateLimit;
+OzonService.isDeprecatedApiResponse = isDeprecatedApiResponse;
