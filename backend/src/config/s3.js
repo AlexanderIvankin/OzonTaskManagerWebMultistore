@@ -60,9 +60,11 @@ if (hasSeparateBackupCreds) {
     forcePathStyle: true,
   });
 
+  // accessKey НЕ печатаем даже префиксом — он мелькает в pm2-логах,
+  // скриншотах, баг-репортах. Достаточно факта «креды заданы».
   console.log(
     `[S3] Бэкапы: отдельный клиент — endpoint=${backupEndpoint}, ` +
-    `bucket=${BACKUP_BUCKET || '—'}, accessKey=${backupKey ? backupKey.slice(0, 6) + '…' : '—'}`
+    `bucket=${BACKUP_BUCKET || '—'}, credentials=${backupKey ? 'set' : 'NOT SET'}`
   );
 } else {
   console.log(
