@@ -15,10 +15,30 @@ let refreshAttempts = 0;
  * Токен передаётся в handshake.auth.token (см. middleware в backend/src/socket.js).
  */
 export function getSocket(): Socket {
+  const currentToken = localStorage.getItem("accessToken");
+
+  // ⚠️ MULTI-ACCOUNT: localStorage общий между вкладками одного origin.
+  // Если токен изменился (другой аккаунт вошёл, logout), сокет с прежним
+  // auth.token уже «не тот» — пересоздаём.
+  if (socket) {
+    // auth может быть объектом ИЛИ функцией-колбэком (socket.io-client),
+    // поэтому достаём токен через type-guard.
+    const socketToken =
+      typeof socket.auth === "object" && socket.auth !== null
+        ? (socket.auth as { token?: string }).token
+        : undefined;
+
+    if (socketToken !== currentToken) {
+      socket.disconnect();
+      socket = null;
+      refreshAttempts = 0;
+    }
+  }
+
   if (socket) return socket;
 
   socket = io(SERVER_URL, {
-    auth: { token: localStorage.getItem("accessToken") },
+    auth: { token: currentToken },
     transports: ["websocket", "polling"],
   });
 
@@ -125,10 +145,65 @@ export function onSocketConnect(cb: () => void): () => void {
 /**
  * Список оповещений изменился (прочитано/удалено) — для синхронизации бейджа.
  */
-export function onNotificationsChanged(cb: (data: unknown) => void): () => void {
+export function onNotificationsChanged(
+  cb: (data: unknown) => void,
+): () => void {
   const s = getSocket();
   s.on("notifications_changed", cb);
   return () => {
     s.off("notifications_changed", cb);
+  };
+}
+
+// --- CHAT ---
+
+export interface ChatMessageNewPayload {
+  threadId: number;
+  userId: number;
+  authorId: number;
+  authorRole: string;
+  authorName: string;
+  body: string;
+  preview: string;
+  messageId: number;
+  createdAt: number;
+}
+
+export interface ChatThreadDeletedPayload {
+  threadId: number;
+  ownerId?: number;
+}
+
+export function onChatMessageNew(
+  cb: (data: ChatMessageNewPayload) => void,
+): () => void {
+  const s = getSocket();
+  s.on("chat_message_new", cb);
+  return () => {
+    s.off("chat_message_new", cb);
+  };
+}
+
+export function onChatRead(
+  cb: (data: {
+    threadId?: number;
+    by: "user" | "staff";
+    scope?: string;
+  }) => void,
+): () => void {
+  const s = getSocket();
+  s.on("chat_read", cb);
+  return () => {
+    s.off("chat_read", cb);
+  };
+}
+
+export function onChatThreadDeleted(
+  cb: (data: ChatThreadDeletedPayload) => void,
+): () => void {
+  const s = getSocket();
+  s.on("chat_thread_deleted", cb);
+  return () => {
+    s.off("chat_thread_deleted", cb);
   };
 }

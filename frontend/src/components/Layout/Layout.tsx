@@ -19,6 +19,8 @@ import {
   onNotificationNew,
   onNotificationsChanged,
   onSocketConnect,
+  onChatMessageNew,
+  onChatRead,
 } from "../../lib/socket";
 import {
   disablePush,
@@ -29,6 +31,7 @@ import {
   showSystemNotification,
   vibrate,
 } from "../../lib/notify";
+import { chatApi } from "../../api/chat";
 
 export const Layout = () => {
   const user = useSelector((state: RootState) => state.auth.user);
@@ -40,6 +43,9 @@ export const Layout = () => {
 
   // Непрочитанные личные оповещения для бейджа в сайдбаре
   const [unreadCount, setUnreadCount] = useState(0);
+
+  // Непрочитанные сообщения поддержки для бейджа в сайдбаре
+  const [chatUnread, setChatUnread] = useState(0);
 
   // Тема: значение уже применено к <html> (inline-скрипт в index.html)
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme() ?? "light");
@@ -68,6 +74,15 @@ export const Layout = () => {
     try {
       const data = await notificationsApi.unreadCount("mine");
       setUnreadCount(data.count);
+    } catch {
+      // счётчик некритичен
+    }
+  }, []);
+
+  const loadChatUnread = useCallback(async () => {
+    try {
+      const data = await chatApi.unreadCount();
+      setChatUnread(data.total);
     } catch {
       // счётчик некритичен
     }
@@ -117,6 +132,18 @@ export const Layout = () => {
       offConnect();
     };
   }, [user?.role, loadUnread]);
+
+  useEffect(() => {
+    loadChatUnread();
+    const offChat = onChatMessageNew(() => loadChatUnread());
+    const offRead = onChatRead(() => loadChatUnread());
+    const offConnectChat = onSocketConnect(loadChatUnread);
+    return () => {
+      offChat();
+      offRead();
+      offConnectChat();
+    };
+  }, [loadChatUnread]);
 
   // Push, доставленный пока приложение открыто (вкладка в фоне): sw.js шлёт
   // postMessage — проигрываем свой звук/вибрацию и обновляем бейдж.
@@ -266,6 +293,30 @@ export const Layout = () => {
               </Badge>
             )}
           </NavLink>
+
+          {/* «Поддержка» — сквозная, доступна всем (user + staff) */}
+          {user?.role !== "guest" && (
+            <NavLink
+              to="/support"
+              className={({ isActive }) =>
+                `relative flex items-center justify-center md:justify-between px-2 md:px-3 py-2 rounded-md transition-colors ${
+                  isActive
+                    ? "bg-primary/10 font-medium text-primary"
+                    : "hover:bg-accent"
+                }`
+              }
+            >
+              <span className="flex items-center">
+                <span aria-hidden="true">💬</span>
+                <span className="hidden md:inline md:ml-2">Поддержка</span>
+              </span>
+              {chatUnread > 0 && (
+                <Badge className="absolute top-0 right-0 h-4 min-w-4 px-1 text-[10px] leading-none md:static md:h-auto md:min-w-0 md:px-2 md:py-0.5 md:text-xs md:ml-2">
+                  {chatUnread > 99 ? "99+" : chatUnread}
+                </Badge>
+              )}
+            </NavLink>
+          )}
 
           {/* Админка — только в магазинном контексте */}
           {!isGlobalContext &&

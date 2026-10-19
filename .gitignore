@@ -15,6 +15,7 @@ backend/notifications*.db*
 backend/store*.db*
 backend/users*.db*
 backend/models*.db*
+backend/chat*.db*
 
 # Временные файлы smoke-тестов
 backend/tests/tmp/

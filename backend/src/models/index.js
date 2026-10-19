@@ -11,6 +11,11 @@ const Warehouse = require('./Warehouse');
 const ProductStat = require('./ProductStat');
 const OfferModel = require('./OfferModel');
 
+// Чат поддержки (chat.db)
+const ChatThread = require('./ChatThread');
+const ChatMessage = require('./ChatMessage');
+const ChatAttachment = require('./ChatAttachment');
+
 
 
 module.exports = {
@@ -26,4 +31,8 @@ module.exports = {
   Warehouse,
   ProductStat,
   OfferModel,
+
+  ChatThread,
+  ChatMessage,
+  ChatAttachment,
 };

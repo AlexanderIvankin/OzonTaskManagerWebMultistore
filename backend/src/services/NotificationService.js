@@ -187,6 +187,16 @@ const TEMPLATES = {
     },
   }),
 
+  chat_thread_deleted: (p) => ({
+    user: null,
+    staff: {
+      title: `🗑 Переписка с пользователем #${p.ownerId} удалена`,
+      message:
+        `Тред #${p.threadId} (${p.deletedMessages} сообщ.) удалён ` +
+        `${p.deletedByOwner ? 'пользователем' : `сотрудником #${p.deletedBy}`}.`,
+    },
+  }),
+
   deliver_reminder: (p) => {
     const products = Array.isArray(p.details?.products) ? p.details.products : [];
     const shown = products.slice(0, 3);

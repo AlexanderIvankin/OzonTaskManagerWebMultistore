@@ -28,6 +28,7 @@ const config = require('./src/config');
 const stores = require('./src/config/stores');
 const { initDB } = require('./src/config/database');
 const { initNotificationsDB } = require('./src/config/notificationsDatabase');
+const { initChatDB } = require('./src/config/chatDatabase');
 const { storeResolver, resolveStoreId } = require('./src/middlewares/storeResolver');
 const scheduler = require('./src/scheduler');
 const OrderService = require('./src/services/OrderService');
@@ -36,6 +37,7 @@ const userRoutes = require('./src/routes/user');
 const adminRoutes = require('./src/routes/admin');
 const notificationsRoutes = require('./src/routes/notifications');
 const modelsRoutes = require('./src/routes/models');
+const chatRoutes = require('./src/routes/chat');
 const NotificationService = require('./src/services/NotificationService');
 const { initSocket } = require('./src/socket');
 const { apiLimiter, authLimiter } = require('./src/middlewares/rateLimiters');
@@ -152,6 +154,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/models', modelsRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Error handler
 app.use((err, req, res, _next) => {
@@ -177,6 +180,7 @@ initSocket(server);
     console.log('✅ Подключение к БД установлено');
 
     await initNotificationsDB();
+    await initChatDB();
 
     // ---------- ПЛАНИРОВЩИКИ ----------
     // ГЛОБАЛЬНЫЕ (одни на всё приложение)

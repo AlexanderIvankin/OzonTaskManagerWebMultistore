@@ -42,6 +42,7 @@ module.exports = {
   usersDbPath: str('USERS_DB_PATH', './users.db'),
   modelsDbPath: str('MODELS_DB_PATH', './models.db'),
   notificationsDbPath: str('NOTIFICATIONS_DB_PATH', './notifications.db'),
+  chatDbPath: str('CHAT_DB_PATH', './chat.db'),
   legacyDbPath: str('DB_PATH', './bot_web.db'),
 
   // --- JWT ---

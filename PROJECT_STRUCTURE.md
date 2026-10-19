@@ -1,10 +1,10 @@
 # Project Structure
 
-_Auto-generated: 2026-10-14 09:55:42 UTC_
+_Auto-generated: 2026-10-19 18:38:07 UTC_
 
 **Root:** `OzonTaskManagerWebMultistore`  
-**Files shown:** 182  
-**Directories shown:** 38
+**Files shown:** 199  
+**Directories shown:** 41
 
 ## Tree
 
@@ -13,8 +13,12 @@ OzonTaskManagerWebMultistore/
 ├── .vscode/
 │   └── settings.json
 ├── backend/
+│   ├── scripts/
+│   │   ├── prune-push-subs.js
+│   │   └── prune-user-subs.js
 │   ├── src/
 │   │   ├── config/
+│   │   │   ├── chatDatabase.js
 │   │   │   ├── database.js
 │   │   │   ├── envLoader.js
 │   │   │   ├── index.js
@@ -26,6 +30,7 @@ OzonTaskManagerWebMultistore/
 │   │   ├── controllers/
 │   │   │   ├── adminController.js
 │   │   │   ├── authController.js
+│   │   │   ├── chatController.js
 │   │   │   ├── modelsController.js
 │   │   │   └── userController.js
 │   │   ├── middlewares/
@@ -35,6 +40,9 @@ OzonTaskManagerWebMultistore/
 │   │   │   └── storeResolver.js
 │   │   ├── models/
 │   │   │   ├── Assignment.js
+│   │   │   ├── ChatAttachment.js
+│   │   │   ├── ChatMessage.js
+│   │   │   ├── ChatThread.js
 │   │   │   ├── Earnings.js
 │   │   │   ├── EmailVerification.js
 │   │   │   ├── index.js
@@ -49,12 +57,14 @@ OzonTaskManagerWebMultistore/
 │   │   ├── routes/
 │   │   │   ├── admin.js
 │   │   │   ├── auth.js
+│   │   │   ├── chat.js
 │   │   │   ├── models.js
 │   │   │   ├── notifications.js
 │   │   │   └── user.js
 │   │   ├── services/
 │   │   │   ├── AuthService.js
 │   │   │   ├── BackupService.js
+│   │   │   ├── ChatService.js
 │   │   │   ├── CooldownService.js
 │   │   │   ├── EarningsService.js
 │   │   │   ├── EmailService.js
@@ -77,6 +87,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   └── setupTestEnv.js
 │   │   ├── smoke-all-labels.js
 │   │   ├── smoke-auth-error-logging.js
+│   │   ├── smoke-backup-s3.js
 │   │   ├── smoke-cooldowns.js
 │   │   ├── smoke-deliver-reminder.js
 │   │   ├── smoke-earnings-revocation.js
@@ -110,11 +121,15 @@ OzonTaskManagerWebMultistore/
 │   ├── src/
 │   │   ├── api/
 │   │   │   ├── admin.ts
+│   │   │   ├── chat.ts
 │   │   │   ├── index.ts
 │   │   │   ├── notifications.ts
 │   │   │   ├── orders.ts
 │   │   │   └── user.ts
 │   │   ├── components/
+│   │   │   ├── Chat/
+│   │   │   │   ├── ChatWindow.tsx
+│   │   │   │   └── ThreadList.tsx
 │   │   │   ├── Layout/
 │   │   │   │   └── Layout.tsx
 │   │   │   ├── ui/
@@ -141,6 +156,8 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── RoleBadge.tsx
 │   │   │   └── StoreCard.tsx
 │   │   ├── hooks/
+│   │   │   ├── useChatSocket.ts
+│   │   │   ├── useCrossTabAuthGuard.ts
 │   │   │   └── usePushSubscription.ts
 │   │   ├── lib/
 │   │   │   ├── notify.ts
@@ -177,6 +194,8 @@ OzonTaskManagerWebMultistore/
 │   │   │   │   └── Register.tsx
 │   │   │   ├── ResetPassword/
 │   │   │   │   └── ResetPassword.tsx
+│   │   │   ├── Support/
+│   │   │   │   └── Support.tsx
 │   │   │   └── VerifyEmail/
 │   │   │       └── VerifyEmail.tsx
 │   │   ├── store/
@@ -224,6 +243,7 @@ OzonTaskManagerWebMultistore/
 │   │   ├── .env
 │   │   ├── admin.http
 │   │   ├── auth.http
+│   │   ├── chat.http
 │   │   ├── notifications.http
 │   │   └── user.http
 │   └── scripts/

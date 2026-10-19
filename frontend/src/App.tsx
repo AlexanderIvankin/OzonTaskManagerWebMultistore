@@ -24,9 +24,13 @@ import { StaffStats } from "./pages/Admin/StaffStats";
 import { ExportData } from "./pages/Admin/ExportData";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Layout } from "./components/Layout/Layout";
+import { Support } from "./pages/Support/Support";
+import { useCrossTabAuthGuard } from "./hooks/useCrossTabAuthGuard";
 
 function App() {
   const dispatch = useDispatch<AppDispatch>();
+
+  useCrossTabAuthGuard();
 
   useEffect(() => {
     dispatch(restoreSession());
@@ -59,10 +63,32 @@ function App() {
                 ошибки сервера отображаются внутри страницы только персоналу */}
             <Route path="/notifications" element={<Notifications />} />
 
+            {/* Поддержка доступна всем подтверждённым пользователем, сотрудникам и персоналу */}
+            <Route
+              path="/support"
+              element={
+                <ProtectedRoute
+                  allowedRoles={[
+                    "user",
+                    "employee",
+                    "moderator",
+                    "admin",
+                    "god",
+                  ]}
+                >
+                  <Support />
+                </ProtectedRoute>
+              }
+            />
+
             {/* Админка: каждая вкладка — самостоятельный маршрут.
                 Навигация выполняется через Layout, вложенный роутер-хаб
                 с дублирующими вкладками не используется */}
-            <Route element={<ProtectedRoute allowedRoles={["admin", "moderator", "god"]} />}>
+            <Route
+              element={
+                <ProtectedRoute allowedRoles={["admin", "moderator", "god"]} />
+              }
+            >
               <Route path="/admin" element={<AdminPanel />} />
               <Route path="/admin/users" element={<Users />} />
               <Route path="/admin/warehouses" element={<Warehouses />} />

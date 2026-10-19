@@ -1,0 +1,235 @@
+### ============================================================
+###  CHAT — сквозная поддержка (один тред на пользователя)
+### ============================================================
+### Чат ГЛОБАЛЬНЫЙ: доступен с корневого домена и любого поддомена
+### (storeResolver.js: isGlobalPath '/chat/*'). Магазин НЕ ограничивает
+### видимость тредов — персонал всех магазинов видит всех пользователей.
+### req.storeId (по Host) прокидывается В ТЕЛО сообщения как контекст.
+###
+### Персонал чата (staff): god глобально ИЛИ moderator/admin в ЛЮБОМ
+### магазине (is_fired=0). Вычисляется в ChatService.resolveChatIdentity.
+###
+### user    — видит только свой тред.
+### staff   — видит все треды, отвечает в любой.
+
+@baseUrl = http://localhost:5000/api
+
+### userToken  — обычный пользователь (свой тред)
+### staffToken — admin/moderator/god (список тредов + ответ в любой)
+@userToken  = {{$dotenv HTTP_USER_TOKEN}}
+@staffToken = {{$dotenv HTTP_ADMIN_TOKEN}}
+
+### По умолчанию — staff (может и свой тред получить, и весь список)
+@accessToken = {{staffToken}}
+
+### ------------------------------------------------------------
+###  СВОЙ ТРЕД (создаётся при первом обращении)
+### ------------------------------------------------------------
+
+### Получить свой тред.
+### Возвращает: { thread: { id, userId, unreadForUser, unreadForStaff, ... },
+###               unreadForUser, isStaff }
+### id треда нужен для запросов /threads/:id/messages и POST /messages
+### с явным threadId. Скопируйте id из ответа.
+GET {{baseUrl}}/chat/thread
+Authorization: Bearer {{accessToken}}
+
+### ------------------------------------------------------------
+###  ОТПРАВКА СООБЩЕНИЙ
+### ------------------------------------------------------------
+
+### Пользователь пишет в свой тред (threadId не нужен — берётся свой).
+### Если треда нет — создаётся автоматически.
+POST {{baseUrl}}/chat/messages
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "body": "Здравствуйте! Не приходит 3D-модель для заказа 12345-1."
+}
+
+### Пользователь пишет с ЯВНЫМ threadId (то же самое, но с проверкой прав)
+POST {{baseUrl}}/chat/messages
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "threadId": 1,
+  "body": "Уточнение: артикул ARD000001-N."
+}
+
+### Staff отвечает в конкретный тред (threadId ОБЯЗАТЕЛЕН).
+### Ответ: { message, threadId } — если threadId был null, скопируйте из ответа.
+POST {{baseUrl}}/chat/messages
+Authorization: Bearer {{staffToken}}
+Content-Type: application/json
+
+{
+  "threadId": 1,
+  "body": "Добрый день! Модель обновлена, попробуйте скачать заново."
+}
+
+### Ответ с цитатой (replyToId — id сообщения, на которое отвечаем)
+POST {{baseUrl}}/chat/messages
+Authorization: Bearer {{staffToken}}
+Content-Type: application/json
+
+{
+  "threadId": 1,
+  "body": "По заказу 12345-1 — да, обновили только что.",
+  "replyToId": 2
+}
+
+### Пустое сообщение — 400
+POST {{baseUrl}}/chat/messages
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "body": "   "
+}
+
+### Rate-limit: 20 сообщений / мин и 1.5 сек между сообщениями.
+### Второй запрос сразу после первого → 429 «Подождите N сек.»
+POST {{baseUrl}}/chat/messages
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "body": "спам"
+}
+
+### ------------------------------------------------------------
+###  ИСТОРИЯ СООБЩЕНИЙ
+### ------------------------------------------------------------
+
+### Все сообщения треда (по умолчанию limit=50, свежие в конце — ASC).
+GET {{baseUrl}}/chat/threads/1/messages
+Authorization: Bearer {{accessToken}}
+
+### Пагинация «назад во времени»: сообщения с id < beforeId
+GET {{baseUrl}}/chat/threads/1/messages?beforeId=10&limit=50
+Authorization: Bearer {{accessToken}}
+
+### Чужой тред для обычного пользователя → 403
+GET {{baseUrl}}/chat/threads/999/messages
+Authorization: Bearer {{userToken}}
+
+### Несуществующий тред → 404
+GET {{baseUrl}}/chat/threads/999999/messages
+Authorization: Bearer {{staffToken}}
+
+### ------------------------------------------------------------
+###  СПИСОК ТРЕДОВ (только staff)
+### ------------------------------------------------------------
+
+### Все треды, сортировка по updated_at DESC
+### Ответ: { items: [{ id, userId, user, lastMessagePreview, unreadForStaff, ... }],
+###          total, hasMore }
+GET {{baseUrl}}/chat/threads?limit=30
+Authorization: Bearer {{staffToken}}
+
+### Только непрочитанные (unread_for_staff > 0)
+GET {{baseUrl}}/chat/threads?unread=1
+Authorization: Bearer {{staffToken}}
+
+### Пагинация
+GET {{baseUrl}}/chat/threads?limit=30&offset=30
+Authorization: Bearer {{staffToken}}
+
+### Обычный пользователь → 403 «Доступно только персоналу»
+GET {{baseUrl}}/chat/threads
+Authorization: Bearer {{userToken}}
+
+### ------------------------------------------------------------
+###  ПРОЧИТАНО / НЕПРОЧИТАНО
+### ------------------------------------------------------------
+
+### User отмечает СВОЙ тред прочитанным (unread_for_user = 0)
+POST {{baseUrl}}/chat/read
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "threadId": 1
+}
+
+### Staff отмечает конкретный тред прочитанным (unread_for_staff = 0)
+POST {{baseUrl}}/chat/read
+Authorization: Bearer {{staffToken}}
+Content-Type: application/json
+
+{
+  "threadId": 1
+}
+
+### Staff: «прочитать всё» (threadId не передаём)
+POST {{baseUrl}}/chat/read
+Authorization: Bearer {{staffToken}}
+Content-Type: application/json
+
+{}
+
+### User без threadId → 400 (свой тред надо указать явно)
+POST {{baseUrl}}/chat/read
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{}
+
+### ------------------------------------------------------------
+###  СЧЁТЧИКИ ДЛЯ БЕЙДЖА
+### ------------------------------------------------------------
+
+### User: { isStaff: false, total: <unread_for_user>, threads: 0|1 }
+GET {{baseUrl}}/chat/unread-count
+Authorization: Bearer {{userToken}}
+
+### Staff: { isStaff: true, total: <сумма unread_for_staff>, threads: <кол-во тредов> }
+GET {{baseUrl}}/chat/unread-count
+Authorization: Bearer {{staffToken}}
+
+### ------------------------------------------------------------
+###  УДАЛЕНИЕ (приватность)
+### ------------------------------------------------------------
+### Владелец удаляет свой тред (каскадно — сообщения + вложения).
+### God может удалить любой тред. Admin/moderator — только свой.
+###
+### ВАЖНО: chatController теперь принимает threadId ИЗ BODY, И ИЗ QUERY.
+### (query-вариант удобнее — не все http-клиенты передают body у DELETE).
+
+### Владелец удаляет свой тред (query-вариант — надёжнее)
+DELETE {{baseUrl}}/chat/thread?threadId=1
+Authorization: Bearer {{userToken}}
+
+### Владелец удаляет свой тред (body-вариант — как раньше)
+DELETE {{baseUrl}}/chat/thread
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "threadId": 1
+}
+
+### God удаляет чужой тред (только god; admin/moderator → 403)
+DELETE {{baseUrl}}/chat/thread?threadId=2
+Authorization: Bearer {{staffToken}}
+
+### Без threadId → 400
+DELETE {{baseUrl}}/chat/thread
+Authorization: Bearer {{userToken}}
+
+### ------------------------------------------------------------
+###  SMOKE-СЦЕНАРИЙ (порядок для ручной проверки)
+### ------------------------------------------------------------
+### 1. GET  /chat/thread                       (user)   → запомнить thread.id
+### 2. POST /chat/messages  { threadId, body } (user)   → сообщение ушло
+### 3. GET  /chat/unread-count                 (staff)  → total > 0
+### 4. GET  /chat/threads                      (staff)  → тред в списке
+### 5. GET  /chat/threads/:id/messages         (staff)  → видит сообщение
+### 6. POST /chat/messages  { threadId, body } (staff)  → ответ
+### 7. GET  /chat/unread-count                 (user)   → total > 0
+### 8. POST /chat/read      { threadId }       (user)   → unread_for_user=0
+### 9. POST /chat/read      { threadId }       (staff)  → unread_for_staff=0
+### 10. DELETE /chat/thread?threadId=…         (user)   → тред удалён
+### 11. GET  /chat/thread                      (user)   → новый пустой тред

@@ -10,6 +10,7 @@ const UserStore = require('./models/UserStore');
 // NotificationService), ломавший журналирование ошибок в AuthService.
 const { STAFF_ROLES } = require('./config/staffRoles');
 const { resolveStoreId } = require('./middlewares/storeResolver');
+const ChatService = require('./services/ChatService');
 
 let io;
 
@@ -82,77 +83,81 @@ function initSocket(server) {
   });
 
   // Middleware для аутентификации + резолв магазина
+  // --- handshake ---
   io.use(async (socket, next) => {
     const token = socket.handshake.auth.token;
-    if (!token) {
-      return next(new Error('Authentication error'));
-    }
+    if (!token) return next(new Error('Authentication error'));
 
-    // StoreId — по Host того же handshake (фронт на поддомене store1
-    // подключается к сокету на store1). Это тот же resolveStoreId, что и в
-    // HTTP: single-store fallback работает и здесь (dev на localhost).
     const hostname = String(socket.handshake.headers.host || '')
       .split(':')[0].trim().toLowerCase();
-    const storeId = resolveStoreId(hostname);
-    if (!storeId) {
-      return next(new Error('Store not found'));
+    const rootDomain = normalizeRootDomain(process.env.ROOT_DOMAIN);
+    const isRootHost = Boolean(rootDomain &&
+      (hostname === rootDomain || hostname === `www.${rootDomain}`));
+
+    // storeId = null — валидный глобальный контекст (root-домен).
+    // Раньше null → reject; теперь root → null → пропускаем.
+    let storeId = null;
+    if (!isRootHost) {
+      storeId = resolveStoreId(hostname);
+      if (!storeId) return next(new Error('Store not found'));
     }
 
     try {
       const decoded = jwt.verify(token, config.jwtSecret);
       const user = await User.getById(decoded.userId);
-      if (!user) {
-        return next(new Error('User not found'));
-      }
+      if (!user) return next(new Error('User not found'));
 
-      // Роль в магазине — та же логика, что в middlewares/auth.js.
-      // Именно per-store роль определяет, попадёт ли сокет в комнату
-      // 'staff'/'moderators' ЭТОГО магазина.
+      // Per-store роль — только если контекст магазина.
       let effectiveRole;
-      if (user.role === 'god') {
-        effectiveRole = 'god';
-      } else if (user.role === 'guest') {
-        effectiveRole = 'guest';
-      } else {
+      if (user.role === 'god') effectiveRole = 'god';
+      else if (user.role === 'guest') effectiveRole = 'guest';
+      else if (storeId) {
         const storeRecord = await UserStore.get(user.id, storeId);
-        effectiveRole =
-          storeRecord && !storeRecord.is_fired ? storeRecord.role : 'user';
+        effectiveRole = storeRecord && !storeRecord.is_fired ? storeRecord.role : 'user';
+      } else effectiveRole = 'user';
+
+      // Chat-identity — ГЛОБАЛЬНАЯ (сквозной чат). Не роняем подключение
+      // при ошибке: пользователь просто не попадёт в 'chat:staff'.
+      let chatIdentity = { isStaff: false, staffRole: null };
+      try {
+        chatIdentity = await ChatService.resolveChatIdentity(user.id);
+      } catch (err) {
+        console.warn(`[Socket] resolveChatIdentity user=${user.id}:`, err.message);
       }
 
       socket.user = user;
       socket.userId = user.id;
-      socket.storeId = String(storeId);
+      socket.storeId = storeId ? String(storeId) : null;
       socket.role = effectiveRole;
+      socket.chatIdentity = chatIdentity;
       next();
-    } catch (err) {
+    } catch {
       next(new Error('Invalid token'));
     }
   });
 
   io.on('connection', (socket) => {
+    const ctx = socket.storeId ? `store ${socket.storeId}` : 'root';
     console.log(
-      `[Socket][store ${socket.storeId}] Пользователь ${socket.userId} (${socket.role}) подключился`
+      `[Socket][${ctx}] Пользователь ${socket.userId} (${socket.role}` +
+      `${socket.chatIdentity?.isStaff ? `, chat-staff=${socket.chatIdentity.staffRole}` : ''}) подключился`
     );
 
-    // Личная комната — per-store. Одна и та же персона в разных магазинах
-    // заходит через разные поддомены и получает РАЗНЫЕ комнаты: оповещение
-    // магазина 1 не прилетит в открытую вкладку магазина 2.
-    socket.join(`store_${socket.storeId}:user_${socket.userId}`);
-
-    // Комната персонала магазина
-    if (STAFF_ROLES.includes(socket.role)) {
-      socket.join(`store_${socket.storeId}:staff`);
+    // --- Per-store комнаты (только для магазинного контекста) ---
+    if (socket.storeId) {
+      socket.join(`store_${socket.storeId}:user_${socket.userId}`);
+      if (STAFF_ROLES.includes(socket.role)) socket.join(`store_${socket.storeId}:staff`);
+      if (socket.role === 'moderator') socket.join(`store_${socket.storeId}:moderators`);
     }
 
-    // Live-оповещения о действиях сотрудников — только модераторам магазина
-    if (socket.role === 'moderator') {
-      socket.join(`store_${socket.storeId}:moderators`);
-    }
+    // --- Chat-комнаты (ГЛОБАЛЬНЫЕ, сквозные) ---
+    // Одна персона с N вкладок на разных поддоменах = N сокетов в одной
+    // комнате chat:user_<id> — все N получат событие. Это ок.
+    socket.join(`chat:user_${socket.userId}`);
+    if (socket.chatIdentity?.isStaff) socket.join('chat:staff');
 
     socket.on('disconnect', () => {
-      console.log(
-        `[Socket][store ${socket.storeId}] Пользователь ${socket.userId} отключился`
-      );
+      console.log(`[Socket][${ctx}] Пользователь ${socket.userId} отключился`);
     });
   });
 
@@ -218,12 +223,46 @@ function notifyUsers(storeId, userIds, event, data) {
   return delivered;
 }
 
+// ============================================================================
+//  CHAT HELPERS — глобальные (не per-store)
+//  Все возвращают true, если хотя бы один адресат онлайн (сигнал для push
+//  на этапе 3 — если false, NotificationService шлёт Web Push).
+// ============================================================================
+
+function notifyChatStaff(event, data) {
+  if (!io) return false;
+  const room = io.sockets.adapter.rooms.get('chat:staff');
+  if (!room || room.size === 0) return false;
+  io.to('chat:staff').emit(event, data);
+  return true;
+}
+
+function notifyChatUser(userId, event, data) {
+  if (!io) return false;
+  const room = `chat:user_${userId}`;
+  const r = io.sockets.adapter.rooms.get(room);
+  if (!r || r.size === 0) return false;
+  io.to(room).emit(event, data);
+  return true;
+}
+
+function isChatUserOnline(userId) {
+  if (!io) return false;
+  const room = io.sockets.adapter.rooms.get(`chat:user_${userId}`);
+  return Boolean(room && room.size > 0);
+}
+
 module.exports = {
   initSocket,
   getIO,
+  
   notifyModerators,
   notifyStaffLive,
   notifyUser,
   notifyUsers,
   isUserOnline,
+
+  notifyChatStaff,
+  notifyChatUser,
+  isChatUserOnline,
 };
