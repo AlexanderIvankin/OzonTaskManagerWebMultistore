@@ -9,6 +9,8 @@ export interface ChatThreadDTO {
   lastMessageAuthor: "user" | "staff" | null;
   unreadForUser: number;
   unreadForStaff: number;
+  userLastReadMessageId: number;
+  staffLastReadMessageId: number;
   status: "open" | "closed";
 }
 
@@ -21,6 +23,8 @@ export interface ChatAttachmentDTO {
   fileName: string;
   mimeType: string;
   fileSize: number;
+  url: string;
+  previewUrl: string | null;
 }
 
 export interface ChatMessageDTO {
@@ -99,10 +103,26 @@ export const chatApi = {
     threadId?: number;
     body: string;
     replyToId?: number;
+    attachmentIds?: number[];
   }): Promise<SendMessageResponse> {
     const { data } = await api.post<SendMessageResponse>(
       "/chat/messages",
       payload,
+    );
+    return data;
+  },
+  // Загрузка
+  async uploadAttachment(
+    threadId: number,
+    file: File,
+  ): Promise<ChatAttachmentDTO> {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("threadId", String(threadId));
+    const { data } = await api.post<ChatAttachmentDTO>(
+      "/chat/attachments",
+      form,
+      { headers: { "Content-Type": "multipart/form-data" } },
     );
     return data;
   },

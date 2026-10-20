@@ -184,20 +184,6 @@ export function onChatMessageNew(
   };
 }
 
-export function onChatRead(
-  cb: (data: {
-    threadId?: number;
-    by: "user" | "staff";
-    scope?: string;
-  }) => void,
-): () => void {
-  const s = getSocket();
-  s.on("chat_read", cb);
-  return () => {
-    s.off("chat_read", cb);
-  };
-}
-
 export function onChatThreadDeleted(
   cb: (data: ChatThreadDeletedPayload) => void,
 ): () => void {
@@ -206,4 +192,45 @@ export function onChatThreadDeleted(
   return () => {
     s.off("chat_thread_deleted", cb);
   };
+}
+
+// --- CHAT: read receipts + typing ---
+
+export interface ChatReadPayload {
+  threadId?: number;
+  by: "user" | "staff";
+  scope?: string;
+  lastReadMessageId?: number;
+}
+
+export interface ChatTypingPayload {
+  threadId: number;
+  authorId: number;
+  authorName: string;
+  isStaff: boolean;
+}
+
+export function onChatRead(cb: (data: ChatReadPayload) => void): () => void {
+  const s = getSocket();
+  s.on("chat_read", cb);
+  return () => {
+    s.off("chat_read", cb);
+  };
+}
+
+export function onChatTyping(
+  cb: (data: ChatTypingPayload) => void,
+): () => void {
+  const s = getSocket();
+  s.on("chat_typing", cb);
+  return () => {
+    s.off("chat_typing", cb);
+  };
+}
+
+/** Отправить «печатаю» на сервер (throttle — на вызывающей стороне). */
+export function emitChatTyping(threadId: number): void {
+  const s = getSocket();
+  if (!s.connected) return;
+  s.emit("chat_typing", { threadId });
 }

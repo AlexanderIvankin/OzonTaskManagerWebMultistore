@@ -93,6 +93,18 @@ async function createChatTables(db) {
     "CREATE INDEX IF NOT EXISTS idx_chat_threads_staff_unread ON chat_threads(unread_for_staff) WHERE unread_for_staff > 0"
   );
 
+  // Read receipts (v2): id последнего сообщения, прочитанного каждой стороной.
+  // NULL = ещё ничего не читал. Используется фронтом для ✓/✓✓.
+  const threadCols = await db.all('PRAGMA table_info(chat_threads)');
+  if (!threadCols.some((c) => c.name === 'user_last_read_message_id')) {
+    await db.exec('ALTER TABLE chat_threads ADD COLUMN user_last_read_message_id INTEGER');
+    console.log('✅ chat_threads: + user_last_read_message_id');
+  }
+  if (!threadCols.some((c) => c.name === 'staff_last_read_message_id')) {
+    await db.exec('ALTER TABLE chat_threads ADD COLUMN staff_last_read_message_id INTEGER');
+    console.log('✅ chat_threads: + staff_last_read_message_id');
+  }
+
   // --- Сообщения ---
   // author_role фиксируется на момент отправки ('user' | 'moderator' |
   // 'admin' | 'god'). Позволяет истории показывать роль «тогда», даже если
@@ -121,24 +133,65 @@ async function createChatTables(db) {
     'CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at)'
   );
 
-  // --- Вложения (схема готова сейчас, upload — этап 5) ---
-  // storage_path: относительный путь на диске (outputs/chat/thread-N/...).
-  // preview_path: превью для картинок (опционально, генерируется позже).
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS chat_attachments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      message_id INTEGER NOT NULL,
-      file_name TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      file_size INTEGER NOT NULL,
-      storage_path TEXT NOT NULL,
-      preview_path TEXT,
-      created_at INTEGER NOT NULL,
-      FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
-    )
-  `);
+  // --- Вложения (v2: message_id NULLABLE + uploader_id + thread_id) ---
+  // Сначала проверим, существует ли таблица и nullable ли message_id.
+  // Если она старая (message_id NOT NULL) — пересоздаём через temp-таблицу.
+  const attCols = await db.all('PRAGMA table_info(chat_attachments)');
+  const attExists = attCols.length > 0;
+  const msgIdCol = attCols.find((c) => c.name === 'message_id');
+  const needsMigration = attExists && msgIdCol && msgIdCol.notnull === 1;
+
+  if (needsMigration) {
+    console.log('🔄 chat_attachments: миграция message_id → NULLABLE + новые колонки');
+    await db.exec(`
+      CREATE TABLE chat_attachments_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER,
+        thread_id INTEGER,
+        uploader_id INTEGER,
+        file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        storage_path TEXT NOT NULL,
+        preview_path TEXT,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+      )
+    `);
+    await db.exec(`
+      INSERT INTO chat_attachments_new
+        (id, message_id, thread_id, uploader_id, file_name, mime_type, file_size,
+         storage_path, preview_path, created_at)
+      SELECT id, message_id, NULL, NULL, file_name, mime_type, file_size,
+             storage_path, preview_path, created_at
+      FROM chat_attachments
+    `);
+    await db.exec('DROP TABLE chat_attachments');
+    await db.exec('ALTER TABLE chat_attachments_new RENAME TO chat_attachments');
+    console.log('✅ chat_attachments: миграция завершена');
+  } else if (!attExists) {
+    await db.exec(`
+      CREATE TABLE chat_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER,
+        thread_id INTEGER,
+        uploader_id INTEGER,
+        file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        storage_path TEXT NOT NULL,
+        preview_path TEXT,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+      )
+    `);
+  }
+
   await db.exec(
     'CREATE INDEX IF NOT EXISTS idx_chat_attachments_message ON chat_attachments(message_id)'
+  );
+  await db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_chat_attachments_orphan ON chat_attachments(created_at) WHERE message_id IS NULL'
   );
 
   console.log('✅ Таблицы чата созданы/проверены');

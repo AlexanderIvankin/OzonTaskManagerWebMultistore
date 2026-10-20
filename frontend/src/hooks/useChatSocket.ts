@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ChatMessageNewPayload,
+  ChatReadPayload,
   ChatThreadDeletedPayload,
   isSocketConnected,
   onChatMessageNew,
@@ -12,11 +13,7 @@ import {
 
 interface Handlers {
   onMessageNew?: (data: ChatMessageNewPayload) => void;
-  onRead?: (data: {
-    threadId?: number;
-    by: "user" | "staff";
-    scope?: string;
-  }) => void;
+  onRead?: (data: ChatReadPayload) => void;
   onThreadDeleted?: (data: ChatThreadDeletedPayload) => void;
 }
 

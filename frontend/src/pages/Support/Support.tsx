@@ -1,5 +1,5 @@
 // src/pages/Support/Support.tsx
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useSelector } from "react-redux";
 import { RootState } from "../../store";
 import { toast } from "sonner";
@@ -8,11 +8,16 @@ import {
   ChatMessageDTO,
   ChatThreadDTO,
   StaffThreadDTO,
+  ChatAttachmentDTO,
 } from "../../api/chat";
 import { ChatWindow } from "../../components/Chat/ChatWindow";
 import { ThreadList } from "../../components/Chat/ThreadList";
 import { useChatSocket } from "../../hooks/useChatSocket";
-import { isSocketConnected } from "../../lib/socket";
+import {
+  isSocketConnected,
+  emitChatTyping,
+  onChatTyping,
+} from "../../lib/socket";
 
 const PAGE_SIZE = 50;
 const THREADS_PAGE = 30;
@@ -37,6 +42,14 @@ export const Support = () => {
 
   const [activeThreadId, setActiveThreadId] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
+
+  const [typingName, setTypingName] = useState<string | null>(null);
+  const typingTimeoutRef = useRef<number | null>(null);
+
+  const [pendingAttachments, setPendingAttachments] = useState<
+    ChatAttachmentDTO[]
+  >([]);
+  const [uploading, setUploading] = useState(false);
 
   // ---------- Загрузка списка тредов (staff) ----------
   const loadThreads = useCallback(async (offset = 0) => {
@@ -79,12 +92,14 @@ export const Support = () => {
         }
         setMessagesHasMore(data.messages.length === PAGE_SIZE);
         // Mark read
-        await chatApi.markRead(threadId).catch(() => {});
-        setThreads((prev) =>
-          prev.map((t) =>
-            t.id === threadId ? { ...t, unreadForStaff: 0 } : t,
-          ),
-        );
+        if (!beforeId) {
+          await chatApi.markRead(threadId).catch(() => {});
+          setThreads((prev) =>
+            prev.map((t) =>
+              t.id === threadId ? { ...t, unreadForStaff: 0 } : t,
+            ),
+          );
+        }
       } catch (err: any) {
         toast.error(
           err?.response?.data?.error ||
@@ -134,6 +149,36 @@ export const Support = () => {
     void loadMessages(activeThreadId);
   }, [activeThreadId, loadMessages]);
 
+  // ---------- Смена состояния печати ----------
+  useEffect(() => {
+    const off = onChatTyping((data) => {
+      // Показываем только в активном треде и только если печатает НЕ данный пользователь
+      if (data.threadId !== activeThreadId) return;
+      if (data.authorId === currentUserId) return;
+
+      const label = data.isStaff && !isStaff ? "Поддержка" : data.authorName;
+      setTypingName(label);
+
+      if (typingTimeoutRef.current)
+        window.clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = window.setTimeout(() => {
+        setTypingName(null);
+        typingTimeoutRef.current = null;
+      }, 4000);
+    });
+    return () => {
+      off();
+      if (typingTimeoutRef.current)
+        window.clearTimeout(typingTimeoutRef.current);
+    };
+  }, [activeThreadId, currentUserId, isStaff]);
+
+  // ---------- Сброс печати при смене thread ----------
+  useEffect(() => {
+    setTypingName(null);
+    setPendingAttachments([]);
+  }, [activeThreadId]);
+
   // ---------- Socket ----------
   useChatSocket({
     onMessageNew: (msg) => {
@@ -173,7 +218,7 @@ export const Support = () => {
               id: msg.messageId,
               threadId: msg.threadId,
               authorId: msg.authorId,
-              authorRole: msg.authorRole as any,
+              authorRole: msg.authorRole as ChatMessageDTO["authorRole"],
               author: { username: null, displayName: msg.authorName },
               body: msg.body,
               storeId: null,
@@ -191,6 +236,56 @@ export const Support = () => {
         }
       }
     },
+
+    onRead: (data) => {
+      if (!data.threadId) return;
+      setThread((prev) =>
+        prev && prev.id === data.threadId
+          ? {
+              ...prev,
+              userLastReadMessageId:
+                data.by === "user"
+                  ? Math.max(
+                      prev.userLastReadMessageId,
+                      data.lastReadMessageId || 0,
+                    )
+                  : prev.userLastReadMessageId,
+              staffLastReadMessageId:
+                data.by === "staff"
+                  ? Math.max(
+                      prev.staffLastReadMessageId,
+                      data.lastReadMessageId || 0,
+                    )
+                  : prev.staffLastReadMessageId,
+            }
+          : prev,
+      );
+      // в списке staff — тоже обновим (для бейджей не критично, но пусть)
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.id === data.threadId
+            ? {
+                ...t,
+                userLastReadMessageId:
+                  data.by === "user"
+                    ? Math.max(
+                        t.userLastReadMessageId,
+                        data.lastReadMessageId || 0,
+                      )
+                    : t.userLastReadMessageId,
+                staffLastReadMessageId:
+                  data.by === "staff"
+                    ? Math.max(
+                        t.staffLastReadMessageId,
+                        data.lastReadMessageId || 0,
+                      )
+                    : t.staffLastReadMessageId,
+              }
+            : t,
+        ),
+      );
+    },
+
     onThreadDeleted: (data) => {
       if (data.threadId === activeThreadId) {
         setActiveThreadId(null);
@@ -203,13 +298,16 @@ export const Support = () => {
 
   // ---------- Отправка ----------
   const handleSend = async (body: string) => {
-    if (!activeThreadId || !body.trim()) return;
+    if (!activeThreadId) return;
+    if (!body.trim() && pendingAttachments.length === 0) return;
     setSending(true);
     try {
       const res = await chatApi.sendMessage({
         threadId: activeThreadId,
         body: body.trim(),
+        attachmentIds: pendingAttachments.map((a) => a.id),
       });
+      setPendingAttachments([]); // очищаем draft
 
       // Fallback: если socket не подключён — своё сообщение по событию не придёт,
       // добавляем вручную (с dedup на случай гонки).
@@ -246,6 +344,35 @@ export const Support = () => {
     } finally {
       setSending(false);
     }
+  };
+
+  const handleUploadFile = async (file: File) => {
+    if (!activeThreadId) return;
+    if (pendingAttachments.length >= 3) {
+      toast.error("Максимум 3 вложения на сообщение");
+      return;
+    }
+    setUploading(true);
+    try {
+      const att = await chatApi.uploadAttachment(activeThreadId, file);
+      setPendingAttachments((prev) => [...prev, att]);
+    } catch (err: any) {
+      const msg =
+        err?.response?.status === 413
+          ? "Файл слишком большой"
+          : err?.response?.status === 415
+            ? "Недопустимый тип файла"
+            : err?.response?.data?.error ||
+              err.message ||
+              "Не удалось загрузить";
+      toast.error(msg);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRemoveAttachment = (id: number) => {
+    setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
   // ---------- Загрузить ещё (staff) ----------
@@ -290,6 +417,14 @@ export const Support = () => {
             hasMore={messagesHasMore}
             loading={messagesLoading}
             sending={sending}
+            typingName={typingName}
+            onTyping={() => {
+              if (activeThreadId) emitChatTyping(activeThreadId);
+            }}
+            pendingAttachments={pendingAttachments}
+            onUploadFile={handleUploadFile}
+            onRemovePendingAttachment={handleRemoveAttachment}
+            uploading={uploading}
             emptyText="👋 Напишите первое сообщение — поддержка ответит как можно скорее."
           />
         </div>
@@ -343,6 +478,14 @@ export const Support = () => {
               hasMore={messagesHasMore}
               loading={messagesLoading}
               sending={sending}
+              typingName={typingName}
+              onTyping={() => {
+                if (activeThreadId) emitChatTyping(activeThreadId);
+              }}
+              pendingAttachments={pendingAttachments}
+              onUploadFile={handleUploadFile}
+              onRemovePendingAttachment={handleRemoveAttachment}
+              uploading={uploading}
               onBack={() => setActiveThreadId(null)}
               emptyText="Начните диалог — напишите первое сообщение пользователю."
             />

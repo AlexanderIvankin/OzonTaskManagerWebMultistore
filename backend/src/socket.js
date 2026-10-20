@@ -156,6 +156,41 @@ function initSocket(server) {
     socket.join(`chat:user_${socket.userId}`);
     if (socket.chatIdentity?.isStaff) socket.join('chat:staff');
 
+    // ── CHAT: печатает… (client → server, ретрансляция противоположной стороне)
+    socket.on('chat_typing', async ({ threadId: rawId } = {}) => {
+      try {
+        const threadId = parseInt(rawId, 10);
+        if (!threadId) return;
+
+        const { ChatThread } = require('./models');
+        const thread = await ChatThread.getById(threadId);
+        if (!thread) return;
+
+        const isOwner = thread.user_id === socket.userId;
+        const isStaff = Boolean(socket.chatIdentity?.isStaff);
+        if (!isOwner && !isStaff) return; // чужой человек
+
+        const authorName = isStaff
+          ? 'Поддержка'
+          : (socket.user.display_name || socket.user.name || socket.user.username || `user#${socket.userId}`);
+
+        const payload = {
+          threadId,
+          authorId: socket.userId,
+          authorName,
+          isStaff,
+        };
+
+        if (isOwner) {
+          io.to('chat:staff').emit('chat_typing', payload);
+        } else {
+          io.to(`chat:user_${thread.user_id}`).emit('chat_typing', payload);
+        }
+      } catch {
+        /* тишина — typing не критичен */
+      }
+    });
+
     socket.on('disconnect', () => {
       console.log(`[Socket][${ctx}] Пользователь ${socket.userId} отключился`);
     });
@@ -255,7 +290,7 @@ function isChatUserOnline(userId) {
 module.exports = {
   initSocket,
   getIO,
-  
+
   notifyModerators,
   notifyStaffLive,
   notifyUser,

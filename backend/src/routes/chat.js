@@ -37,4 +37,8 @@ router.get('/unread-count', chatController.unreadCounts);
 // Удалить свой тред (приватность)
 router.delete('/thread', chatController.deleteThread);
 
+// Вложения
+router.post('/attachments', chatController.uploadMiddleware, chatController.uploadAttachment);
+router.get('/attachments/:id', chatController.downloadAttachment);
+
 module.exports = router;

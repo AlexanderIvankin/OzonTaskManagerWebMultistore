@@ -165,9 +165,12 @@ class ChatService {
    *   payloadForTarget: object,
    * }>}
    */
-  static async sendMessage({ userId, threadId, body, storeId = null, replyToId = null }) {
+  static async sendMessage({ userId, threadId, body, storeId = null, replyToId = null, attachmentIds = [] }) {
     const trimmedBody = String(body || '').trim();
-    if (!trimmedBody) {
+    const hasAttachments = Array.isArray(attachmentIds) && attachmentIds.length > 0;
+
+    // Пустое сообщение разрешено ТОЛЬКО если есть вложения
+    if (!trimmedBody && !hasAttachments) {
       const err = new Error('Сообщение пустое');
       err.status = 400;
       throw err;
@@ -177,8 +180,13 @@ class ChatService {
       err.status = 400;
       throw err;
     }
+    if (hasAttachments && attachmentIds.length > 3) {
+      const err = new Error('Максимум 3 вложения на сообщение');
+      err.status = 400;
+      throw err;
+    }
 
-    // Rate-limit
+    // rate-limit — без изменений
     const now = Date.now();
     pruneRateLimit(now);
     const stamps = rateLimitStore.get(userId) || [];
@@ -196,30 +204,21 @@ class ChatService {
       throw err;
     }
 
-    // Кто автор
     const identity = await resolveChatIdentity(userId);
     const authorRole = identity.isStaff ? (identity.staffRole || 'moderator') : 'user';
 
-    // Тред
     let thread = await ChatThread.getById(threadId);
     if (!thread) {
-      // Для user — если треда нет, создаём его собственный (id может быть null/undefined)
-      if (!identity.isStaff) {
-        thread = await ChatThread.ensureForUser(userId);
-      } else {
-        const err = new Error('Тред не найден');
-        err.status = 404;
-        throw err;
-      }
+      if (!identity.isStaff) thread = await ChatThread.ensureForUser(userId);
+      else { const err = new Error('Тред не найден'); err.status = 404; throw err; }
     }
-
-    // Права
     if (!identity.isStaff && thread.user_id !== userId) {
       const err = new Error('Нет доступа к этому треду');
       err.status = 403;
       throw err;
     }
 
+    // Создаём сообщение. body может быть ''
     const message = await ChatMessage.create({
       threadId: thread.id,
       authorId: userId,
@@ -229,21 +228,32 @@ class ChatService {
       replyToId,
     });
 
-    // Кому слать «живое» оповещение (этап 2 — emit'ы):
-    //   • user написал  → все staff
-    //   • staff написал → конкретный user
-    const targetUnread = identity.isStaff ? 'user' : 'staff';
+    // Привязка вложений (атомарно с точки зрения пользователя: если что-то
+    // не так — бросаем 400/403, сообщение уже создано, но пустое — это ОК,
+    // фронт откатит UI. Альтернатива — транзакция, но SQLite + наш паттерн
+    // (BEGIN IMMEDIATE в ChatMessage.create) усложнит связку с файлами на диске).
+    if (hasAttachments) {
+      await ChatAttachment.attachToMessage({
+        attachmentIds,
+        messageId: message.id,
+        threadId: thread.id,
+        uploaderId: userId,
+      });
+    }
 
-    // Rate-limit: фиксируем отправку
+    // Готовим DTO с вложениями
+    const attachmentsMap = await ChatAttachment.listByMessageIds([message.id]);
+    const attachments = attachmentsMap.get(message.id) || [];
+
+    const targetUnread = identity.isStaff ? 'user' : 'staff';
     recent.push(now);
     rateLimitStore.set(userId, recent);
 
     return {
-      message: this._messageDto(message, []),
+      message: this._messageDto(message, attachments),
       threadId: thread.id,
       authorRole,
       targetUnread,
-      // Payload-заготовка для Socket.IO (этап 2):
       payloadForTarget: {
         threadId: thread.id,
         userId: thread.user_id,
@@ -251,7 +261,9 @@ class ChatService {
         authorRole,
         authorName: identity.displayName,
         body: message.body,
-        preview: trimmedBody.length > 100 ? trimmedBody.slice(0, 99) + '…' : trimmedBody,
+        preview: message.body
+          ? (trimmedBody.length > 100 ? trimmedBody.slice(0, 99) + '…' : trimmedBody)
+          : (attachments.length ? `📎 ${attachments.length} вложение` : ''),
         messageId: message.id,
         createdAt: message.created_at,
       },
@@ -276,8 +288,17 @@ class ChatService {
       }
       // staff — все треды
       const db = await require('../config/chatDatabase').getChatDB();
+      const maxRow = await db.get(
+        'SELECT MAX(id) AS maxId FROM chat_messages WHERE thread_id IN (SELECT id FROM chat_threads WHERE status = ?)',
+        'open'
+      );
+      await db.run("UPDATE chat_threads SET unread_for_staff = 0 WHERE status = 'open'");
       await db.run(
-        "UPDATE chat_threads SET unread_for_staff = 0 WHERE status = 'open'"
+        `UPDATE chat_threads
+         SET staff_last_read_message_id = (
+           SELECT COALESCE(MAX(id), 0) FROM chat_messages cm WHERE cm.thread_id = chat_threads.id
+         )
+         WHERE status = 'open'`
       );
       return { ok: true, scope: 'all-staff' };
     }
@@ -294,8 +315,23 @@ class ChatService {
       throw err;
     }
 
+    // Максимум id в треде — это и есть «последнее прочитанное».
+    const db = require('../config/chatDatabase').getChatDB();
+    const row = await db.get(
+      'SELECT COALESCE(MAX(id), 0) AS maxId FROM chat_messages WHERE thread_id = ?',
+      threadId
+    );
+    const maxId = row?.maxId || 0;
+
     await ChatThread.clearUnread(threadId, isStaff ? 'staff' : 'user');
-    return { ok: true, scope: isStaff ? 'staff' : 'user', threadId };
+    await ChatThread.markLastRead(threadId, isStaff ? 'staff' : 'user', maxId);
+
+    return {
+      ok: true,
+      scope: isStaff ? 'staff' : 'user',
+      threadId,
+      lastReadMessageId: maxId,
+    };
   }
 
   /**
@@ -371,6 +407,8 @@ class ChatService {
       lastMessageAuthor: t.last_message_author,
       unreadForUser: t.unread_for_user,
       unreadForStaff: t.unread_for_staff,
+      userLastReadMessageId: t.user_last_read_message_id || 0,
+      staffLastReadMessageId: t.staff_last_read_message_id || 0,
       status: t.status,
     };
   }
@@ -407,6 +445,10 @@ class ChatService {
         fileName: a.file_name,
         mimeType: a.mime_type,
         fileSize: a.file_size,
+        url: `/api/chat/attachments/${a.id}`,
+        previewUrl: a.mime_type && a.mime_type.startsWith('image/')
+          ? `/api/chat/attachments/${a.id}?inline=1`
+          : null,
       })),
     };
   }

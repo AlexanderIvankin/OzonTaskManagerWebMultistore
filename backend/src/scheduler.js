@@ -75,14 +75,15 @@ function createDailyGate(maxAttempts = 10) {
 function createMonthlyGate(maxAttempts = 10) {
   let lastSuccessMonth = null;
   let attempts = 0;
+  let lastAttemptMonth = null;
   return {
     isDone() { return lastSuccessMonth === currentMonthKey(); },
     canAttempt() {
-      if (lastSuccessMonth !== currentMonthKey()) attempts = 0;
+      if (lastAttemptMonth !== currentMonthKey()) attempts = 0;
       return attempts < maxAttempts;
     },
     onSuccess() { lastSuccessMonth = currentMonthKey(); attempts = 0; },
-    onFailure() { attempts += 1; },
+    onFailure() { attempts += 1; lastAttemptMonth = currentMonthKey(); },
   };
 }
 
@@ -991,32 +992,101 @@ function stopGuestCleanupChecker() {
   isGuestCleanupRunning = false;
 }
 
+let chatOrphanCleanupInterval = null;
+
+function startChatOrphanCleanup() {
+  if (chatOrphanCleanupInterval) clearInterval(chatOrphanCleanupInterval);
+  chatOrphanCleanupInterval = setInterval(cleanupChatOrphans, 60 * 60 * 1000);
+  console.log('✅ Cleanup orphan-вложений чата запущен');
+}
+
+function stopChatOrphanCleanup() {
+  if (chatOrphanCleanupInterval) {
+    clearInterval(chatOrphanCleanupInterval);
+    chatOrphanCleanupInterval = null;
+  }
+}
+
+async function cleanupChatOrphans() {
+  try {
+    const { ChatAttachment } = require('./models');
+    const ChatStorageService = require('./services/ChatStorageService');
+    const ONE_HOUR = 60 * 60 * 1000;
+    const paths = await ChatAttachment.deleteOrphansOlderThan(ONE_HOUR);
+    for (const p of paths) await ChatStorageService.deleteFile(p);
+    if (paths.length) {
+      console.log(`[Scheduler] Chat cleanup: удалено ${paths.length} orphan-вложений`);
+    }
+  } catch (err) {
+    console.error('[Scheduler] cleanupChatOrphans:', err.message);
+  }
+}
+
+/**
+ * Остановить ВСЕ таймеры планировщика. Идемпотентно.
+ * Вызывается из graceful shutdown в server.js. In-flight итерации
+ * не прерываем — они доработают; force-exit-таймаут в server.js
+ * прибьёт процесс через 10 сек, если что-то зависло.
+ */
+function stopAll() {
+  try { stopOrderChecker(); } catch { /* ignore */ }
+  try { stopCooldownCleaner(); } catch { /* ignore */ }
+  try { stopDailyBackupChecker(); } catch { /* ignore */ }
+  try { stopDailyPromotionCleaner(); } catch { /* ignore */ }
+  try { stopMonthlyExportChecker(); } catch { /* ignore */ }
+  try { stopNotificationsCleanup(); } catch { /* ignore */ }
+  try { stopAwaitingDeliverReminderChecker(); } catch { /* ignore */ }
+  try { stopCancelledOrdersChecker(); } catch { /* ignore */ }
+  try { stopOrderStatusSyncChecker(); } catch { /* ignore */ }
+  try { stopModelsMaintenanceChecker(); } catch { /* ignore */ }
+  try { stopGuestCleanupChecker(); } catch { /* ignore */ }
+  try { stopChatOrphanCleanup(); } catch { /* ignore */ }
+  console.log('[SCHEDULER] Все таймеры остановлены');
+}
+
 module.exports = {
   startOrderChecker,
   stopOrderChecker,
+
   pauseChecker,
   resumeChecker,
   isCheckerPaused,
+
   startCooldownCleaner,
   stopCooldownCleaner,
+
   startDailyBackupChecker,
   stopDailyBackupChecker,
+
   startDailyPromotionCleaner,
   stopDailyPromotionCleaner,
+
   startMonthlyExportChecker,
   stopMonthlyExportChecker,
+
   startNotificationsCleanup,
   stopNotificationsCleanup,
+
   startAwaitingDeliverReminderChecker,
   stopAwaitingDeliverReminderChecker,
   runAwaitingDeliverReminder,
+
   startCancelledOrdersChecker,
   stopCancelledOrdersChecker,
   runCancelledOrdersEarningsRevocation,
+
   startOrderStatusSyncChecker,
   stopOrderStatusSyncChecker,
+
   startModelsMaintenanceChecker,
   stopModelsMaintenanceChecker,
+
   startGuestCleanupChecker,
   stopGuestCleanupChecker,
+
+  startChatOrphanCleanup,
+  stopChatOrphanCleanup,
+  cleanupChatOrphans,
+
+  stopAll,
 };

@@ -26,9 +26,9 @@ const helmet = require('helmet');
 
 const config = require('./src/config');
 const stores = require('./src/config/stores');
-const { initDB } = require('./src/config/database');
-const { initNotificationsDB } = require('./src/config/notificationsDatabase');
-const { initChatDB } = require('./src/config/chatDatabase');
+const { initDB, closeAll } = require('./src/config/database');
+const { initNotificationsDB, closeNotificationsDB } = require('./src/config/notificationsDatabase');
+const { initChatDB, closeChatDB } = require('./src/config/chatDatabase');
 const { storeResolver, resolveStoreId } = require('./src/middlewares/storeResolver');
 const scheduler = require('./src/scheduler');
 const OrderService = require('./src/services/OrderService');
@@ -39,7 +39,7 @@ const notificationsRoutes = require('./src/routes/notifications');
 const modelsRoutes = require('./src/routes/models');
 const chatRoutes = require('./src/routes/chat');
 const NotificationService = require('./src/services/NotificationService');
-const { initSocket } = require('./src/socket');
+const { initSocket, getIO } = require('./src/socket');
 const { apiLimiter, authLimiter } = require('./src/middlewares/rateLimiters');
 
 const app = express();
@@ -189,6 +189,7 @@ initSocket(server);
     scheduler.startNotificationsCleanup();
     scheduler.startModelsMaintenanceChecker();
     scheduler.startGuestCleanupChecker();
+    scheduler.startChatOrphanCleanup();
 
     // PER-STORE (проходят циклом по всем магазинам последовательно)
     const SYNC_ORDERS_TIME = parseInt(process.env.SYNC_ORDERS_TIME, 10) || 60;
@@ -233,6 +234,80 @@ initSocket(server);
         }
       }
     }, 5000);
+
+    // ---------- GRACEFUL SHUTDOWN ----------
+    // PM2 / systemd / docker посылают SIGTERM при рестарте/деплое.
+    // SIGINT — Ctrl+C в dev. По умолчанию Node просто выходит, не завершив
+    // in-flight операции (backup, order check, push) и не сделав WAL checkpoint.
+    let shuttingDown = false;
+
+    async function shutdown(signal) {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(`[Shutdown] Получен ${signal}, начинаю graceful shutdown...`);
+
+      // Форс-выход через 10 сек, если что-то зависло
+      const forceTimer = setTimeout(() => {
+        console.error('[Shutdown] Таймаут, принудительный выход');
+        process.exit(1);
+      }, 10_000);
+      forceTimer.unref();
+
+      // 1. Останавливаем планировщики — новые тики больше не запустятся
+      try {
+        scheduler.stopAll();
+      } catch (err) {
+        console.warn('[Shutdown] scheduler.stopAll:', err.message);
+      }
+
+      // 2. Закрываем Socket.IO (он же закроет HTTP-сервер, если io.close)
+      try {
+        const io = getIO();
+        await new Promise((resolve) => io.close(resolve));
+        console.log('[Shutdown] Socket.IO закрыт');
+      } catch (err) {
+        console.warn('[Shutdown] io.close:', err.message);
+      }
+
+      // 3. Добиваем HTTP-сервер (на случай, если io.close его не закрыл,
+      //    или если io не был инициализирован)
+      try {
+        await new Promise((resolve) => {
+          server.close(() => resolve());
+          if (typeof server.closeAllConnections === 'function') {
+            server.closeAllConnections();
+          }
+        });
+        console.log('[Shutdown] HTTP-сервер закрыт');
+      } catch (err) {
+        console.warn('[Shutdown] server.close:', err.message);
+      }
+
+      // 4. Закрываем БД (внутри — PRAGMA wal_checkpoint(TRUNCATE))
+      try {
+        await closeAll();
+        console.log('[Shutdown] Основные БД закрыты');
+      } catch (err) {
+        console.warn('[Shutdown] closeAll:', err.message);
+      }
+      try {
+        await closeChatDB();
+      } catch (err) {
+        console.warn('[Shutdown] closeChatDB:', err.message);
+      }
+      try {
+        await closeNotificationsDB();
+      } catch (err) {
+        console.warn('[Shutdown] closeNotificationsDB:', err.message);
+      }
+
+      clearTimeout(forceTimer);
+      console.log('[Shutdown] Готово, выходим');
+      process.exit(0);
+    }
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
 
     server.listen(PORT, () => {
       console.log(`🚀 Сервер запущен на порту ${PORT}`);

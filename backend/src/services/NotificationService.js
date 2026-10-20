@@ -751,6 +751,94 @@ class NotificationService {
   }
 
   /**
+ * Web Push пользователю о новом сообщении поддержки.
+ *
+ * Не пишет в notifications.db — чат живёт отдельно, у него свой бейдж и
+ * своя страница /support. Этот метод ТОЛЬКО push (live-канал делает
+ * socket.js через notifyChatUser).
+ *
+ * @param {number} userId   — кому push
+ * @param {object} p
+ *   threadId        — id треда (для tag-группировки)
+ *   authorName      — имя автора (staff → «Ответ поддержки»)
+ *   preview         — первые ~100 символов
+ *   isStaffMessage  — true: ответ поддержки, false: сообщение юзера
+ *                     (для user-push всегда true; оставлено для будущего)
+ */
+  static async notifyChatUser(userId, p = {}) {
+    try {
+      const title = p.isStaffMessage
+        ? '💬 Ответ поддержки'
+        : `💬 ${p.authorName || 'Новое сообщение'}`;
+      const body = p.preview || 'Новое сообщение в поддержку';
+      const url = PushService.buildAbsoluteUrl(null, '/support');
+
+      await PushService.sendToUser(
+        userId,
+        buildPushPayload({
+          type: 'chat_message',
+          storeId: null,
+          audience: 'user',
+          title,
+          body,
+          url,
+          tag: p.threadId ? `chat-thread-${p.threadId}` : 'chat-thread',
+        }),
+        { storeId: null }
+      );
+    } catch (err) {
+      console.error('[NotificationService] notifyChatUser:', err.message);
+    }
+  }
+
+  /**
+   * Web Push ВСЕМУ персоналу чата во ВСЕХ магазинах.
+   *
+   * Получатели — те же, кто видит треды: god глобально ИЛИ
+   * admin/moderator в любом магазине (is_fired=0). Это ГЛОБАЛЬНЫЙ список,
+   * без фильтра по store_id — чат сквозной.
+   *
+   * Никакой дедупликации по online здесь нет: контроллер уже проверил
+   * notifyChatStaff() и вызвал метод только если в комнате 'chat:staff'
+   * никого нет. Даже если у кого-то открыта вкладка другого origin,
+   * push всё равно дойдёт на все его устройства (SW на root).
+   */
+  static async notifyChatStaffGlobal(p = {}) {
+    try {
+      const db = getUsersDB();
+      const recipients = await db.all(
+        `SELECT DISTINCT u.id AS id
+         FROM users u
+         LEFT JOIN user_stores us ON us.user_id = u.id
+         WHERE u.role = 'god'
+            OR (us.role IN ('admin', 'moderator') AND us.is_fired = 0)`
+      );
+      if (!recipients.length) return;
+
+      const title = `💬 ${p.authorName || 'Пользователь'}`;
+      const body = p.preview || 'Новое сообщение в поддержку';
+      const url = PushService.buildAbsoluteUrl(null, '/support');
+      const payload = buildPushPayload({
+        type: 'chat_message',
+        storeId: null,
+        audience: 'staff',
+        title,
+        body,
+        url,
+        tag: p.threadId ? `chat-thread-${p.threadId}` : 'chat-thread',
+      });
+
+      await Promise.allSettled(
+        recipients.map((r) =>
+          PushService.sendToUser(r.id, payload, { storeId: null })
+        )
+      );
+    } catch (err) {
+      console.error('[NotificationService] notifyChatStaffGlobal:', err.message);
+    }
+  }
+
+  /**
    * Сохранить ошибку сервера в журнал (server_errors) и, если есть storeId,
    * доставить «живьём» модераторам ЭТОГО магазина.
    * Системные ошибки (storeId = null) — только запись в БД.

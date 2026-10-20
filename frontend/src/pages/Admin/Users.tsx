@@ -1130,7 +1130,9 @@ export const Users = () => {
           Стили формы — как на странице «Материалы», выравнивание по центру */}
       <Card>
         <CardHeader>
-          <CardTitle>🔄 Синхронизация из файла сотрудников</CardTitle>
+          <CardTitle className="text-center">
+            🔄 Синхронизация из файла сотрудников
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="mx-auto w-full max-w-2xl">

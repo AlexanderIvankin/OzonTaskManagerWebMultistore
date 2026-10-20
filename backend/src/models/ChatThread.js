@@ -102,6 +102,27 @@ class ChatThread {
   }
 
   /**
+ * Отметить «последнее прочитанное сообщение» для одной стороны.
+ * Вызывается из ChatService.markRead вместе с clearUnread.
+ *
+ * @param {number} threadId
+ * @param {'user'|'staff'} target
+ * @param {number} messageId — id последнего сообщения в треде на момент чтения
+ */
+  static async markLastRead(threadId, target, messageId) {
+    const col =
+      target === 'staff' ? 'staff_last_read_message_id' : 'user_last_read_message_id';
+    const db = getChatDB();
+    await db.run(
+      `UPDATE chat_threads
+       SET ${col} = MAX(COALESCE(${col}, 0), ?)
+       WHERE id = ?`,
+      messageId || 0,
+      threadId
+    );
+  }
+
+  /**
    * Удалить тред. Каскадно удаляет сообщения (FOREIGN KEY ON DELETE CASCADE)
    * и вложения (FOREIGN KEY chat_attachments -> chat_messages ON DELETE CASCADE).
    * Файлы на диске чистит ChatAttachment/сервис отдельно — БД не умеет удалять
