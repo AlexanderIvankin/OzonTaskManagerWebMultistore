@@ -27,6 +27,16 @@ export interface ChatAttachmentDTO {
   previewUrl: string | null;
 }
 
+export interface ReplyToDTO {
+  id: number;
+  authorId: number;
+  authorRole: string;
+  authorName: string;
+  body: string;
+  quotedText: string | null;
+  deleted: boolean;
+}
+
 export interface ChatMessageDTO {
   id: number;
   threadId: number;
@@ -36,6 +46,7 @@ export interface ChatMessageDTO {
   body: string;
   storeId: string | null;
   replyToId: number | null;
+  replyTo: ReplyToDTO | null;
   createdAt: number;
   editedAt: number | null;
   deletedAt: number | null;
@@ -103,6 +114,7 @@ export const chatApi = {
     threadId?: number;
     body: string;
     replyToId?: number;
+    quotedText?: string;
     attachmentIds?: number[];
   }): Promise<SendMessageResponse> {
     const { data } = await api.post<SendMessageResponse>(

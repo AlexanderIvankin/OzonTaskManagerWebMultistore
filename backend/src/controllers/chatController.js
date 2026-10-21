@@ -77,13 +77,14 @@ exports.getMessages = async (req, res, next) => {
 
 exports.sendMessage = async (req, res, next) => {
   try {
-    const { threadId, body, replyToId, attachmentIds } = req.body || {};
+    const { threadId, body, replyToId, quotedText, attachmentIds } = req.body || {};
     const result = await ChatService.sendMessage({
       userId: req.user.id,
       threadId: threadId ? parseInt(threadId, 10) : null,
       body,
       storeId: req.storeId || null,
       replyToId: replyToId ? parseInt(replyToId, 10) : null,
+      quotedText: typeof quotedText === 'string' ? quotedText : null,
       attachmentIds: Array.isArray(attachmentIds)
         ? attachmentIds.map((x) => parseInt(x, 10)).filter(Number.isInteger)
         : [],

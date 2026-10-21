@@ -35,7 +35,7 @@ class ChatMessage {
    *   replyToId   — id цитируемого сообщения (nullable)
    * @returns {Promise<object>} созданное сообщение
    */
-  static async create({ threadId, authorId, authorRole, body, storeId = null, replyToId = null }) {
+  static async create({ threadId, authorId, authorRole, body, storeId = null, replyToId = null, replyQuoteText = null, }) {
     const db = getChatDB();
     const now = Date.now();
     const isStaffMessage = authorRole !== 'user';
@@ -46,14 +46,15 @@ class ChatMessage {
     try {
       const result = await db.run(
         `INSERT INTO chat_messages
-           (thread_id, author_id, author_role, body, store_id, reply_to_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (thread_id, author_id, author_role, body, store_id, reply_to_id, reply_quote_text, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         threadId,
         authorId,
         authorRole,
         String(body || ''),
         storeId != null && storeId !== '' ? String(storeId) : null,
         replyToId || null,
+        replyQuoteText ? String(replyQuoteText) : null,
         now
       );
       const messageId = result.lastID;
@@ -77,7 +78,7 @@ class ChatMessage {
       );
 
       await db.run('COMMIT');
-      return this.getById(messageId);
+      return this.getByIdWithReply(messageId);
     } catch (err) {
       try { await db.run('ROLLBACK'); } catch { /* ignore */ }
       throw err;
@@ -104,9 +105,18 @@ class ChatMessage {
       `SELECT m.*,
               u.username       AS author_username,
               u.name           AS author_name,
-              u.display_name   AS author_display_name
+              u.display_name   AS author_display_name,
+              r.body           AS reply_body,
+              r.author_id      AS reply_author_id,
+              r.author_role    AS reply_author_role,
+              r.deleted_at     AS reply_deleted_at,
+              ru.username      AS reply_author_username,
+              ru.name          AS reply_author_name,
+              ru.display_name  AS reply_author_display_name
        FROM chat_messages m
        LEFT JOIN usersdb.users u ON u.id = m.author_id
+       LEFT JOIN chat_messages r ON r.id = m.reply_to_id
+       LEFT JOIN usersdb.users ru ON ru.id = r.author_id
        WHERE ${where.join(' AND ')}
        ORDER BY m.id DESC
        LIMIT ?`,
@@ -118,6 +128,33 @@ class ChatMessage {
   static async getById(messageId) {
     const db = getChatDB();
     return db.get('SELECT * FROM chat_messages WHERE id = ?', messageId);
+  }
+
+  /**
+ * Полное сообщение + данные цитируемого (для DTO и socket payload).
+ * Возвращает ту же форму, что listByThread.
+ */
+  static async getByIdWithReply(messageId) {
+    const db = getChatDB();
+    return db.get(
+      `SELECT m.*,
+              u.username       AS author_username,
+              u.name           AS author_name,
+              u.display_name   AS author_display_name,
+              r.body           AS reply_body,
+              r.author_id      AS reply_author_id,
+              r.author_role    AS reply_author_role,
+              r.deleted_at     AS reply_deleted_at,
+              ru.username      AS reply_author_username,
+              ru.name          AS reply_author_name,
+              ru.display_name  AS reply_author_display_name
+       FROM chat_messages m
+       LEFT JOIN usersdb.users u ON u.id = m.author_id
+       LEFT JOIN chat_messages r ON r.id = m.reply_to_id
+       LEFT JOIN usersdb.users ru ON ru.id = r.author_id
+       WHERE m.id = ?`,
+      messageId
+    );
   }
 
   static async deleteByThread(threadId) {

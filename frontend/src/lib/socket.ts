@@ -157,6 +157,15 @@ export function onNotificationsChanged(
 
 // --- CHAT ---
 
+export interface ChatAttachmentPayload {
+  id: number;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  url: string;
+  previewUrl: string | null;
+}
+
 export interface ChatMessageNewPayload {
   threadId: number;
   userId: number;
@@ -167,6 +176,16 @@ export interface ChatMessageNewPayload {
   preview: string;
   messageId: number;
   createdAt: number;
+  replyTo?: {
+    id: number;
+    authorId: number;
+    authorRole: string;
+    authorName: string;
+    body: string;
+    quotedText: string | null;
+    deleted: boolean;
+  } | null;
+  attachments?: ChatAttachmentPayload[];
 }
 
 export interface ChatThreadDeletedPayload {

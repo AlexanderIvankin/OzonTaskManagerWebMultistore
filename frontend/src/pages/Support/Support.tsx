@@ -222,11 +222,12 @@ export const Support = () => {
               author: { username: null, displayName: msg.authorName },
               body: msg.body,
               storeId: null,
-              replyToId: null,
+              replyToId: msg.replyTo?.id ?? null,
+              replyTo: msg.replyTo ?? null,
               createdAt: msg.createdAt,
               editedAt: null,
               deletedAt: null,
-              attachments: [],
+              attachments: msg.attachments ?? [],
             },
           ];
         });
@@ -297,7 +298,11 @@ export const Support = () => {
   });
 
   // ---------- Отправка ----------
-  const handleSend = async (body: string) => {
+  const handleSend = async (
+    body: string,
+    replyToId?: number,
+    quotedText?: string,
+  ) => {
     if (!activeThreadId) return;
     if (!body.trim() && pendingAttachments.length === 0) return;
     setSending(true);
@@ -305,9 +310,11 @@ export const Support = () => {
       const res = await chatApi.sendMessage({
         threadId: activeThreadId,
         body: body.trim(),
+        replyToId,
+        quotedText,
         attachmentIds: pendingAttachments.map((a) => a.id),
       });
-      setPendingAttachments([]); // очищаем draft
+      setPendingAttachments([]);
 
       // Fallback: если socket не подключён — своё сообщение по событию не придёт,
       // добавляем вручную (с dedup на случай гонки).

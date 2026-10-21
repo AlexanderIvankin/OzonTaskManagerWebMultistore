@@ -303,7 +303,23 @@ initSocket(server);
 
       clearTimeout(forceTimer);
       console.log('[Shutdown] Готово, выходим');
-      process.exit(0);
+
+      // 1. Явно отпускаем stdin — если есть активные листенеры (readline,
+      //    devtools и т.п.), они могут удерживать event loop.
+      try { process.stdin.pause(); } catch { /* ignore */ }
+
+      // 2. Даём стеку логов сброситься (важно на Windows/Git Bash, где
+      //    process.exit сразу после console.log иногда теряет хвост лога).
+      setImmediate(() => {
+        // 3. Last-resort: если process.exit() по какой-то причине не
+        //    убивает процесс через 200 мс — жёсткий SIGKILL.
+        const killTimer = setTimeout(() => {
+          try { process.kill(process.pid, 'SIGKILL'); } catch { /* ignore */ }
+        }, 200);
+        killTimer.unref();
+
+        process.exit(0);
+      });
     }
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));

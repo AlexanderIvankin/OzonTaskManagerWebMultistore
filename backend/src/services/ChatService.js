@@ -165,7 +165,7 @@ class ChatService {
    *   payloadForTarget: object,
    * }>}
    */
-  static async sendMessage({ userId, threadId, body, storeId = null, replyToId = null, attachmentIds = [] }) {
+  static async sendMessage({ userId, threadId, body, storeId = null, replyToId = null, quotedText = null, attachmentIds = [] }) {
     const trimmedBody = String(body || '').trim();
     const hasAttachments = Array.isArray(attachmentIds) && attachmentIds.length > 0;
 
@@ -218,14 +218,29 @@ class ChatService {
       throw err;
     }
 
-    // Создаём сообщение. body может быть ''
+    // Валидация replyToId + quotedText
+    let effectiveReplyToId = replyToId || null;
+    let effectiveQuotedText = null;
+    if (effectiveReplyToId) {
+      const replyMsg = await ChatMessage.getById(effectiveReplyToId);
+      if (!replyMsg || replyMsg.thread_id !== thread.id) {
+        effectiveReplyToId = null;
+      } else if (quotedText) {
+        const trimmed = String(quotedText).trim();
+        if (trimmed.length > 0 && trimmed.length <= 500) {
+          effectiveQuotedText = trimmed;
+        }
+      }
+    }
+
     const message = await ChatMessage.create({
       threadId: thread.id,
       authorId: userId,
       authorRole,
       body: trimmedBody,
       storeId,
-      replyToId,
+      replyToId: effectiveReplyToId,
+      replyQuoteText: effectiveQuotedText,
     });
 
     // Привязка вложений (атомарно с точки зрения пользователя: если что-то
@@ -249,8 +264,10 @@ class ChatService {
     recent.push(now);
     rateLimitStore.set(userId, recent);
 
+    const messageDto = this._messageDto(message, attachments);
+
     return {
-      message: this._messageDto(message, attachments),
+      message: messageDto,
       threadId: thread.id,
       authorRole,
       targetUnread,
@@ -266,6 +283,8 @@ class ChatService {
           : (attachments.length ? `📎 ${attachments.length} вложение` : ''),
         messageId: message.id,
         createdAt: message.created_at,
+        replyTo: messageDto.replyTo,
+        attachments: messageDto.attachments,
       },
     };
   }
@@ -437,6 +456,23 @@ class ChatService {
       body: m.body,
       storeId: m.store_id,
       replyToId: m.reply_to_id,
+      replyTo: m.reply_to_id && m.reply_author_id != null
+        ? {
+          id: m.reply_to_id,
+          authorId: m.reply_author_id,
+          authorRole: m.reply_author_role,
+          authorName:
+            m.reply_author_display_name ||
+            m.reply_author_name ||
+            m.reply_author_username ||
+            `user#${m.reply_author_id}`,
+          body: m.reply_deleted_at
+            ? '(сообщение удалено)'
+            : (m.reply_body || ''),
+          quotedText: m.reply_quote_text || null,
+          deleted: !!m.reply_deleted_at,
+        }
+        : null,
       createdAt: m.created_at,
       editedAt: m.edited_at,
       deletedAt: m.deleted_at,

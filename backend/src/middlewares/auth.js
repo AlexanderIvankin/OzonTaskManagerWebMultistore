@@ -9,15 +9,26 @@ const config = require('../config');
 const { STAFF_ROLES } = require('../config/staffRoles');
 
 async function authenticate(req, res, next) {
+  let token = null;
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7);
   }
-  const token = authHeader.slice(7);
+
+  // Fallback: токен в query — ТОЛЬКО для GET.
+  // Нужен для <img src>, <a download>, <video src>: эти запросы инициирует
+  // браузер, и Authorization-заголовок он не прикладывает.
+  // Для записи (POST/PUT/DELETE) query-токен не принимаем — безопасность.
+  if (!token && req.method === 'GET' && req.query.token) {
+    token = String(req.query.token);
+  }
+
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
   const decoded = AuthService.verifyAccessToken(token);
-  if (!decoded) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
+  if (!decoded) return res.status(401).json({ error: 'Invalid token' });
+
   const user = await User.getById(decoded.userId);
   if (!user) {
     return res.status(401).json({ error: 'User not found' });
