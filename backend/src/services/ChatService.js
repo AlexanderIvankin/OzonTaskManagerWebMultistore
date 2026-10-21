@@ -372,6 +372,17 @@ class ChatService {
     };
   }
 
+  /**
+ * Обёртка для планировщика: закрыть неактивные треды старше days дней.
+ * Возвращает { closed, days }.
+ */
+  static async closeInactiveThreads(days = 30) {
+    const d = Math.max(1, parseInt(days, 10) || 30);
+    const cutoff = Date.now() - d * 24 * 60 * 60 * 1000;
+    const result = await ChatThread.closeInactive(cutoff);
+    return { closed: result.closed, days: d };
+  }
+
   // =========================================================================
   // УДАЛЕНИЕ (приватность)
   // =========================================================================

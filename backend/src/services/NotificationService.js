@@ -197,6 +197,17 @@ const TEMPLATES = {
     },
   }),
 
+  chat_threads_auto_closed: (p) => ({
+    user: null,
+    staff: {
+      title: `🗄️ Авто-закрытие диалогов поддержки`,
+      message:
+        `Закрыто неактивных диалогов старше ${p.days} дн.: ${p.count}.\n` +
+        `Переписка сохранена. Если пользователь напишет снова — диалог ` +
+        `автоматически откроется и появится в списке.`,
+    },
+  }),
+
   deliver_reminder: (p) => {
     const products = Array.isArray(p.details?.products) ? p.details.products : [];
     const shown = products.slice(0, 3);
@@ -835,6 +846,49 @@ class NotificationService {
       );
     } catch (err) {
       console.error('[NotificationService] notifyChatStaffGlobal:', err.message);
+    }
+  }
+
+  /**
+ * Сводка ВСЕМУ персоналу ВСЕХ магазинов (глобальные события: чат,
+ * системные maintenance). Пишется в notifications.db, БЕЗ push и live —
+ * это «журнал», не срочное событие.
+ *
+ * Получатели: god глобально ИЛИ admin/moderator в любом магазине (is_fired=0).
+ */
+  static async notifyAllStaffGlobal(type, payload = {}) {
+    try {
+      const tpl = TEMPLATES[type] ? TEMPLATES[type](payload) : null;
+      const text = tpl && tpl.staff;
+      if (!text) return;
+
+      const db = getUsersDB();
+      const recipients = await db.all(
+        `SELECT DISTINCT u.id AS id
+         FROM users u
+         LEFT JOIN user_stores us ON us.user_id = u.id
+         WHERE u.role = 'god'
+            OR (us.role IN ('admin', 'moderator') AND us.is_fired = 0)`
+      );
+      if (!recipients.length) return;
+
+      const createdAt = Date.now();
+      const search = extractSearchFields(payload);
+      await Notification.createMany(
+        recipients.map((r) => ({
+          recipientId: r.id,
+          storeId: null,
+          audience: 'staff',
+          type,
+          title: text.title,
+          message: text.message,
+          payload,
+          ...search,
+          createdAt,
+        }))
+      );
+    } catch (err) {
+      console.error(`[NotificationService] notifyAllStaffGlobal(${type}):`, err.message);
     }
   }
 

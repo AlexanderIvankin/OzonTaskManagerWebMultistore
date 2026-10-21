@@ -190,6 +190,7 @@ initSocket(server);
     scheduler.startModelsMaintenanceChecker();
     scheduler.startGuestCleanupChecker();
     scheduler.startChatOrphanCleanup();
+    scheduler.startChatAutoClose();
 
     // PER-STORE (проходят циклом по всем магазинам последовательно)
     const SYNC_ORDERS_TIME = parseInt(process.env.SYNC_ORDERS_TIME, 10) || 60;

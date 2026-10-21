@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { RoleBadge } from "@/components/RoleBadge";
 import type { ChatMessageDTO, ChatThreadDTO, StaffThreadDTO } from "@/api/chat";
 
@@ -30,7 +36,7 @@ interface ChatWindowProps {
   emptyText?: string;
   typingName?: string | null;
   onTyping?: () => void;
-
+  onClose?: () => void;
   pendingAttachments?: PendingAttachment[];
   onUploadFile?: (file: File) => Promise<void>;
   onRemovePendingAttachment?: (id: number) => void;
@@ -85,6 +91,7 @@ export const ChatWindow = ({
   loading,
   sending,
   onBack,
+  onClose,
   emptyText,
   typingName,
   onTyping,
@@ -97,8 +104,8 @@ export const ChatWindow = ({
   const [replyTo, setReplyTo] = useState<{
     id: number;
     authorName: string;
-    body: string; // полный текст цитируемого (для fallback)
-    quotedText?: string; // фрагмент, если пользователь выбрал часть
+    body: string;
+    quotedText?: string;
   } | null>(null);
   const [selectionMenu, setSelectionMenu] = useState<{
     x: number;
@@ -108,13 +115,18 @@ export const ChatWindow = ({
     authorName: string;
   } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  // Модалка просмотра картинки
+  const [previewImage, setPreviewImage] = useState<{
+    url: string;
+    fileName: string;
+  } | null>(null);
+
   const endRef = useRef<HTMLDivElement>(null);
   const prevCount = useRef(0);
   const lastTypingEmit = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null); // ← FIX #1
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Автоскролл вниз при новых сообщениях
   useEffect(() => {
     if (messages.length > prevCount.current) {
       endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -122,7 +134,6 @@ export const ChatWindow = ({
     prevCount.current = messages.length;
   }, [messages.length]);
 
-  // При смене треда — к низу
   useEffect(() => {
     if (messages.length && prevCount.current === 0) {
       endRef.current?.scrollIntoView({ block: "end" });
@@ -132,7 +143,6 @@ export const ChatWindow = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [thread?.id]);
 
-  // Кнопка «Цитировать» + закрытие по клику снаружи
   useEffect(() => {
     if (!selectionMenu) return;
     const close = (e: MouseEvent) => {
@@ -182,8 +192,6 @@ export const ChatWindow = ({
       : ""
     : "Ответим как можно скорее";
 
-  // Какое «последнее прочитанное» сравнивать для ✓✓ на моих сообщениях.
-  // null = не показываем галочки (staff в своём треде).
   const otherLastRead: number | null = thread
     ? isStaffViewer
       ? (thread as StaffThreadDTO).userId === currentUserId
@@ -213,36 +221,25 @@ export const ChatWindow = ({
             {headerSubtitle}
           </div>
         </div>
+        {onClose && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0 shrink-0"
+            onClick={onClose}
+            title="Закрыть"
+          >
+            ✕
+          </Button>
+        )}
       </div>
 
-      {/* Messages (drag-n-drop контейнер — единственный скроллящийся) */}
+      {/* Messages: невидимый скроллбар, скролл остаётся */}
       <div
-        className={`flex-1 min-h-0 overflow-auto px-3 py-3 relative transition-colors ${
-          isDragging ? "bg-primary/5 ring-2 ring-inset ring-primary/40" : ""
-        }`}
-        onDragOver={(e) => {
-          if (!onUploadFile) return;
-          if (!e.dataTransfer.types.includes("Files")) return;
-          e.preventDefault();
-          setIsDragging(true);
-        }}
-        onDragLeave={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-            setIsDragging(false);
-          }
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          setIsDragging(false);
-          if (!onUploadFile) return;
-          const files = Array.from(e.dataTransfer.files || []);
-          for (const f of files) {
-            void onUploadFile(f);
-          }
-        }}
+        className="flex-1 min-h-0 overflow-auto px-3 py-3 relative
+                   [scrollbar-width:none] [-ms-overflow-style:none]
+                   [&::-webkit-scrollbar]:hidden"
       >
-        {/* ← FIX #3: без внутреннего дублирующего div */}
-
         {loading && (
           <div className="text-center text-muted-foreground py-6">
             Загрузка сообщений...
@@ -301,7 +298,7 @@ export const ChatWindow = ({
                     </div>
                   )}
 
-                  {/* Цитата в сообщении — FIX #6: поддержка quotedText */}
+                  {/* Цитата в сообщении */}
                   {m.replyTo && (
                     <div
                       className={`mb-1 rounded px-2 py-1 text-xs border-l-2 ${
@@ -328,7 +325,7 @@ export const ChatWindow = ({
                     </div>
                   )}
 
-                  {/* Бабл + детектор выделения — FIX #4: один div */}
+                  {/* Бабл */}
                   <div
                     className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] ${
                       isOwn
@@ -336,19 +333,15 @@ export const ChatWindow = ({
                         : "bg-muted text-foreground"
                     }`}
                     onMouseUp={(e) => {
-                      const bubble = e.currentTarget; // ← захватываем СЕЙЧАС
-                      // setTimeout — ждём, пока браузер зафиксирует selection
+                      const bubble = e.currentTarget;
                       setTimeout(() => {
                         const sel = window.getSelection();
                         if (!sel || sel.isCollapsed) return;
                         const text = sel.toString().trim();
                         if (!text) return;
-
-                        // Проверяем, что выделение внутри этого бабла
                         const range = sel.getRangeAt(0);
                         if (!bubble.contains(range.commonAncestorContainer))
-                          return; // ← используем bubble
-
+                          return;
                         const rect = range.getBoundingClientRect();
                         setSelectionMenu({
                           x: rect.left + rect.width / 2,
@@ -369,19 +362,24 @@ export const ChatWindow = ({
                           const isImg =
                             a.mimeType.startsWith("image/") && a.previewUrl;
                           return isImg ? (
-                            <a
+                            <button
                               key={a.id}
-                              href={withToken(a.url)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="block rounded overflow-hidden border"
+                              type="button"
+                              onClick={() =>
+                                setPreviewImage({
+                                  url: a.url,
+                                  fileName: a.fileName,
+                                })
+                              }
+                              className="block rounded overflow-hidden border cursor-zoom-in hover:opacity-90 transition-opacity"
+                              title={a.fileName}
                             >
                               <img
                                 src={withToken(a.previewUrl) ?? ""}
                                 alt={a.fileName}
                                 className="max-h-48 max-w-[200px] object-cover"
                               />
-                            </a>
+                            </button>
                           ) : (
                             <a
                               key={a.id}
@@ -418,7 +416,6 @@ export const ChatWindow = ({
                         {otherLastRead === null ? "" : isRead ? "✓✓" : "✓"}
                       </span>
                     )}
-                    {/* Кнопка «ответить на всё сообщение» */}
                     <button
                       type="button"
                       onClick={() =>
@@ -449,15 +446,6 @@ export const ChatWindow = ({
         )}
 
         <div ref={endRef} />
-
-        {/* Оверлей-подсказка — sibling контента, внутри relative-родителя */}
-        {isDragging && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="bg-background border-2 border-dashed border-primary rounded-lg px-6 py-4 text-sm text-muted-foreground shadow-lg">
-              📎 Отпустите файл, чтобы прикрепить
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Attachments preview над input'ом */}
@@ -491,7 +479,7 @@ export const ChatWindow = ({
         </div>
       )}
 
-      {/* Reply preview — FIX #5: поддержка quotedText */}
+      {/* Reply preview */}
       {replyTo && (
         <div className="shrink-0 px-3 py-1.5 border-t bg-muted/40 flex items-center gap-2">
           <div className="flex-1 min-w-0 text-xs">
@@ -515,11 +503,41 @@ export const ChatWindow = ({
         </div>
       )}
 
-      {/* Input */}
+      {/* Input — drag-n-drop перенесён сюда */}
       <form
         onSubmit={submit}
-        className="shrink-0 p-2 border-t flex items-end gap-2 bg-card"
+        className={`shrink-0 p-2 border-t flex items-center gap-2 bg-card relative transition-colors ${
+          isDragging ? "bg-primary/5 ring-2 ring-inset ring-primary/40" : ""
+        }`}
+        onDragOver={(e) => {
+          if (!onUploadFile) return;
+          if (!e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            setIsDragging(false);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragging(false);
+          if (!onUploadFile) return;
+          const files = Array.from(e.dataTransfer.files || []);
+          for (const f of files) {
+            void onUploadFile(f);
+          }
+        }}
       >
+        {isDragging && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background/85 rounded">
+            <div className="text-sm text-muted-foreground">
+              📎 Отпустите файл, чтобы прикрепить
+            </div>
+          </div>
+        )}
+
         {onUploadFile && (
           <>
             <input
@@ -547,7 +565,7 @@ export const ChatWindow = ({
         )}
 
         <Input
-          ref={inputRef} /* ← FIX #2 */
+          ref={inputRef}
           value={input}
           onChange={(e) => handleInput(e.target.value)}
           placeholder="Напишите сообщение..."
@@ -564,7 +582,7 @@ export const ChatWindow = ({
         </Button>
       </form>
 
-      {/* Кнопка «Цитировать» — поверх, в конце root-контейнера */}
+      {/* Quote selection button */}
       {selectionMenu && (
         <button
           data-quote-btn
@@ -575,7 +593,7 @@ export const ChatWindow = ({
             top: Math.max(8, selectionMenu.y - 44),
             transform: "translateX(-50%)",
           }}
-          onMouseDown={(e) => e.preventDefault()} // не терять selection
+          onMouseDown={(e) => e.preventDefault()}
           onClick={(e) => {
             e.preventDefault();
             const msg = messages.find((x) => x.id === selectionMenu.messageId);
@@ -594,6 +612,42 @@ export const ChatWindow = ({
           ↪️ Цитировать
         </button>
       )}
+
+      {/* Модалка просмотра картинки */}
+      <Dialog
+        open={!!previewImage}
+        onOpenChange={(open) => {
+          if (!open) setPreviewImage(null);
+        }}
+      >
+        <DialogContent className="max-w-[95vw] sm:max-w-[90vw] md:max-w-4xl p-2 sm:p-4">
+          <DialogHeader>
+            <DialogTitle className="truncate text-sm">
+              {previewImage?.fileName}
+            </DialogTitle>
+          </DialogHeader>
+          {previewImage && (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-center bg-muted/30 rounded overflow-hidden max-h-[70vh]">
+                <img
+                  src={withToken(previewImage.url) ?? ""}
+                  alt={previewImage.fileName}
+                  className="max-w-full max-h-[70vh] object-contain"
+                />
+              </div>
+              <div className="flex justify-end">
+                <a
+                  href={withToken(previewImage.url)}
+                  download={previewImage.fileName}
+                  className="inline-flex items-center justify-center rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-accent transition-colors"
+                >
+                  ⬇️ Скачать
+                </a>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -32,6 +32,7 @@ import {
   vibrate,
 } from "../../lib/notify";
 import { chatApi } from "../../api/chat";
+import { ChatWidget } from "../Chat/ChatWidget";
 
 export const Layout = () => {
   const user = useSelector((state: RootState) => state.auth.user);
@@ -413,6 +414,9 @@ export const Layout = () => {
       <main className="flex-1 min-w-0 overflow-auto p-3 md:p-6">
         <Outlet />
       </main>
+
+      {/* Floating-виджет поддержки: FAB в правом нижнем углу (только user) */}
+      <ChatWidget />
 
       {/* Toaster для уведомлений (стиль подстраивается под тему) */}
       <Toaster position="top-right" theme={theme} />

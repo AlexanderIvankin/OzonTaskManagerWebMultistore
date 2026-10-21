@@ -10,6 +10,7 @@ interface ThreadListProps {
   hasMore?: boolean;
   onLoadMore?: () => void;
   emptyText?: string;
+  typingByThreadId?: Record<number, string>;
 }
 
 const relativeTime = (ts: number) => {
@@ -33,6 +34,7 @@ export const ThreadList = ({
   hasMore,
   onLoadMore,
   emptyText,
+  typingByThreadId,
 }: ThreadListProps) => {
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -75,8 +77,16 @@ export const ThreadList = ({
                 )}
               </div>
               <div className="text-xs text-muted-foreground truncate">
-                {t.lastMessageAuthor === "staff" && "📤 Вы: "}
-                {t.lastMessagePreview || "Нет сообщений"}
+                {typingByThreadId?.[t.id] ? (
+                  <span className="italic text-primary">
+                    {typingByThreadId[t.id]} печатает…
+                  </span>
+                ) : (
+                  <>
+                    {t.lastMessageAuthor === "staff" && "📤 Вы: "}
+                    {t.lastMessagePreview || "Нет сообщений"}
+                  </>
+                )}
               </div>
               <div className="text-[10px] text-muted-foreground mt-1">
                 {relativeTime(t.updatedAt)}

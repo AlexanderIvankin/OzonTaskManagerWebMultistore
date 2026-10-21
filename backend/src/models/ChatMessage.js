@@ -69,6 +69,7 @@ class ChatMessage {
          SET updated_at = ?,
              last_message_preview = ?,
              last_message_author = ?,
+             status = CASE WHEN status = 'closed' THEN 'open' ELSE status END,
              ${unreadCol} = ${unreadCol} + 1
          WHERE id = ?`,
         now,

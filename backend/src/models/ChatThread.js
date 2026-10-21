@@ -122,6 +122,26 @@ class ChatThread {
     );
   }
 
+  /** Сводный счётчик непрочитанного для персонала (для бейджа в сайдбаре). */
+  static async staffUnreadTotal() {
+    const db = getChatDB();
+    const row = await db.get(
+      'SELECT COALESCE(SUM(unread_for_staff), 0) AS total FROM chat_threads WHERE status = ?',
+      'open'
+    );
+    return row ? row.total : 0;
+  }
+
+  /** Количество тредов с непрочитанными сообщениями от пользователей (для бейджа). */
+  static async staffUnreadThreadsCount() {
+    const db = getChatDB();
+    const row = await db.get(
+      'SELECT COUNT(*) AS count FROM chat_threads WHERE unread_for_staff > 0 AND status = ?',
+      'open'
+    );
+    return row ? row.count : 0;
+  }
+
   /**
    * Удалить тред. Каскадно удаляет сообщения (FOREIGN KEY ON DELETE CASCADE)
    * и вложения (FOREIGN KEY chat_attachments -> chat_messages ON DELETE CASCADE).
@@ -142,24 +162,32 @@ class ChatThread {
     return { deletedMessages };
   }
 
-  /** Сводный счётчик непрочитанного для персонала (для бейджа в сайдбаре). */
-  static async staffUnreadTotal() {
+  /**
+   * Авто-закрытие неактивных тредов. Закрываем ТОЛЬКО треды без непрочитанных
+   * сообщений с обеих сторон — иначе скроем от staff/user то, что они ещё
+   * не видели.
+   *
+   * @param {number} cutoffMs — timestamp, до которого updated_at считается «старым»
+   * @returns {Promise<{closed: number, ids: number[]}>}
+   */
+  static async closeInactive(cutoffMs) {
     const db = getChatDB();
-    const row = await db.get(
-      'SELECT COALESCE(SUM(unread_for_staff), 0) AS total FROM chat_threads WHERE status = ?',
-      'open'
+    const candidates = await db.all(
+      `SELECT id FROM chat_threads
+       WHERE status = 'open'
+         AND updated_at < ?
+         AND unread_for_user = 0
+         AND unread_for_staff = 0`,
+      cutoffMs
     );
-    return row ? row.total : 0;
-  }
-
-  /** Количество тредов с непрочитанными сообщениями от пользователей (для бейджа). */
-  static async staffUnreadThreadsCount() {
-    const db = getChatDB();
-    const row = await db.get(
-      'SELECT COUNT(*) AS count FROM chat_threads WHERE unread_for_staff > 0 AND status = ?',
-      'open'
+    if (!candidates.length) return { closed: 0, ids: [] };
+    const ids = candidates.map((r) => r.id);
+    const ph = ids.map(() => '?').join(',');
+    await db.run(
+      `UPDATE chat_threads SET status = 'closed' WHERE id IN (${ph})`,
+      ...ids
     );
-    return row ? row.count : 0;
+    return { closed: ids.length, ids };
   }
 }
 

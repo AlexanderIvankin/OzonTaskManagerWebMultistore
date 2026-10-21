@@ -1022,6 +1022,89 @@ async function cleanupChatOrphans() {
   }
 }
 
+// ============================================================================
+//  12. АВТО-ЗАКРЫТИЕ НЕАКТИВНЫХ ДИАЛОГОВ (глобально, ежедневно)
+// ============================================================================
+let chatAutoCloseInterval = null;
+let isChatAutoCloseRunning = false;
+let chatAutoCloseGate = null;
+
+/**
+ * Один прогон авто-закрытия. Экспортируется, чтобы можно было запустить
+ * вручную (для тестов / админ-кнопки).
+ */
+async function runChatAutoClose(options = {}) {
+  const days = options.days != null
+    ? options.days
+    : envInt('CHAT_AUTO_CLOSE_DAYS', 30, 1, 3650);
+
+  const ChatService = require('./services/ChatService');
+  const result = await ChatService.closeInactiveThreads(days);
+
+  if (result.closed > 0) {
+    console.log(
+      `[SCHEDULER] Авто-закрытие чата: закрыто ${result.closed} диалогов (старше ${days} дн.)`
+    );
+    try {
+      await NotificationService.notifyAllStaffGlobal('chat_threads_auto_closed', {
+        count: result.closed,
+        days: result.days,
+      });
+    } catch (err) {
+      console.warn('[SCHEDULER] notifyAllStaffGlobal (autoClose):', err.message);
+    }
+  }
+  return result;
+}
+
+function startChatAutoClose() {
+  if (process.env.CHAT_AUTO_CLOSE_ENABLED !== 'true') {
+    console.log('⏭️ Авто-закрытие чата отключено (CHAT_AUTO_CLOSE_ENABLED != true)');
+    return;
+  }
+
+  if (chatAutoCloseInterval) clearInterval(chatAutoCloseInterval);
+  isChatAutoCloseRunning = false;
+  chatAutoCloseGate = createDailyGate(
+    envInt('CHAT_AUTO_CLOSE_MAX_ATTEMPTS', 3, 1, 60)
+  );
+
+  const targetHour = envInt('CHAT_AUTO_CLOSE_HOUR', 4, 0, 23);
+  const targetMinute = envInt('CHAT_AUTO_CLOSE_MINUTE', 0, 0, 59);
+
+  chatAutoCloseInterval = setInterval(async () => {
+    if (isChatAutoCloseRunning) return;
+    if (chatAutoCloseGate.isDone()) return;
+    const t = getLocalTime();
+    if (t.hours * 60 + t.minutes < targetHour * 60 + targetMinute) return;
+    if (!chatAutoCloseGate.canAttempt()) return;
+
+    isChatAutoCloseRunning = true;
+    try {
+      await runChatAutoClose();
+      chatAutoCloseGate.onSuccess();
+    } catch (err) {
+      console.error('[SCHEDULER] Ошибка авто-закрытия чата:', err);
+      chatAutoCloseGate.onFailure();
+      NotificationService.logServerError('scheduler.chatAutoClose', err);
+    } finally {
+      isChatAutoCloseRunning = false;
+    }
+  }, 60 * 1000);
+
+  console.log(
+    `[SCHEDULER] Авто-закрытие чата запланировано на ${targetHour}:${String(targetMinute).padStart(2, '0')}`
+  );
+}
+
+function stopChatAutoClose() {
+  if (chatAutoCloseInterval) {
+    clearInterval(chatAutoCloseInterval);
+    chatAutoCloseInterval = null;
+  }
+  isChatAutoCloseRunning = false;
+}
+
 /**
  * Остановить ВСЕ таймеры планировщика. Идемпотентно.
  * Вызывается из graceful shutdown в server.js. In-flight итерации
@@ -1041,6 +1124,7 @@ function stopAll() {
   try { stopModelsMaintenanceChecker(); } catch { /* ignore */ }
   try { stopGuestCleanupChecker(); } catch { /* ignore */ }
   try { stopChatOrphanCleanup(); } catch { /* ignore */ }
+  try { stopChatAutoClose(); } catch { /* ignore */ }
   console.log('[SCHEDULER] Все таймеры остановлены');
 }
 
@@ -1087,6 +1171,10 @@ module.exports = {
   startChatOrphanCleanup,
   stopChatOrphanCleanup,
   cleanupChatOrphans,
+
+  startChatAutoClose,
+  stopChatAutoClose,
+  runChatAutoClose,
 
   stopAll,
 };
