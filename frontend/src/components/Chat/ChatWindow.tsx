@@ -432,8 +432,10 @@ export const ChatWindow = ({
                       </span>
                     )}
                   </div>
+
+                  {/* Кнопки reply/delete — ТОЛЬКО для не удалённых */}
                   {!m.deletedAt && (
-                    <div className="flex items-center gap-2 mt-0.5">
+                    <div className="flex items-center gap-3 mt-0.5">
                       <button
                         type="button"
                         onClick={() =>
@@ -450,6 +452,8 @@ export const ChatWindow = ({
                       >
                         ↩️ Ответить
                       </button>
+
+                      {/* Удаление: user — только своё, staff — любое */}
                       {onDeleteMessage && (isOwn || isStaffViewer) && (
                         <button
                           type="button"

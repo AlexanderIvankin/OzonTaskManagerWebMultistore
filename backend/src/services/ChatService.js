@@ -423,16 +423,15 @@ class ChatService {
   }
 
   static async deleteMessage({ userId, isStaff, messageId }) {
-    const db = getChatDB();
-    const msg = await db.get(
-      `SELECT m.*, t.user_id AS thread_owner_id
-     FROM chat_messages m
-     INNER JOIN chat_threads t ON t.id = m.thread_id
-     WHERE m.id = ?`,
-      messageId
-    );
+    const msg = await ChatMessage.getById(messageId);
     if (!msg) {
       const err = new Error('Сообщение не найдено');
+      err.status = 404;
+      throw err;
+    }
+    const thread = await ChatThread.getById(msg.thread_id);
+    if (!thread) {
+      const err = new Error('Тред не найден');
       err.status = 404;
       throw err;
     }
@@ -447,7 +446,7 @@ class ChatService {
     }
     return {
       threadId: msg.thread_id,
-      threadOwnerId: msg.thread_owner_id,
+      threadOwnerId: thread.user_id,
       messageId,
       authorId: msg.author_id,
       alreadyDeleted: !!result?.alreadyDeleted,
