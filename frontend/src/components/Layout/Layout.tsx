@@ -179,8 +179,9 @@ export const Layout = () => {
   return (
     <div className="flex h-dvh overflow-hidden">
       {/* Sidebar: на мобилке — узкая колонка со значками, с md — полный сайдбар */}
-      <aside className="w-14 md:w-64 shrink-0 border-r bg-card p-2 md:p-4 flex flex-col">
-        <div className="mb-6 md:mb-10 flex flex-col items-center md:items-stretch text-center">
+      <aside className="w-14 md:w-64 shrink-0 border-r bg-card p-2 md:p-4 flex flex-col h-full min-h-0">
+        {/* Header — фиксирован, не скроллится */}
+        <div className="shrink-0 mb-6 flex flex-col items-center md:items-stretch text-center">
           {/* На мобилке логотип = значок; подсказка показывает, где мы */}
           <span
             className="md:hidden size-9 grid place-items-center rounded-lg bg-primary/10 text-lg"
@@ -226,7 +227,16 @@ export const Layout = () => {
             </span>
           </p>
         </div>
-        <nav className="flex-1 space-y-1">
+
+        {/* Nav — скроллится. min-h-0 — ключ к тому, чтобы flex-элемент
+            реально дал себя сжать и выпустил overflow в scroll; без него
+            overflow-y-auto не сработает (min-height: auto у flex-item).
+            Скрытый скроллбар — как в чате (единый стиль). */}
+        <nav
+          className="flex-1 min-h-0 overflow-y-auto space-y-1 pb-1
+                     [scrollbar-width:none] [-ms-overflow-style:none]
+                     [&::-webkit-scrollbar]:hidden"
+        >
           {/* «Мои магазины» — отдельная вкладка.
               • В глобальном контексте: NavLink на /stores (та же вкладка).
               • В магазинном: cross-origin ссылка на корень (/stores) с
@@ -386,7 +396,9 @@ export const Layout = () => {
               </>
             )}
         </nav>
-        <div className="border-t pt-2 md:pt-4 space-y-2">
+
+        {/* Footer — фиксирован снизу, не скроллится */}
+        <div className="shrink-0 border-t pt-2 md:pt-4 space-y-2">
           <Button
             variant="outline"
             className="w-full"
