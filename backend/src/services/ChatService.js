@@ -448,7 +448,14 @@ class ChatService {
       user: {
         id: t.user_id,
         username: t.user_username,
-        displayName: t.user_display_name || t.user_name || t.user_username || `user#${t.user_id}`,
+        // Для staff приоритет — NAME (настоящее имя из users.name), а не
+        // display_name (которое user мог сам себе придумать как ник).
+        // Fallback: display_name → username → user#id.
+        displayName:
+          t.user_name ||
+          t.user_display_name ||
+          t.user_username ||
+          `user#${t.user_id}`,
       },
     };
   }

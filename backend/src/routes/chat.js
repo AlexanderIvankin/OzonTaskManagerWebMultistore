@@ -13,6 +13,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middlewares/auth');
 const chatController = require('../controllers/chatController');
+const ChatStorageService = require('../services/ChatStorageService');
 
 router.use(authenticate);
 
@@ -38,7 +39,26 @@ router.get('/unread-count', chatController.unreadCounts);
 router.delete('/thread', chatController.deleteThread);
 
 // Вложения
-router.post('/attachments', chatController.uploadMiddleware, chatController.uploadAttachment);
+router.post(
+  '/attachments',
+  (req, res, next) => {
+    chatController.uploadMiddleware(req, res, (err) => {
+      if (!err) return next();
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        const mb = Math.round(ChatStorageService.maxBytes / (1024 * 1024));
+        return res.status(413).json({
+          error: `Файл больше ${mb} МБ`,
+          code: 'FILE_TOO_LARGE',
+        });
+      }
+      if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
+        return res.status(400).json({ error: 'Некорректная загрузка файла', code: err.code });
+      }
+      return next(err);
+    });
+  },
+  chatController.uploadAttachment
+);
 router.get('/attachments/:id', chatController.downloadAttachment);
 
 module.exports = router;

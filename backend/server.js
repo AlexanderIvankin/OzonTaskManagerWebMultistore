@@ -158,6 +158,10 @@ app.use('/api/chat', chatRoutes);
 
 // Error handler
 app.use((err, req, res, _next) => {
+  // Известные «клиентские» ошибки — не логируем как server error.
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'Файл слишком большой' });
+  }
   console.error(err.stack);
   NotificationService.logServerError(
     'express',

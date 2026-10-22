@@ -414,6 +414,12 @@ export function useChatPanel(): ChatPanelState {
         toast.error("Максимум 3 вложения на сообщение");
         return;
       }
+      // Клиентский лимит — не грузим зря, если файл точно больше серверного.
+      const MAX_MB = 10;
+      if (file.size > MAX_MB * 1024 * 1024) {
+        toast.error(`Файл больше ${MAX_MB} МБ`);
+        return;
+      }
       setUploading(true);
       try {
         const att = await chatApi.uploadAttachment(activeThreadId, file);

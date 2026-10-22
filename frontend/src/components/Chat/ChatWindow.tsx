@@ -510,6 +510,23 @@ export const ChatWindow = ({
       {/* Input — drag-n-drop перенесён сюда */}
       <form
         onSubmit={submit}
+        onPaste={(e) => {
+          if (!onUploadFile) return;
+          const items = e.clipboardData?.items;
+          if (!items) return;
+          let handledImage = false;
+          for (const item of items) {
+            if (item.kind === "file" && item.type.startsWith("image/")) {
+              const file = item.getAsFile();
+              if (file) {
+                handledImage = true;
+                void onUploadFile(file);
+              }
+            }
+          }
+          // Если в буфере картинка — не вставляем её как base64/текст в input.
+          if (handledImage) e.preventDefault();
+        }}
         className={`shrink-0 p-2 border-t flex items-center gap-2 bg-card relative transition-colors ${
           isDragging ? "bg-primary/5 ring-2 ring-inset ring-primary/40" : ""
         }`}
