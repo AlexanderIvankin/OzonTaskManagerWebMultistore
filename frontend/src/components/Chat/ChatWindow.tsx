@@ -626,7 +626,7 @@ export const ChatWindow = ({
       >
         <DialogContent className="max-w-[95vw] sm:max-w-[90vw] lg:max-w-4xl p-2 sm:p-4">
           <DialogHeader>
-            <DialogTitle className="truncate text-sm">
+            <DialogTitle className="truncate text-center text-sm">
               {previewImage?.fileName}
             </DialogTitle>
           </DialogHeader>
@@ -639,7 +639,7 @@ export const ChatWindow = ({
                   className="max-w-full max-h-[70vh] object-contain"
                 />
               </div>
-              <div className="flex justify-end">
+              <div className="flex justify-center">
                 <a
                   href={withToken(previewImage.url)}
                   download={previewImage.fileName}

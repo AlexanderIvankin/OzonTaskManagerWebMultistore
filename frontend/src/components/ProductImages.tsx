@@ -76,8 +76,8 @@ export const ProductImages = ({ productName, images }: ProductImagesProps) => {
       >
         <DialogContent className="w-auto max-w-[calc(100%-1rem)] sm:max-w-[85vw]">
           <DialogHeader className="pt-10">
-            <DialogTitle>{productName}</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="text-center">{productName}</DialogTitle>
+            <DialogDescription className="text-center">
               Нажмите крестик или Esc, чтобы закрыть.
             </DialogDescription>
           </DialogHeader>
