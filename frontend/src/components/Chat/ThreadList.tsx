@@ -41,7 +41,11 @@ export const ThreadList = ({
       <div className="shrink-0 px-3 py-2 border-b bg-card font-medium">
         💬 Диалоги
       </div>
-      <div className="flex-1 min-h-0 overflow-auto p-1">
+      <div
+        className="flex-1 min-h-0 overflow-auto p-1
+             [scrollbar-width:none] [-ms-overflow-style:none]
+             [&::-webkit-scrollbar]:hidden"
+      >
         {loading && (
           <div className="text-center text-muted-foreground py-6 text-sm">
             Загрузка...
