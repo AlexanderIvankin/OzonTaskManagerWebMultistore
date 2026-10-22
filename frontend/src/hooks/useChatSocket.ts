@@ -4,10 +4,12 @@ import {
   ChatMessageNewPayload,
   ChatReadPayload,
   ChatThreadDeletedPayload,
+  ChatMessageDeletedPayload,
   isSocketConnected,
   onChatMessageNew,
   onChatRead,
   onChatThreadDeleted,
+  onChatMessageDeleted,
   onSocketConnect,
 } from "../lib/socket";
 
@@ -15,6 +17,7 @@ interface Handlers {
   onMessageNew?: (data: ChatMessageNewPayload) => void;
   onRead?: (data: ChatReadPayload) => void;
   onThreadDeleted?: (data: ChatThreadDeletedPayload) => void;
+  onMessageDeleted?: (data: ChatMessageDeletedPayload) => void;
 }
 
 /**
@@ -31,7 +34,12 @@ export function useChatSocket(handlers: Handlers): { connected: boolean } {
   useEffect(() => {
     const offMsg = onChatMessageNew((d) => ref.current.onMessageNew?.(d));
     const offRead = onChatRead((d) => ref.current.onRead?.(d));
-    const offDel = onChatThreadDeleted((d) => ref.current.onThreadDeleted?.(d));
+    const offThreadDel = onChatThreadDeleted((d) =>
+      ref.current.onThreadDeleted?.(d),
+    );
+    const offMsgDel = onChatMessageDeleted((d) =>
+      ref.current.onMessageDeleted?.(d),
+    );
     const offConn = onSocketConnect(() => setConnected(true));
 
     // На случай, если сокет уже был подключён до монтирования
@@ -40,7 +48,8 @@ export function useChatSocket(handlers: Handlers): { connected: boolean } {
     return () => {
       offMsg();
       offRead();
-      offDel();
+      offThreadDel();
+      offMsgDel();
       offConn();
     };
   }, []);

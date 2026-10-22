@@ -193,6 +193,36 @@ class ChatThread {
     );
     return { closed: ids.length, ids };
   }
+
+  /**
+ * Пересчитать last_message_preview/author по последнему НЕудалённому
+ * сообщению. Вызывать после soft-delete.
+ */
+  static async refreshPreview(threadId) {
+    const db = getChatDB();
+    const last = await db.get(
+      `SELECT body, author_role, created_at
+     FROM chat_messages
+     WHERE thread_id = ? AND deleted_at IS NULL
+     ORDER BY id DESC
+     LIMIT 1`,
+      threadId
+    );
+    const preview = last
+      ? (String(last.body || '').replace(/\s+/g, ' ').trim().slice(0, 100) || null)
+      : null;
+    const author = last
+      ? (last.author_role === 'user' ? 'user' : 'staff')
+      : null;
+    await db.run(
+      `UPDATE chat_threads
+     SET last_message_preview = ?,
+         last_message_author = ?,
+         updated_at = CASE WHEN ? IS NULL THEN updated_at ELSE ? END
+     WHERE id = ?`,
+      preview, author, last, last ? last.created_at : null, threadId
+    );
+  }
 }
 
 module.exports = ChatThread;

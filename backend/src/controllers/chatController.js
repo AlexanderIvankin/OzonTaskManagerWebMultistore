@@ -267,6 +267,37 @@ exports.deleteThread = async (req, res, next) => {
   }
 };
 
+exports.deleteMessage = async (req, res, next) => {
+  try {
+    const messageId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(messageId) || messageId <= 0) {
+      return res.status(400).json({ error: 'Некорректный id' });
+    }
+    const identity = await ChatService.resolveChatIdentity(req.user.id);
+    const result = await ChatService.deleteMessage({
+      userId: req.user.id,
+      isStaff: identity.isStaff,
+      messageId,
+    });
+    try {
+      const payload = {
+        threadId: result.threadId,
+        messageId: result.messageId,
+        authorId: result.authorId,
+        alreadyDeleted: result.alreadyDeleted,
+      };
+      notifyChatStaff('chat_message_deleted', payload);
+      notifyChatUser(result.threadOwnerId, 'chat_message_deleted', payload);
+    } catch (socketErr) {
+      console.warn('[chatController] emit failed (deleteMessage):', socketErr.message);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+};
+
 exports.uploadAttachment = async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Файл не передан' });

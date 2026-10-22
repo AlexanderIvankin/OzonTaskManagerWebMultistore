@@ -37,6 +37,7 @@ interface ChatWindowProps {
   typingName?: string | null;
   onTyping?: () => void;
   onClose?: () => void;
+  onDeleteMessage?: (messageId: number) => Promise<void>;
   pendingAttachments?: PendingAttachment[];
   onUploadFile?: (file: File) => Promise<void>;
   onRemovePendingAttachment?: (id: number) => void;
@@ -95,6 +96,7 @@ export const ChatWindow = ({
   emptyText,
   typingName,
   onTyping,
+  onDeleteMessage,
   pendingAttachments,
   onUploadFile,
   onRemovePendingAttachment,
@@ -333,6 +335,7 @@ export const ChatWindow = ({
                         : "bg-muted text-foreground"
                     }`}
                     onMouseUp={(e) => {
+                      if (m.deletedAt) return;
                       const bubble = e.currentTarget;
                       setTimeout(() => {
                         const sel = window.getSelection();
@@ -353,53 +356,61 @@ export const ChatWindow = ({
                       }, 10);
                     }}
                   >
-                    {m.body}
-                    {m.attachments && m.attachments.length > 0 && (
-                      <div
-                        className={`mt-1 flex flex-wrap gap-1 ${isOwn ? "justify-end" : "justify-start"}`}
-                      >
-                        {m.attachments.map((a) => {
-                          const isImg =
-                            a.mimeType.startsWith("image/") && a.previewUrl;
-                          return isImg ? (
-                            <button
-                              key={a.id}
-                              type="button"
-                              onClick={() =>
-                                setPreviewImage({
-                                  url: a.url,
-                                  fileName: a.fileName,
-                                })
-                              }
-                              className="block rounded overflow-hidden border cursor-zoom-in hover:opacity-90 transition-opacity"
-                              title={a.fileName}
-                            >
-                              <img
-                                src={withToken(a.previewUrl) ?? ""}
-                                alt={a.fileName}
-                                className="max-h-48 max-w-[200px] object-cover"
-                              />
-                            </button>
-                          ) : (
-                            <a
-                              key={a.id}
-                              href={withToken(a.url)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="flex items-center gap-1 text-xs px-2 py-1 rounded border bg-background hover:bg-accent max-w-[240px]"
-                              download={a.fileName}
-                            >
-                              <span>📄</span>
-                              <span className="truncate min-w-0">
-                                {a.fileName}
-                              </span>
-                              <span className="text-muted-foreground shrink-0">
-                                ({Math.round(a.fileSize / 1024)} КБ)
-                              </span>
-                            </a>
-                          );
-                        })}
-                      </div>
+                    {m.deletedAt ? (
+                      <span className="italic opacity-60 text-xs">
+                        (сообщение удалено)
+                      </span>
+                    ) : (
+                      <>
+                        {m.body}
+                        {m.attachments && m.attachments.length > 0 && (
+                          <div
+                            className={`mt-1 flex flex-wrap gap-1 ${isOwn ? "justify-end" : "justify-start"}`}
+                          >
+                            {m.attachments.map((a) => {
+                              const isImg =
+                                a.mimeType.startsWith("image/") && a.previewUrl;
+                              return isImg ? (
+                                <button
+                                  key={a.id}
+                                  type="button"
+                                  onClick={() =>
+                                    setPreviewImage({
+                                      url: a.url,
+                                      fileName: a.fileName,
+                                    })
+                                  }
+                                  className="block rounded overflow-hidden border cursor-zoom-in hover:opacity-90 transition-opacity"
+                                  title={a.fileName}
+                                >
+                                  <img
+                                    src={withToken(a.previewUrl) ?? ""}
+                                    alt={a.fileName}
+                                    className="max-h-48 max-w-[200px] object-cover"
+                                  />
+                                </button>
+                              ) : (
+                                <a
+                                  key={a.id}
+                                  href={withToken(a.url)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="flex items-center gap-1 text-xs px-2 py-1 rounded border bg-background hover:bg-accent max-w-[240px]"
+                                  download={a.fileName}
+                                >
+                                  <span>📄</span>
+                                  <span className="truncate min-w-0">
+                                    {a.fileName}
+                                  </span>
+                                  <span className="text-muted-foreground shrink-0">
+                                    ({Math.round(a.fileSize / 1024)} КБ)
+                                  </span>
+                                </a>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
 
@@ -421,22 +432,43 @@ export const ChatWindow = ({
                       </span>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setReplyTo({
-                        id: m.id,
-                        authorName: m.author.displayName,
-                        body:
-                          m.body ||
-                          (m.attachments?.length ? "📎 Вложение" : ""),
-                      })
-                    }
-                    className="text-[13px] opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground select-none"
-                    title="Ответить"
-                  >
-                    ↩️ Ответить
-                  </button>
+                  {!m.deletedAt && (
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setReplyTo({
+                            id: m.id,
+                            authorName: m.author.displayName,
+                            body:
+                              m.body ||
+                              (m.attachments?.length ? "📎 Вложение" : ""),
+                          })
+                        }
+                        className="text-[13px] opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground select-none"
+                        title="Ответить"
+                      >
+                        ↩️ Ответить
+                      </button>
+                      {onDeleteMessage && (isOwn || isStaffViewer) && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!confirm("Удалить сообщение?")) return;
+                            try {
+                              await onDeleteMessage(m.id);
+                            } catch {
+                              /* toast уже показан в useChatPanel */
+                            }
+                          }}
+                          className="text-[13px] opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive select-none"
+                          title="Удалить сообщение"
+                        >
+                          🗑️ Удалить
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -512,20 +544,51 @@ export const ChatWindow = ({
         onSubmit={submit}
         onPaste={(e) => {
           if (!onUploadFile) return;
-          const items = e.clipboardData?.items;
-          if (!items) return;
-          let handledImage = false;
-          for (const item of items) {
-            if (item.kind === "file" && item.type.startsWith("image/")) {
-              const file = item.getAsFile();
-              if (file) {
-                handledImage = true;
-                void onUploadFile(file);
-              }
+          const cd = e.clipboardData;
+          if (!cd) return;
+
+          // ── Diagnostic (можно удалить после проверки) ──
+          console.log("[ChatWindow] paste", {
+            types: Array.from(cd.types),
+            filesCount: cd.files?.length,
+            itemsCount: cd.items?.length,
+            items: cd.items
+              ? Array.from(cd.items).map((i) => ({
+                  kind: i.kind,
+                  type: i.type,
+                }))
+              : [],
+          });
+          // ──────────────────────────────────────────────
+
+          // PRIMARY: e.clipboardData.files — самый надёжный путь для скриншотов.
+          const files = cd.files;
+          if (files && files.length > 0) {
+            const images = Array.from(files).filter((f) =>
+              f.type.startsWith("image/"),
+            );
+            if (images.length > 0) {
+              e.preventDefault();
+              for (const f of images) void onUploadFile(f);
+              return;
             }
           }
-          // Если в буфере картинка — не вставляем её как base64/текст в input.
-          if (handledImage) e.preventDefault();
+
+          // FALLBACK: items — для edge-cases, когда files пуст, а items содержит файл.
+          const items = cd.items;
+          if (!items || items.length === 0) return;
+          let handled = false;
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (item.kind !== "file" || !item.type.startsWith("image/"))
+              continue;
+            const file = item.getAsFile();
+            if (file) {
+              handled = true;
+              void onUploadFile(file);
+            }
+          }
+          if (handled) e.preventDefault();
         }}
         className={`shrink-0 p-2 border-t flex items-center gap-2 bg-card relative transition-colors ${
           isDragging ? "bg-primary/5 ring-2 ring-inset ring-primary/40" : ""

@@ -155,4 +155,9 @@ export const chatApi = {
     const { data } = await api.delete("/chat/thread", { data: { threadId } });
     return data;
   },
+
+  async deleteMessage(messageId: number): Promise<{ ok: boolean }> {
+    const { data } = await api.delete(`/chat/messages/${messageId}`);
+    return data;
+  },
 };

@@ -53,6 +53,7 @@ export interface ChatPanelState {
   handleLoadMoreThreads: () => void;
   handleLoadMoreMessages: () => void;
   handleClearThread: () => Promise<void>;
+  handleDeleteMessage: (messageId: number) => Promise<void>;
   emitTyping: () => void;
 }
 
@@ -354,6 +355,16 @@ export function useChatPanel(): ChatPanelState {
       }
       setThreads((prev) => prev.filter((t) => t.id !== data.threadId));
     },
+
+    onMessageDeleted: (data) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === data.messageId
+            ? { ...m, deletedAt: Date.now(), body: "", attachments: [] }
+            : m,
+        ),
+      );
+    },
   });
 
   // ---------- Отправка ----------
@@ -467,6 +478,26 @@ export function useChatPanel(): ChatPanelState {
     }
   }, [activeThreadId]);
 
+  const handleDeleteMessage = useCallback(async (messageId: number) => {
+    try {
+      await chatApi.deleteMessage(messageId);
+      // Оптимистичное обновление: socket-эмит придёт с теми же данными —
+      // повторно ничего не сломает (idempotent).
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? { ...m, deletedAt: Date.now(), body: "", attachments: [] }
+            : m,
+        ),
+      );
+    } catch (err: any) {
+      toast.error(
+        err?.response?.data?.error || err.message || "Не удалось удалить",
+      );
+      throw err;
+    }
+  }, []);
+
   const handleLoadMoreThreads = useCallback(() => {
     if (threadsLoading) return;
     void loadThreads(threads.length);
@@ -505,6 +536,7 @@ export function useChatPanel(): ChatPanelState {
     handleLoadMoreThreads,
     handleLoadMoreMessages,
     handleClearThread,
+    handleDeleteMessage,
     emitTyping,
   };
 }

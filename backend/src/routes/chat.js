@@ -38,6 +38,9 @@ router.get('/unread-count', chatController.unreadCounts);
 // Удалить свой тред (приватность)
 router.delete('/thread', chatController.deleteThread);
 
+// Удалить своё сообщение
+router.delete('/messages/:id', chatController.deleteMessage);
+
 // Вложения
 router.post(
   '/attachments',

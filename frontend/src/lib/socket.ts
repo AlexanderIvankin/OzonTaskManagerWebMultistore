@@ -195,6 +195,13 @@ export interface ChatThreadDeletedPayload {
   ownerId?: number;
 }
 
+export interface ChatMessageDeletedPayload {
+  threadId: number;
+  messageId: number;
+  authorId: number;
+  alreadyDeleted: boolean;
+}
+
 export function onChatMessageNew(
   cb: (data: ChatMessageNewPayload) => void,
 ): () => void {
@@ -212,6 +219,16 @@ export function onChatThreadDeleted(
   s.on("chat_thread_deleted", cb);
   return () => {
     s.off("chat_thread_deleted", cb);
+  };
+}
+
+export function onChatMessageDeleted(
+  cb: (data: ChatMessageDeletedPayload) => void,
+): () => void {
+  const s = getSocket();
+  s.on("chat_message_deleted", cb);
+  return () => {
+    s.off("chat_message_deleted", cb);
   };
 }
 

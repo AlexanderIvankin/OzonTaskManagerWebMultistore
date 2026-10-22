@@ -422,6 +422,38 @@ class ChatService {
     };
   }
 
+  static async deleteMessage({ userId, isStaff, messageId }) {
+    const db = getChatDB();
+    const msg = await db.get(
+      `SELECT m.*, t.user_id AS thread_owner_id
+     FROM chat_messages m
+     INNER JOIN chat_threads t ON t.id = m.thread_id
+     WHERE m.id = ?`,
+      messageId
+    );
+    if (!msg) {
+      const err = new Error('Сообщение не найдено');
+      err.status = 404;
+      throw err;
+    }
+    if (!isStaff && msg.author_id !== userId) {
+      const err = new Error('Можно удалять только свои сообщения');
+      err.status = 403;
+      throw err;
+    }
+    const result = await ChatMessage.softDelete(messageId);
+    if (result && !result.alreadyDeleted) {
+      await ChatThread.refreshPreview(msg.thread_id);
+    }
+    return {
+      threadId: msg.thread_id,
+      threadOwnerId: msg.thread_owner_id,
+      messageId,
+      authorId: msg.author_id,
+      alreadyDeleted: !!result?.alreadyDeleted,
+    };
+  }
+
   // =========================================================================
   // DTO (единый формат ответа)
   // =========================================================================
@@ -478,7 +510,7 @@ class ChatService {
         username: m.author_username || null,
         displayName: m.author_display_name || m.author_name || m.author_username || `user#${m.author_id}`,
       },
-      body: m.body,
+      body: m.deleted_at ? '' : m.body,
       storeId: m.store_id,
       storeName,
       replyToId: m.reply_to_id,
@@ -502,7 +534,7 @@ class ChatService {
       createdAt: m.created_at,
       editedAt: m.edited_at,
       deletedAt: m.deleted_at,
-      attachments: (attachments || []).map((a) => ({
+      attachments: m.deleted_at ? [] : (attachments || []).map((a) => ({
         id: a.id,
         fileName: a.file_name,
         mimeType: a.mime_type,

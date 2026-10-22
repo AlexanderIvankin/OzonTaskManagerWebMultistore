@@ -172,10 +172,22 @@ class ChatMessage {
    */
   static async softDelete(messageId) {
     const db = getChatDB();
+    const msg = await db.get(
+      `SELECT m.id, m.thread_id, m.deleted_at, t.user_id AS owner_id
+     FROM chat_messages m
+     INNER JOIN chat_threads t ON t.id = m.thread_id
+     WHERE m.id = ?`,
+      messageId
+    );
+    if (!msg) return null;
+    if (msg.deleted_at != null) {
+      return { alreadyDeleted: true, threadId: msg.thread_id, ownerId: msg.owner_id, messageId };
+    }
     await db.run(
       'UPDATE chat_messages SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL',
       Date.now(), messageId
     );
+    return { threadId: msg.thread_id, ownerId: msg.owner_id, messageId, alreadyDeleted: false };
   }
 }
 
