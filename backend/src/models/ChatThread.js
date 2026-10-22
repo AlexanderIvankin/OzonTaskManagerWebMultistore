@@ -56,12 +56,16 @@ class ChatThread {
    * @param {'open'|'closed'|null} [opts.status='open']
    * @param {boolean} [opts.unreadOnly=false] — только unread_for_staff > 0
    */
-  static async listForStaff({ limit = 30, offset = 0, status = 'open', unreadOnly = false } = {}) {
+  static async listForStaff({
+    limit = 30, offset = 0, status = 'open', unreadOnly = false,
+    excludeUserId = null,
+  } = {}) {
     const db = getChatDB();
     const where = [];
     const params = [];
     if (status) { where.push('t.status = ?'); params.push(status); }
     if (unreadOnly) where.push('t.unread_for_staff > 0');
+    if (excludeUserId) { where.push('t.user_id != ?'); params.push(excludeUserId); }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const totalRow = await db.get(

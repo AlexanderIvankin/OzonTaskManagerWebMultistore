@@ -28,8 +28,14 @@ exports.uploadMiddleware = upload.single('file');
 exports.getMyThread = async (req, res, next) => {
   try {
     const identity = await ChatService.resolveChatIdentity(req.user.id);
+    // Staff не имеет своего треда поддержки — он сам поддержка.
+    // Не вызываем getOrCreateMyThread, чтобы не плодить «диалоги с собой»
+    // в общем списке у всех модераторов.
+    if (identity.isStaff) {
+      return res.json({ thread: null, unreadForUser: 0, isStaff: true });
+    }
     const { thread, unreadForUser } = await ChatService.getOrCreateMyThread(req.user.id);
-    res.json({ thread, unreadForUser, isStaff: identity.isStaff });
+    res.json({ thread, unreadForUser, isStaff: false });
   } catch (err) {
     next(err);
   }
@@ -45,7 +51,7 @@ exports.listThreads = async (req, res, next) => {
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const unreadOnly = req.query.unread === '1' || req.query.unread === 'true';
 
-    const data = await ChatService.listStaffThreads({ limit, offset, unreadOnly });
+    const data = await ChatService.listStaffThreads({ limit, offset, unreadOnly, excludeUserId: req.user.id, });
     res.json(data);
   } catch (err) {
     next(err);

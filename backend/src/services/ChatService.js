@@ -102,15 +102,11 @@ class ChatService {
   /**
    * Список тредов для staff. Пагинация + сортировка по updated_at.
    */
-  static async listStaffThreads({ limit = 30, offset = 0, unreadOnly = false } = {}) {
+  static async listStaffThreads({ limit = 30, offset = 0, unreadOnly = false, excludeUserId = null } = {}) {
     const { items, total, hasMore } = await ChatThread.listForStaff({
-      limit, offset, status: 'open', unreadOnly,
+      limit, offset, status: 'open', unreadOnly, excludeUserId,
     });
-    return {
-      items: items.map((t) => this._staffThreadDto(t)),
-      total,
-      hasMore,
-    };
+    return { items: items.map((t) => this._staffThreadDto(t)), total, hasMore };
   }
 
   /**
