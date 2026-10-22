@@ -176,6 +176,8 @@ export interface ChatMessageNewPayload {
   preview: string;
   messageId: number;
   createdAt: number;
+  storeId?: string | null;
+  storeName?: string | null;
   replyTo?: {
     id: number;
     authorId: number;

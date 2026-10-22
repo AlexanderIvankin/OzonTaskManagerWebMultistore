@@ -19,6 +19,7 @@
 //   Audit-событие в notifications.db — без содержимого переписки.
 
 const { getUsersDB } = require('../config/database');
+const stores = require('../config/stores');
 const { ChatThread, ChatMessage, ChatAttachment } = require('../models');
 
 // Максимум сообщений в минуту от одного пользователя (анти-спам).
@@ -283,6 +284,8 @@ class ChatService {
           : (attachments.length ? `📎 ${attachments.length} вложение` : ''),
         messageId: message.id,
         createdAt: message.created_at,
+        storeId: messageDto.storeId,
+        storeName: messageDto.storeName,
         replyTo: messageDto.replyTo,
         attachments: messageDto.attachments,
       },
@@ -455,6 +458,14 @@ class ChatService {
   }
 
   static _messageDto(m, attachments) {
+
+    // Человеческое имя магазина (STORE_NAME из .env.storeN) — для UI-подписи
+    // «🏬 {name}» под сообщением. Если store_id = null (глобальный домен) или
+    // магазин удалён из реестра — отдаём null, фронт покажет fallback.
+    const storeName = m.store_id && stores[String(m.store_id)]
+      ? stores[String(m.store_id)].name
+      : null;
+
     return {
       id: m.id,
       threadId: m.thread_id,
@@ -466,6 +477,7 @@ class ChatService {
       },
       body: m.body,
       storeId: m.store_id,
+      storeName,
       replyToId: m.reply_to_id,
       replyTo: m.reply_to_id && m.reply_author_id != null
         ? {

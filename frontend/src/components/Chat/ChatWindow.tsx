@@ -208,7 +208,7 @@ export const ChatWindow = ({
           <Button
             variant="ghost"
             size="sm"
-            className="md:hidden"
+            className="lg:hidden"
             onClick={onBack}
             title="К списку"
           >
@@ -403,10 +403,14 @@ export const ChatWindow = ({
                     )}
                   </div>
 
-                  <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                  <div className="text-[13px] text-muted-foreground mt-1 flex items-center gap-1">
                     <span>{formatTime(m.createdAt)}</span>
                     {m.storeId && (
-                      <span title="Контекст магазина">· 🏬 {m.storeId}</span>
+                      <span
+                        title={`Магазин: ${m.storeName || `#${m.storeId}`}`}
+                      >
+                        · 🏬 {m.storeName || `Магазин ${m.storeId}`}
+                      </span>
                     )}
                     {isOwn && (
                       <span
@@ -416,23 +420,23 @@ export const ChatWindow = ({
                         {otherLastRead === null ? "" : isRead ? "✓✓" : "✓"}
                       </span>
                     )}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setReplyTo({
-                          id: m.id,
-                          authorName: m.author.displayName,
-                          body:
-                            m.body ||
-                            (m.attachments?.length ? "📎 Вложение" : ""),
-                        })
-                      }
-                      className="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground select-none"
-                      title="Ответить"
-                    >
-                      ↪️
-                    </button>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setReplyTo({
+                        id: m.id,
+                        authorName: m.author.displayName,
+                        body:
+                          m.body ||
+                          (m.attachments?.length ? "📎 Вложение" : ""),
+                      })
+                    }
+                    className="text-[13px] opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground select-none"
+                    title="Ответить"
+                  >
+                    ↩️ Ответить
+                  </button>
                 </div>
               </div>
             </div>
@@ -607,7 +611,7 @@ export const ChatWindow = ({
             setSelectionMenu(null);
             inputRef.current?.focus();
           }}
-          className="z-50 px-2 py-1 rounded-md bg-primary text-primary-foreground text-xs shadow-lg hover:opacity-90"
+          className="text-[13px] z-50 px-2 py-1 rounded-md bg-primary text-primary-foreground text-xs shadow-lg hover:opacity-90"
         >
           ↪️ Цитировать
         </button>
@@ -620,7 +624,7 @@ export const ChatWindow = ({
           if (!open) setPreviewImage(null);
         }}
       >
-        <DialogContent className="max-w-[95vw] sm:max-w-[90vw] md:max-w-4xl p-2 sm:p-4">
+        <DialogContent className="max-w-[95vw] sm:max-w-[90vw] lg:max-w-4xl p-2 sm:p-4">
           <DialogHeader>
             <DialogTitle className="truncate text-sm">
               {previewImage?.fileName}

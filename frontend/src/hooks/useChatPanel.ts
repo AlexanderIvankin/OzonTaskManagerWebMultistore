@@ -279,7 +279,8 @@ export function useChatPanel(): ChatPanelState {
               authorRole: msg.authorRole as ChatMessageDTO["authorRole"],
               author: { username: null, displayName: msg.authorName },
               body: msg.body,
-              storeId: null,
+              storeId: msg.storeId ?? null,
+              storeName: msg.storeName ?? null,
               replyToId: msg.replyTo?.id ?? null,
               replyTo: msg.replyTo
                 ? { ...msg.replyTo, quotedText: msg.replyTo.quotedText ?? null }

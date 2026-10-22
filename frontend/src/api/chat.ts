@@ -45,6 +45,7 @@ export interface ChatMessageDTO {
   author: { username: string | null; displayName: string };
   body: string;
   storeId: string | null;
+  storeName: string | null;
   replyToId: number | null;
   replyTo: ReplyToDTO | null;
   createdAt: number;
