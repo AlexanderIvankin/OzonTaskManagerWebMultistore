@@ -105,14 +105,6 @@ async function createChatTables(db) {
     console.log('✅ chat_threads: + staff_last_read_message_id');
   }
 
-  // Reply на ФРАГМЕНТ сообщения: если колонка заполнена, в цитате показываем
-  // именно этот текст, а не полное тело цитируемого.
-  const msgCols = await db.all('PRAGMA table_info(chat_messages)');
-  if (!msgCols.some((c) => c.name === 'reply_quote_text')) {
-    await db.exec('ALTER TABLE chat_messages ADD COLUMN reply_quote_text TEXT');
-    console.log('✅ chat_messages: + reply_quote_text');
-  }
-
   // --- Сообщения ---
   // author_role фиксируется на момент отправки ('user' | 'moderator' |
   // 'admin' | 'god'). Позволяет истории показывать роль «тогда», даже если
@@ -140,6 +132,14 @@ async function createChatTables(db) {
   await db.exec(
     'CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at)'
   );
+
+  // Reply на ФРАГМЕНТ сообщения: если колонка заполнена, в цитате показываем
+  // именно этот текст, а не полное тело цитируемого.
+  const msgCols = await db.all('PRAGMA table_info(chat_messages)');
+  if (!msgCols.some((c) => c.name === 'reply_quote_text')) {
+    await db.exec('ALTER TABLE chat_messages ADD COLUMN reply_quote_text TEXT');
+    console.log('✅ chat_messages: + reply_quote_text');
+  }
 
   // --- Вложения (v2: message_id NULLABLE + uploader_id + thread_id) ---
   // Сначала проверим, существует ли таблица и nullable ли message_id.
