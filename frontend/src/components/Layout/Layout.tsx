@@ -136,7 +136,10 @@ export const Layout = () => {
 
   useEffect(() => {
     loadChatUnread();
-    const offChat = onChatMessageNew(() => loadChatUnread());
+    const offChat = onChatMessageNew((d) => {
+      console.log("[Layout] chat_message_new", d);
+      loadChatUnread();
+    });
     const offRead = onChatRead(() => loadChatUnread());
     const offConnectChat = onSocketConnect(loadChatUnread);
     return () => {

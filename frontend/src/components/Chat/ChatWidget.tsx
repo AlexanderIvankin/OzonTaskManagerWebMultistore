@@ -178,6 +178,7 @@ const WidgetPanel = ({ onClose }: { onClose: () => void }) => {
           sending={chat.sending}
           typingName={chat.typingName}
           onTyping={chat.emitTyping}
+          onDeleteMessage={chat.handleDeleteMessage}
           pendingAttachments={chat.pendingAttachments}
           onUploadFile={chat.handleUploadFile}
           onRemovePendingAttachment={chat.handleRemoveAttachment}

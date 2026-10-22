@@ -32,7 +32,10 @@ export function useChatSocket(handlers: Handlers): { connected: boolean } {
   );
 
   useEffect(() => {
-    const offMsg = onChatMessageNew((d) => ref.current.onMessageNew?.(d));
+    const offMsg = onChatMessageNew((d) => {
+      console.log("[useChatSocket] chat_message_new", d);
+      ref.current.onMessageNew?.(d);
+    });
     const offRead = onChatRead((d) => ref.current.onRead?.(d));
     const offThreadDel = onChatThreadDeleted((d) =>
       ref.current.onThreadDeleted?.(d),

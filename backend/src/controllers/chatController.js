@@ -137,6 +137,22 @@ exports.sendMessage = async (req, res, next) => {
       console.warn('[chatController] socket/push failed (sendMessage):', socketErr.message);
     }
 
+    try {
+      const io = require('../socket').getIO();
+      const staffRoom = io.sockets.adapter.rooms.get('chat:staff');
+      const ownerRoom = io.sockets.adapter.rooms.get(`chat:user_${result.payloadForTarget.userId}`);
+      console.log('[chat:emit]', {
+        target: result.targetUnread,
+        threadId: result.threadId,
+        authorRole: result.authorRole,
+        staffRoomSize: staffRoom?.size || 0,
+        ownerRoomSize: ownerRoom?.size || 0,
+        ownerId: result.payloadForTarget.userId,
+      });
+    } catch (e) {
+      console.warn('[chat:emit] diag failed:', e.message);
+    }
+
     res.json({
       message: result.message,
       threadId: result.threadId,

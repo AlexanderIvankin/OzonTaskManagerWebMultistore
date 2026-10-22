@@ -165,6 +165,7 @@ export const Support = () => {
               sending={chat.sending}
               typingName={chat.typingName}
               onTyping={chat.emitTyping}
+              onDeleteMessage={chat.handleDeleteMessage}
               pendingAttachments={chat.pendingAttachments}
               onUploadFile={chat.handleUploadFile}
               onRemovePendingAttachment={chat.handleRemoveAttachment}
