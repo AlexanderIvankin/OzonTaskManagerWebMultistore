@@ -1,4 +1,6 @@
 const { Assignment, UserStats, Earnings, ProductStat, UserStore, User } = require('../models');
+const { getUsersDB, getStoreDB } = require('../config/database');
+const stores = require('../config/stores');
 const MaterialsService = require('../services/MaterialsService');
 const Notification = require('../models/Notification');
 const OrderService = require('../services/OrderService');
@@ -605,6 +607,127 @@ exports.getUserStores = async (req, res) => {
   } catch (err) {
     console.error('[getUserStores] Ошибка:', err);
     res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * Глобальный заработок пользователя по всем магазинам, где он активен
+ * (is_fired = 0). Для god — по всем магазинам реестра.
+ *
+ * GET /api/user/global-earnings?month=YYYY-MM
+ *
+ * Ответ:
+ *   {
+ *     month: '2026-10',
+ *     active:  { baseEarnings, adjustments, total },
+ *     monthly: { total, count },
+ *     perStore: [{ storeId, storeName, active, monthly, count }]
+ *   }
+ */
+exports.getGlobalEarnings = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const isGod = req.user.role === 'god';
+
+    // Месяц
+    const now = new Date();
+    const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const month = String(req.query.month || defaultMonth).trim();
+
+    const m = /^(\d{4})-(\d{2})$/.exec(month);
+    if (!m) return res.status(400).json({ error: 'Формат месяца: YYYY-MM' });
+    const year = parseInt(m[1], 10);
+    const monthIdx = parseInt(m[2], 10) - 1;
+    if (monthIdx < 0 || monthIdx > 11) {
+      return res.status(400).json({ error: 'Неверный месяц' });
+    }
+    // Границы месяца в локальном tz приложения (как TIMEZONE в config)
+    const startMs = new Date(year, monthIdx, 1, 0, 0, 0, 0).getTime();
+    const endMs = new Date(year, monthIdx + 1, 1, 0, 0, 0, 0).getTime();
+
+    // Магазины с доступом
+    let storeIds;
+    if (isGod) {
+      storeIds = stores.getStoreIds();
+    } else {
+      const usersDb = getUsersDB();
+      const rows = await usersDb.all(
+        'SELECT store_id FROM user_stores WHERE user_id = ? AND is_fired = 0',
+        userId
+      );
+      storeIds = rows
+        .map((r) => String(r.store_id))
+        .filter((id) => stores[id]); // отсеиваем невалидные/удалённые
+    }
+
+    let totalBase = 0;
+    let totalAdj = 0;
+    let totalMonthly = 0;
+    let totalCount = 0;
+    const perStore = [];
+
+    for (const storeId of storeIds) {
+      try {
+        const db = getStoreDB(storeId);
+        const [activeRow, adjRow, monthlyRow] = await Promise.all([
+          db.get(
+            'SELECT COALESCE(SUM(amount), 0) AS total FROM earnings_active WHERE user_id = ?',
+            userId
+          ),
+          db.get(
+            'SELECT COALESCE(SUM(amount), 0) AS total FROM earnings_adjustments_active WHERE user_id = ?',
+            userId
+          ),
+          db.get(
+            `SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt
+             FROM earnings_history
+             WHERE user_id = ? AND calculated_at >= ? AND calculated_at < ?`,
+            userId, startMs, endMs
+          ),
+        ]);
+
+        const base = Number(activeRow?.total) || 0;
+        const adj = Number(adjRow?.total) || 0;
+        const monthly = Number(monthlyRow?.total) || 0;
+        const cnt = Number(monthlyRow?.cnt) || 0;
+
+        if (base !== 0 || adj !== 0 || monthly !== 0) {
+          perStore.push({
+            storeId: String(storeId),
+            storeName: stores[storeId].name,
+            active: base + adj,
+            monthly,
+            count: cnt,
+          });
+        }
+
+        totalBase += base;
+        totalAdj += adj;
+        totalMonthly += monthly;
+        totalCount += cnt;
+      } catch (err) {
+        // Магазин может быть недоступен — пропускаем, но не роняем запрос
+        console.warn(`[getGlobalEarnings] store ${storeId}:`, err.message);
+      }
+    }
+
+    perStore.sort((a, b) => b.active - a.active);
+
+    res.json({
+      month,
+      active: {
+        baseEarnings: totalBase,
+        adjustments: totalAdj,
+        total: totalBase + totalAdj,
+      },
+      monthly: {
+        total: totalMonthly,
+        count: totalCount,
+      },
+      perStore,
+    });
+  } catch (err) {
+    next(err);
   }
 };
 

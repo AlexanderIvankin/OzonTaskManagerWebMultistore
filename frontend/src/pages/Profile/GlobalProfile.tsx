@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useDispatch, useSelector } from "react-redux";
-import { useNavigate } from "react-router-dom";
 import { RootState, AppDispatch } from "../../store";
-import { updateUser, fetchStores } from "../../store/authSlice";
-import { userApi } from "../../api/user";
+import { updateUser } from "../../store/authSlice";
+import { userApi, GlobalEarningsResponse } from "../../api/user";
 import { usePushSubscription } from "../../hooks/usePushSubscription";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,13 +32,15 @@ import { toast } from "sonner";
  */
 export const GlobalProfile = () => {
   const user = useSelector((s: RootState) => s.auth.user);
-  const stores = useSelector((s: RootState) => s.auth.stores);
   const dispatch = useDispatch<AppDispatch>();
-  const navigate = useNavigate();
 
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [displayNameInput, setDisplayNameInput] = useState("");
   const [savingDisplayName, setSavingDisplayName] = useState(false);
+
+  const [globalEarnings, setGlobalEarnings] =
+    useState<GlobalEarningsResponse | null>(null);
+  const [loadingEarnings, setLoadingEarnings] = useState(false);
 
   const [takingOrders, setTakingOrders] = useState(
     Boolean(user?.taking_orders),
@@ -55,14 +56,24 @@ export const GlobalProfile = () => {
     disable: disablePush,
   } = usePushSubscription();
 
-  // Подтягиваем список магазинов, чтобы показать счётчик «Мои магазины»
-  useEffect(() => {
-    dispatch(fetchStores());
-  }, [dispatch]);
-
   useEffect(() => {
     setTakingOrders(Boolean(user?.taking_orders));
   }, [user?.taking_orders]);
+
+  const loadGlobalEarnings = useCallback(async () => {
+    try {
+      const data = await userApi.getGlobalEarnings();
+      setGlobalEarnings(data);
+    } catch {
+      // не критично — карточка просто покажет «Нет данных»
+    }
+  }, []);
+
+  const refreshEarnings = async () => {
+    setLoadingEarnings(true);
+    await loadGlobalEarnings();
+    setLoadingEarnings(false);
+  };
 
   const handleSaveDisplayName = async () => {
     const value = displayNameInput.trim();
@@ -122,6 +133,10 @@ export const GlobalProfile = () => {
   }
 
   const isGuest = user?.role === "guest";
+
+  useEffect(() => {
+    if (!isGuest) void loadGlobalEarnings();
+  }, [isGuest, loadGlobalEarnings]);
 
   return (
     <div className="container mx-auto py-10 max-w-5xl space-y-6">
@@ -394,21 +409,108 @@ export const GlobalProfile = () => {
         </Card>
       )}
 
-      {/* === Ссылка на «Мои магазины» === */}
+      {/* === Глобальный заработок по всем магазинам === */}
       {!isGuest && (
         <Card>
           <CardHeader className="flex flex-col items-center justify-center text-center">
-            <CardTitle className="text-lg">🏬 Мои магазины</CardTitle>
+            <CardTitle className="text-lg">💰 Глобальный заработок</CardTitle>
             <CardDescription>
-              {stores.length > 0
-                ? `У вас доступ к ${stores.length} магазин(ам)`
-                : "Пока нет доступных магазинов"}
+              Суммарно по всем магазинам, где вы работаете.
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col items-center justify-center text-center">
-            <Button onClick={() => navigate("/stores")}>
-              Перейти в «Магазины» →
-            </Button>
+          <CardContent className="space-y-4">
+            {loadingEarnings && !globalEarnings && (
+              <p className="text-center text-sm text-muted-foreground">
+                Загрузка...
+              </p>
+            )}
+
+            {!loadingEarnings &&
+              globalEarnings &&
+              globalEarnings.perStore.length === 0 && (
+                <p className="text-center text-sm text-muted-foreground">
+                  У вас пока нет заработка ни в одном магазине.
+                </p>
+              )}
+
+            {globalEarnings && globalEarnings.perStore.length > 0 && (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-center">
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        Активный заработок
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-2xl font-bold mb-[20px]">
+                        {globalEarnings.active.total.toFixed(2)} ₽
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Базовый: {globalEarnings.active.baseEarnings.toFixed(2)}{" "}
+                        ₽
+                        <br />
+                        Корректировки:{" "}
+                        {globalEarnings.active.adjustments > 0 ? "+" : ""}
+                        {globalEarnings.active.adjustments.toFixed(2)} ₽
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        Заработок за этот месяц
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-2xl font-bold mb-[20px]">
+                        {globalEarnings.monthly.total.toFixed(2)} ₽
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Количество заказов: {globalEarnings.monthly.count}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {globalEarnings.perStore.length > 1 && (
+                  <div className="space-y-2 pt-2 border-t">
+                    <p className="text-xs text-muted-foreground text-center">
+                      По магазинам:
+                    </p>
+                    <div className="space-y-1">
+                      {globalEarnings.perStore.map((s) => (
+                        <div
+                          key={s.storeId}
+                          className="flex items-center justify-between gap-2 text-sm px-3 py-1.5 rounded border bg-muted/30"
+                        >
+                          <span className="truncate">🏬 {s.storeName}</span>
+                          <span className="text-xs text-muted-foreground shrink-0 text-right">
+                            активный: <b>{s.active.toFixed(2)} ₽</b>
+                            <br />
+                            за месяц: {s.monthly.toFixed(2)} ₽ ({s.count})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex justify-center">
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    onClick={refreshEarnings}
+                    disabled={loadingEarnings}
+                  >
+                    {loadingEarnings
+                      ? "Обновление..."
+                      : "🔄 Обновить заработок"}
+                  </Button>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
       )}

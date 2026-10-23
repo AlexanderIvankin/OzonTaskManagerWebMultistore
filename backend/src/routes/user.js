@@ -24,6 +24,9 @@ router.put('/profile', userController.updateDisplayName);
 // Резолвер разрешает /user/stores без магазина — из него строится dashboard.
 router.get('/stores', userController.getUserStores);
 
+// Глобальный заработок сотрудника по всем магазинам
+router.get('/global-earnings', userController.getGlobalEarnings);
+
 // Web Push: подписки на оповещения.
 // Подписаться может любой авторизованный (личные оповещения приходят всем
 // ролям, включая 'user'). Канал доставки (Socket.IO или Web Push) выбирает

@@ -89,6 +89,10 @@ function isGlobalPath(path) {
   // не per-store), переключается и с глобального домена тоже.
   if (path === '/user/toggle-orders') return true;
 
+  // Глобальный заработок — сумма по всем магазинам пользователя.
+  // Доступен с корневого домена (это и есть его основной сценарий).
+  if (path === '/user/global-earnings') return true;
+
   // Обновление display_name — глобальное поле users, доступно любому
   // авторизованному пользователю (в том числе без роли в магазине).
   if (path === '/user/display-name') return true;

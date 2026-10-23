@@ -1,6 +1,19 @@
 import api from ".";
 import type { StoreInfo } from "../types";
 
+export interface GlobalEarningsResponse {
+  month: string;
+  active: { baseEarnings: number; adjustments: number; total: number };
+  monthly: { total: number; count: number };
+  perStore: Array<{
+    storeId: string;
+    storeName: string;
+    active: number;
+    monthly: number;
+    count: number;
+  }>;
+}
+
 export const userApi = {
   /**
    * Список магазинов пользователя (для глобального профиля).
@@ -36,6 +49,14 @@ export const userApi = {
   // Переключить приём заказов
   toggleTakingOrders: () =>
     api.post("/user/toggle-orders").then((res) => res.data),
+
+  // Получить заработки по всем магазинам
+  getGlobalEarnings: (month?: string) =>
+    api
+      .get<GlobalEarningsResponse>("/user/global-earnings", {
+        params: month ? { month } : undefined,
+      })
+      .then((res) => res.data),
 
   // Обновить отображаемое имя (display_name) — глобальное поле users.
   // Доступно с глобального домена (магазин не нужен).
