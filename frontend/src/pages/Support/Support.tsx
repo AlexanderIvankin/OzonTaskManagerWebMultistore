@@ -45,10 +45,10 @@ export const Support = () => {
   // ---------- User ----------
   if (!chat.isStaff) {
     return (
-      <div className="flex flex-col h-[calc(100dvh-1.5rem)] lg:h-[calc(100dvh-3rem)]">
+      <div className="flex flex-col h-[calc(100dvh-1.5rem)] xl:h-[calc(100dvh-3rem)]">
         <div className="shrink-0 mb-3 flex items-start justify-between gap-2">
           <div>
-            <h1 className="text-xl lg:text-2xl font-bold">💬 Поддержка</h1>
+            <h1 className="text-xl xl:text-2xl font-bold">💬 Поддержка</h1>
             <p className="text-xs text-muted-foreground">
               Один диалог для всех магазинов. Отвечаем как можно скорее.
             </p>
@@ -121,10 +121,10 @@ export const Support = () => {
 
   // ---------- Staff ----------
   return (
-    <div className="flex flex-col h-[calc(100dvh-1.5rem)] lg:h-[calc(100dvh-3rem)]">
+    <div className="flex flex-col h-[calc(100dvh-1.5rem)] xl:h-[calc(100dvh-3rem)]">
       <div className="shrink-0 mb-3 flex items-center justify-between gap-2">
         <div>
-          <h1 className="text-xl lg:text-2xl font-bold">💬 Поддержка</h1>
+          <h1 className="text-xl xl:text-2xl font-bold">💬 Поддержка</h1>
           <p className="text-xs text-muted-foreground">
             Диалогов: {chat.threadsTotal}
           </p>
@@ -132,8 +132,8 @@ export const Support = () => {
       </div>
       <div className="flex-1 min-h-0 border rounded-lg bg-card overflow-hidden flex">
         <aside
-          className={`w-full lg:w-80 border-r flex-col min-h-0 ${
-            chat.activeThreadId ? "hidden lg:flex" : "flex"
+          className={`w-full xl:w-80 border-r flex-col min-h-0 ${
+            chat.activeThreadId ? "hidden xl:flex" : "flex"
           }`}
         >
           <ThreadList
@@ -150,7 +150,7 @@ export const Support = () => {
 
         <div
           className={`flex-1 min-w-0 min-h-0 flex-col ${
-            chat.activeThreadId ? "flex" : "hidden lg:flex"
+            chat.activeThreadId ? "flex" : "hidden xl:flex"
           }`}
         >
           {chat.activeThreadId ? (

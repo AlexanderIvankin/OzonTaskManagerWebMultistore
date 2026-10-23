@@ -225,7 +225,7 @@ export const ChatWindow = ({
           <Button
             variant="ghost"
             size="sm"
-            className="lg:hidden"
+            className="xl:hidden"
             onClick={onBack}
             title="К списку"
           >
@@ -730,7 +730,7 @@ export const ChatWindow = ({
           if (!open) setPreviewImage(null);
         }}
       >
-        <DialogContent className="max-w-[95vw] sm:max-w-[90vw] lg:max-w-4xl p-2 sm:p-4">
+        <DialogContent className="max-w-[95vw] sm:max-w-[90vw] xl:max-w-4xl p-2 sm:p-4">
           <DialogHeader>
             <DialogTitle className="truncate text-center text-sm">
               {previewImage?.fileName}
