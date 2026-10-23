@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -127,7 +126,7 @@ export const ChatWindow = ({
   const prevCount = useRef(0);
   const lastTypingEmit = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (messages.length > prevCount.current) {
@@ -161,6 +160,17 @@ export const ChatWindow = ({
     };
   }, [selectionMenu]);
 
+  // Auto-grow textarea: 1 строка → до 8 строк, выше — внутренний скролл.
+  // lineHeight=20px соответствует text-sm (14px) * leading (1.5).
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const maxHeight = 20 * 8;
+    ta.style.height = `${Math.min(ta.scrollHeight, maxHeight)}px`;
+    ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [input]);
+
   const handleInput = (val: string) => {
     setInput(val);
     if (!val.trim()) return;
@@ -171,8 +181,7 @@ export const ChatWindow = ({
     onTyping();
   };
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const doSubmit = async () => {
     const body = input.trim();
     const hasAtt = (pendingAttachments?.length || 0) > 0;
     if ((!body && !hasAtt) || sending) return;
@@ -180,9 +189,15 @@ export const ChatWindow = ({
       await onSend(body, replyTo?.id, replyTo?.quotedText);
       setInput("");
       setReplyTo(null);
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
     } catch {
       /* input и replyTo сохраняются */
     }
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await doSubmit();
   };
 
   const headerTitle = isStaffViewer
@@ -652,14 +667,21 @@ export const ChatWindow = ({
           </>
         )}
 
-        <Input
-          ref={inputRef}
+        <textarea
+          ref={textareaRef}
           value={input}
           onChange={(e) => handleInput(e.target.value)}
-          placeholder="Напишите сообщение..."
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void doSubmit();
+            }
+          }}
+          placeholder="Напишите сообщение… (Shift+Enter — новая строка)"
           maxLength={4000}
           disabled={sending}
-          className="flex-1"
+          rows={1}
+          className="flex-1 min-w-0 resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
         />
         <Button
           type="submit"
@@ -693,7 +715,7 @@ export const ChatWindow = ({
             });
             window.getSelection()?.removeAllRanges();
             setSelectionMenu(null);
-            inputRef.current?.focus();
+            textareaRef.current?.focus();
           }}
           className="text-[13px] z-50 px-2 py-1 rounded-md bg-primary text-primary-foreground text-xs shadow-lg hover:opacity-90"
         >
