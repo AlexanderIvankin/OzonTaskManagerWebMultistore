@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, authorize, STAFF_ROLES } = require('../middlewares/auth');
+const { requireModelsEnabled } = require('../middlewares/requireModelsEnabled');
 const adminController = require('../controllers/adminController');
 const multer = require('multer');
 const path = require('path');
@@ -105,22 +106,14 @@ const modelsUpload = multer({
     fileSize: (parseInt(process.env.MODELS_MAX_UPLOAD_MB, 10) || 1024) * 1024 * 1024,
   },
 });
-router.get('/models', adminController.listModels);
-router.post('/models/upload', modelsUpload.single('file'), adminController.uploadModel);
-router.get('/models/:offerId/download', adminController.downloadModel);
-router.delete('/models/:offerId', adminController.deleteModel);
+router.get('/models', requireModelsEnabled, adminController.listModels);
+router.post('/models/upload', requireModelsEnabled, modelsUpload.single('file'), adminController.uploadModel);
+router.get('/models/:offerId/download', requireModelsEnabled, adminController.downloadModel);
+router.delete('/models/:offerId', requireModelsEnabled, adminController.deleteModel);
 
 // --- Планировщик: пауза/возобновление авто-проверки очереди (аналог /pause, /resume) ---
 router.get('/scheduler/status', adminController.getSchedulerStatus);
 router.post('/scheduler/pause', adminController.pauseScheduler);
 router.post('/scheduler/resume', adminController.resumeScheduler);
-
-// --- Команды Модератора ---
-// Получить текущий заказ для модерации
-// router.get('/orders/current', adminController.getCurrentOrder);
-// Получить всю очередь
-// router.get('/orders/queue', adminController.getPendingOrders);
-// Пропустить текущий заказ
-// router.post('/orders/skip', adminController.skipOrder);
 
 module.exports = router;

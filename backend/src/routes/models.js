@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requireEmployee } = require('../middlewares/auth');
+const { requireModelsEnabled } = require('../middlewares/requireModelsEnabled');
 const modelsController = require('../controllers/modelsController');
 
 // ============================================================================
@@ -13,7 +14,7 @@ const modelsController = require('../controllers/modelsController');
 //      доступа. Bearer-токен проверяется опционально (сверка владельца).
 // ============================================================================
 
-router.post('/request/:offerId', authenticate, requireEmployee, modelsController.requestDownload);
+router.post('/request/:offerId', authenticate, requireEmployee, requireModelsEnabled, modelsController.requestDownload);
 router.get('/download/:token', modelsController.downloadByToken);
 
 module.exports = router;

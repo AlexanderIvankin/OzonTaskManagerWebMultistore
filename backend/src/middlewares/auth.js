@@ -11,7 +11,7 @@ const { STAFF_ROLES } = require('../config/staffRoles');
 async function authenticate(req, res, next) {
   let token = null;
   const authHeader = req.headers.authorization;
-  
+
   if (authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.slice(7);
   }
@@ -40,6 +40,8 @@ async function authenticate(req, res, next) {
   //
   // storeRecord объявлен СНАРУЖИ if — он нужен ниже для формирования
   // вложенного блока req.user.store (в т.ч. когда записи нет → null).
+
+  // Per-store поля. storeRecord объявлен снаружи — нужен для req.user.store.
   let storeRecord = null;
   let storeRole = null;
   let isFired = 0;
@@ -89,12 +91,20 @@ async function authenticate(req, res, next) {
     // Оба взаимоисключающие: в одном контексте заполнено только одно.
     store_name: req.store?.name || null,
     root_name: req.storeId ? null : config.rootName,
-    store: storeRecord
+    store: req.store
       ? {
-        role: storeRecord.role,
-        is_fired: !!storeRecord.is_fired,
-        earnings_factor: storeRecord.earnings_factor ?? 1.0,
-        was_employee: !!storeRecord.was_employee,
+        // role/is_fired/earnings_factor/was_employee — «моя роль в магазине».
+        // Для god без membership → role='god', is_fired=false и т.п.
+        role: storeRecord?.role ?? effectiveRole,
+        is_fired: !!storeRecord?.is_fired,
+        earnings_factor: storeRecord?.earnings_factor ?? 1.0,
+        was_employee: !!storeRecord?.was_employee,
+        // Фичи магазина — НЕ зависят от membership. Берём из конфига
+        // (req.store.features), а не из user_stores.
+        features: {
+          disableModels: !!req.store.features?.disableModels,
+          cleanPromotions: !!req.store.features?.cleanPromotions,
+        },
       }
       : null,
   };

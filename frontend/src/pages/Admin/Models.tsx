@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useSelector } from "react-redux";
+import { RootState } from "../../store";
 import {
   adminApi,
   getBlobErrorMessage,
@@ -50,7 +52,7 @@ type ModelFilter = "all" | "issued" | "cached";
 
 const MODEL_FILTERS: Array<{ value: ModelFilter; label: string }> = [
   { value: "all", label: "Все модели" },
-//  { value: "in_work", label: "🧰 В работе (выданы / в кэше)" },
+  //  { value: "in_work", label: "🧰 В работе (выданы / в кэше)" },
   { value: "issued", label: "👷 Выданы сотрудникам" },
   { value: "cached", label: "📦 В кэше сервера" },
 ];
@@ -70,6 +72,8 @@ export const Models = () => {
 
   // Фильтр по статусу «в работе» (выданы сотрудникам / в кэше сервера)
   const [filter, setFilter] = useState<ModelFilter>("all");
+
+  const user = useSelector((s: RootState) => s.auth.user);
 
   const loadModels = async () => {
     setLoading(true);
@@ -93,7 +97,7 @@ export const Models = () => {
   const query = search.trim().toLowerCase();
   const offerQuery = query.replace(/\.zip$/, "") || query;
   const visibleModels = models.filter((m) => {
-//    if (filter === "in_work" && !m.in_work) return false;
+    //    if (filter === "in_work" && !m.in_work) return false;
     if (filter === "issued" && !(m.issued_count && m.issued_count > 0))
       return false;
     if (filter === "cached" && !m.in_cache) return false;
@@ -105,7 +109,7 @@ export const Models = () => {
   });
   const hasSearch = !!query;
   const hasFilter = filter !== "all";
-//  const inWorkCount = models.filter((m) => m.in_work).length;
+  //  const inWorkCount = models.filter((m) => m.in_work).length;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -194,6 +198,29 @@ export const Models = () => {
       setDeleting(null);
     }
   };
+
+  if (user?.store?.features?.disableModels) {
+    return (
+      <div className="container mx-auto py-10 max-w-3xl">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl text-center">🧊 3D-модели</CardTitle>
+          </CardHeader>
+          <CardContent className="text-center space-y-3">
+            <div className="text-4xl">🚫</div>
+            <p className="text-muted-foreground">
+              Работа с 3D-моделями отключена в этом магазине.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Если это ошибка — попросите администратора включить опцию{" "}
+              <code>DISABLE_MODELS=false</code> в конфигурации магазина и
+              перезапустить backend.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="container mx-auto space-y-6 py-6">

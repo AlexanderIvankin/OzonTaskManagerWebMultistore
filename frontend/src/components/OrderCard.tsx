@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useSelector } from "react-redux";
+import { RootState } from "../store";
 import {
   Card,
   CardContent,
@@ -35,6 +37,11 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
   const [loading, setLoading] = useState(false);
   // Скачивание моделей: индикаторы по offer_id (одноразовый токен + скачивание)
   const [modelLoading, setModelLoading] = useState<Record<string, boolean>>({});
+
+  // DISABLE_MODELS=true в текущем магазине — скрываем блок моделей целиком.
+  // Скачивание моделей доступно только там, где работа с моделями включена.
+  const user = useSelector((s: RootState) => s.auth.user);
+  const disableModels = !!user?.store?.features?.disableModels;
 
   const handleFinish = async () => {
     if (!confirm(`Завершить заказ ${order.orderId}?`)) return;
@@ -117,6 +124,8 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
   // 3D-модель» (если для артикула есть zip). Разметка состава и фото — в
   // OrderProductsList, она общая с карточками «Завершённых заказов».
   const renderProductExtra = (p: OrderProduct) => {
+    if (disableModels) return null;
+
     const offerId = p.offer_id;
     const model = p.model;
     if (!offerId || !model) return null;
@@ -235,10 +244,11 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
       </CardFooter>
       {missingOfferIds.length > 0 && (
         <div
-          className="flex flex-col items-center justify-center gap-2 text-center px-6 pb-4
-                  sm:flex-row sm:items-center sm:justify-between sm:text-start
-                  md:flex-col md:items-center md:justify-center md:text-center
-                  xl:flex-row xl:items-center xl:justify-between xl:text-start"
+          className={`flex px-6 pb-4 gap-2 ${
+            missingOfferIds.length === 1
+              ? "flex-col items-center justify-center text-center"
+              : "flex-col items-center justify-center text-center sm:flex-row sm:items-center sm:justify-between sm:text-start md:flex-col md:items-center md:justify-center md:text-center xl:flex-row xl:items-center xl:justify-between xl:text-start"
+          }`}
         >
           <FillStatsDialog
             offerId={missingOfferIds[0]}
@@ -248,6 +258,7 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
               📝 Заполнить статистику
             </Button>
           </FillStatsDialog>
+
           {missingOfferIds.length > 1 && (
             <span className="text-xs text-muted-foreground">
               + ещё {missingOfferIds.length - 1} товаров без статистики

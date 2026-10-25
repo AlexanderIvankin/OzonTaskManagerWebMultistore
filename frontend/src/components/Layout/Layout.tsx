@@ -378,10 +378,12 @@ export const Layout = () => {
                   <span aria-hidden="true">📁</span>
                   <span className="hidden md:inline md:ml-2">Материалы</span>
                 </NavLink>
-                <NavLink to="/admin/models" className={navClass}>
-                  <span aria-hidden="true">🧊</span>
-                  <span className="hidden md:inline md:ml-2">Модели</span>
-                </NavLink>
+                {!user?.store?.features?.disableModels && (
+                  <NavLink to="/admin/models" className={navClass}>
+                    <span aria-hidden="true">🧊</span>
+                    <span className="hidden md:inline md:ml-2">Модели</span>
+                  </NavLink>
+                )}
                 <NavLink to="/admin/export" className={navClass}>
                   <span aria-hidden="true">📤</span>
                   <span className="hidden md:inline md:ml-2">

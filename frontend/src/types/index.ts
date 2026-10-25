@@ -18,6 +18,12 @@ export interface UserStore {
   is_fired: boolean;
   earnings_factor: number;
   was_employee: boolean;
+  /** Per-store фичи из реестра магазинов (STORE_NAME / DISABLE_MODELS и т.п.).
+   *  null — запрос на root-домене (магазин не определён). */
+  features?: {
+    disableModels: boolean;
+    cleanPromotions: boolean;
+  } | null;
 }
 
 export interface User {
@@ -88,6 +94,12 @@ export interface StoreInfo {
   name: string;
   subdomain: string;
   client_origin: string;
+  /** Per-store фичи из реестра магазинов (STORE_NAME / DISABLE_MODELS и т.п.).
+   *  null — запрос на root-домене (магазин не определён). */
+  features?: {
+    disableModels: boolean;
+    cleanPromotions: boolean;
+  } | null;
   role: "employee" | "moderator" | "admin" | "god" | null;
   is_fired: boolean | null;
   earnings_factor: number | null;
