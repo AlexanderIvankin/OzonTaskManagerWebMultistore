@@ -1,9 +1,9 @@
 # Project Structure
 
-_Auto-generated: 2026-10-19 18:38:07 UTC_
+_Auto-generated: 2026-10-25 15:16:42 UTC_
 
 **Root:** `OzonTaskManagerWebMultistore`  
-**Files shown:** 199  
+**Files shown:** 203  
 **Directories shown:** 41
 
 ## Tree
@@ -37,6 +37,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── auth.js
 │   │   │   ├── cooldown.js
 │   │   │   ├── rateLimiters.js
+│   │   │   ├── requireModelsEnabled.js
 │   │   │   └── storeResolver.js
 │   │   ├── models/
 │   │   │   ├── Assignment.js
@@ -65,6 +66,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── AuthService.js
 │   │   │   ├── BackupService.js
 │   │   │   ├── ChatService.js
+│   │   │   ├── ChatStorageService.js
 │   │   │   ├── CooldownService.js
 │   │   │   ├── EarningsService.js
 │   │   │   ├── EmailService.js
@@ -128,6 +130,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   └── user.ts
 │   │   ├── components/
 │   │   │   ├── Chat/
+│   │   │   │   ├── ChatWidget.tsx
 │   │   │   │   ├── ChatWindow.tsx
 │   │   │   │   └── ThreadList.tsx
 │   │   │   ├── Layout/
@@ -156,6 +159,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── RoleBadge.tsx
 │   │   │   └── StoreCard.tsx
 │   │   ├── hooks/
+│   │   │   ├── useChatPanel.ts
 │   │   │   ├── useChatSocket.ts
 │   │   │   ├── useCrossTabAuthGuard.ts
 │   │   │   └── usePushSubscription.ts

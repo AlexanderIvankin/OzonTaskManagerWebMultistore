@@ -57,8 +57,12 @@ class ChatThread {
    * @param {boolean} [opts.unreadOnly=false] — только unread_for_staff > 0
    */
   static async listForStaff({
-    limit = 30, offset = 0, status = 'open', unreadOnly = false,
+    limit = 30,
+    offset = 0,
+    status = 'open',
+    unreadOnly = false,
     excludeUserId = null,
+    hideEmpty = true,
   } = {}) {
     const db = getChatDB();
     const where = [];
@@ -66,6 +70,20 @@ class ChatThread {
     if (status) { where.push('t.status = ?'); params.push(status); }
     if (unreadOnly) where.push('t.unread_for_staff > 0');
     if (excludeUserId) { where.push('t.user_id != ?'); params.push(excludeUserId); }
+
+    // Тред «пустой», если у него нет ни одного НЕ-удалённого сообщения.
+    // Покрывает два кейса: (1) создан через ensureForUser, но user так и не
+    // написал; (2) все сообщения soft-deleted. Такой тред в списке staff'а
+    // бесполезен — ни истории, ни превью, ни действий.
+    // EXISTS использует idx_chat_messages_thread (thread_id, created_at) —
+    // дёшево для 30 строк на страницу.
+    if (hideEmpty) {
+      where.push(
+        'EXISTS (SELECT 1 FROM chat_messages m ' +
+        'WHERE m.thread_id = t.id AND m.deleted_at IS NULL)'
+      );
+    }
+
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const totalRow = await db.get(

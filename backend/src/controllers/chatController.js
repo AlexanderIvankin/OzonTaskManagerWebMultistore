@@ -50,8 +50,15 @@ exports.listThreads = async (req, res, next) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const unreadOnly = req.query.unread === '1' || req.query.unread === 'true';
+    // ?showEmpty=1 — показать и пустые треды (диагностика/аудит).
+    // По умолчанию — скрываем.
+    const hideEmpty = req.query.showEmpty !== '1';
 
-    const data = await ChatService.listStaffThreads({ limit, offset, unreadOnly, excludeUserId: req.user.id, });
+    const data = await ChatService.listStaffThreads({
+      limit, offset, unreadOnly,
+      excludeUserId: req.user.id,
+      hideEmpty,
+    });
     res.json(data);
   } catch (err) {
     next(err);
