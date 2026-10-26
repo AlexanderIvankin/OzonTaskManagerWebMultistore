@@ -16,23 +16,25 @@ const { getChatDB } = require('../config/chatDatabase');
 
 class ChatThread {
   /**
-   * Получить тред пользователя или создать новый, если его нет.
-   * Атомарно: INSERT OR IGNORE + SELECT — безопасно при параллельных
-   * вызовах (первый POST /chat/thread от двух вкладок одновременно).
-   *
+   * Получить тред пользователя или создать новый.
    * @param {number} userId
-   * @returns {Promise<object>}
+   * @param {{ withStatus?: boolean }} [opts]
+   * @returns {Promise<object|{thread: object, created: boolean}>}
+   *   По умолчанию — thread (как раньше).
+   *   С withStatus:true — { thread, created } (created=true, если INSERT
+   *   реально вставил запись — тред только что создан).
    */
-  static async ensureForUser(userId) {
+  static async ensureForUser(userId, { withStatus = false } = {}) {
     const db = getChatDB();
     const now = Date.now();
-    await db.run(
+    const result = await db.run(
       `INSERT OR IGNORE INTO chat_threads
          (user_id, created_at, updated_at, unread_for_user, unread_for_staff, status)
        VALUES (?, ?, ?, 0, 0, 'open')`,
       userId, now, now
     );
-    return this.getByUserId(userId);
+    const thread = await this.getByUserId(userId);
+    return withStatus ? { thread, created: result.changes > 0 } : thread;
   }
 
   static async getById(threadId) {

@@ -100,6 +100,129 @@ class ChatService {
   }
 
   /**
+ * Инициировать чат с пользователем СО СТОРОНЫ ПОДДЕРЖКИ.
+ * Создаёт тред (если ещё нет) и, при создании, отправляет приветствие
+ * от staff'а — чтобы у user'а появился контекст («вам пишет поддержка»)
+ * и тред не был пустым в списке staff.
+ *
+ * Если тред уже существует — приветствие НЕ отправляется (не спамим).
+ *
+ * @param {object} p
+ *   staffId       — id staff'а (автор приветствия)
+ *   staffRole     — 'admin' | 'moderator' | 'god'
+ *   staffName     — display name (для приветствия по умолчанию)
+ *   targetUserId  — кому пишем
+ *   greeting      — текст приветствия (обязателен; default — стандартный)
+ * @returns {Promise<{ threadId, thread, created: boolean }>}
+ */
+  static async getOrCreateThreadForUser({
+    staffId,
+    staffRole,
+    staffName,
+    targetUserId,
+    greeting,
+  }) {
+    // Проверка, что target существует и не staff (staff→staff — отдельный
+    // сценарий, не через публичную поддержку).
+    const { getUsersDB } = require('../config/database');
+    const usersDb = getUsersDB();
+    const target = await usersDb.get(
+      'SELECT id, role, name, display_name FROM users WHERE id = ?',
+      targetUserId
+    );
+    if (!target) {
+      const err = new Error('Пользователь не найден');
+      err.status = 404;
+      throw err;
+    }
+    // Проверка «staff?» — если target тоже staff (god или admin/moderator
+    // в любом магазине) — не разрешаем через этот endpoint.
+    const targetIdentity = await resolveChatIdentity(targetUserId);
+    if (targetIdentity.isStaff) {
+      const err = new Error('Нельзя писать staff через публичную поддержку');
+      err.status = 400;
+      throw err;
+    }
+
+    // Приветствие обязательно: если не передано — стандартное с именем staff.
+    const trimmedGreeting = String(greeting || '').trim();
+    const finalGreeting = trimmedGreeting ||
+      `Здравствуйте! На связи команда поддержки магазина! Меня зовут ${staffName || 'Поддержка'}. Чем могу помочь?`;
+
+    // ensureForUser с флагом created
+    const { thread, created } = await ChatThread.ensureForUser(targetUserId, {
+      withStatus: true,
+    });
+
+    // Приветствие — только если тред создан СЕЙЧАС. Если уже был — не спамим.
+    if (created) {
+      const message = await ChatMessage.create({
+        threadId: thread.id,
+        authorId: staffId,
+        authorRole: staffRole,
+        body: finalGreeting,
+        storeId: null,
+        replyToId: null,
+        replyQuoteText: null,
+      });
+
+      // DTO с вложениями (пусто, но форма та же)
+      const attachmentsMap = await ChatAttachment.listByMessageIds([message.id]);
+      const attachments = attachmentsMap.get(message.id) || [];
+      const messageDto = this._messageDto(message, attachments);
+
+      const payload = {
+        threadId: thread.id,
+        userId: thread.user_id,
+        authorId: staffId,
+        authorRole: staffRole,
+        authorName: staffName,
+        body: message.body,
+        preview: finalGreeting.length > 100
+          ? finalGreeting.slice(0, 99) + '…'
+          : finalGreeting,
+        messageId: message.id,
+        createdAt: message.created_at,
+        storeId: messageDto.storeId,
+        storeName: messageDto.storeName,
+        replyTo: null,
+        attachments: [],
+      };
+
+      // Live-эмиты + push — как в обычном sendMessage
+      try {
+        const { notifyChatStaff, notifyChatUser } = require('../socket');
+        notifyChatStaff('chat_message_new', payload);
+        notifyChatUser(thread.user_id, 'chat_message_new', payload);
+      } catch (socketErr) {
+        console.warn('[ChatService] emit failed (initiate):', socketErr.message);
+      }
+
+      // Push user'у если он офлайн (скорее всего, если мы только что создали тред)
+      try {
+        const { isChatUserOnline } = require('../socket');
+        if (!isChatUserOnline(thread.user_id)) {
+          const NotificationService = require('./NotificationService');
+          NotificationService.notifyChatUser(thread.user_id, {
+            threadId: thread.id,
+            authorName: staffName || 'Поддержка',
+            preview: finalGreeting.slice(0, 100),
+            isStaffMessage: true,
+          }).catch(() => { });
+        }
+      } catch (pushErr) {
+        console.warn('[ChatService] push failed (initiate):', pushErr.message);
+      }
+    }
+
+    return {
+      threadId: thread.id,
+      thread: this._threadDto(thread),
+      created,
+    };
+  }
+
+  /**
    * Список тредов для staff. Пагинация + сортировка по updated_at.
    */
   static async listStaffThreads({

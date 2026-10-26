@@ -54,6 +54,12 @@ export interface ChatMessageDTO {
   attachments: ChatAttachmentDTO[];
 }
 
+export interface InitiateThreadResponse {
+  threadId: number;
+  thread: ChatThreadDTO;
+  created: boolean;
+}
+
 export interface MyThreadResponse {
   thread: ChatThreadDTO;
   unreadForUser: number;
@@ -85,6 +91,16 @@ export interface UnreadCountsResponse {
 export const chatApi = {
   async getMyThread(): Promise<MyThreadResponse> {
     const { data } = await api.get<MyThreadResponse>("/chat/thread");
+    return data;
+  },
+  async getOrCreateThreadForUser(
+    userId: number,
+    greeting?: string,
+  ): Promise<InitiateThreadResponse> {
+    const { data } = await api.post<InitiateThreadResponse>(
+      `/chat/threads/for-user/${userId}`,
+      greeting !== undefined ? { greeting } : {},
+    );
     return data;
   },
   async listThreads(

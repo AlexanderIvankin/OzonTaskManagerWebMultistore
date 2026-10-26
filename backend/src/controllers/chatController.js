@@ -41,6 +41,35 @@ exports.getMyThread = async (req, res, next) => {
   }
 };
 
+exports.getOrCreateThreadForUser = async (req, res, next) => {
+  try {
+    const identity = await ChatService.resolveChatIdentity(req.user.id);
+    if (!identity.isStaff) {
+      return res.status(403).json({ error: 'Доступно только персоналу' });
+    }
+    const targetUserId = parseInt(req.params.userId, 10);
+    if (!Number.isInteger(targetUserId) || targetUserId <= 0) {
+      return res.status(400).json({ error: 'Некорректный userId' });
+    }
+    if (targetUserId === req.user.id) {
+      return res.status(400).json({ error: 'Нельзя открыть чат с самим собой' });
+    }
+
+    const result = await ChatService.getOrCreateThreadForUser({
+      staffId: req.user.id,
+      staffRole: identity.staffRole || 'moderator',
+      staffName: identity.displayName,
+      targetUserId,
+      greeting: req.body?.greeting ?? null,
+    });
+
+    res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+};
+
 exports.listThreads = async (req, res, next) => {
   try {
     const identity = await ChatService.resolveChatIdentity(req.user.id);

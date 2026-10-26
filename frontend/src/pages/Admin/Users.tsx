@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useSelector } from "react-redux";
+import { useNavigate } from "react-router-dom";
 import { adminApi, User } from "../../api/admin";
+import { chatApi } from "../../api/chat";
 import { RootState } from "../../store";
 import { RoleBadge, ROLE_LABELS } from "@/components/RoleBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -141,6 +143,10 @@ export const Users = () => {
   const [uploadingTeamFile, setUploadingTeamFile] = useState(false);
   // Актуальное имя файла сотрудников (приходит с сервера, зависит от BOT_VERSION)
   const [expectedTeamFileName, setExpectedTeamFileName] = useState("");
+
+  // Открыть Thread поддержки с пользователем
+  const navigate = useNavigate();
+  const [openingChat, setOpeningChat] = useState<number | null>(null);
 
   const loadUsers = async () => {
     setLoading(true);
@@ -441,6 +447,21 @@ export const Users = () => {
     }
   };
 
+  const handleOpenChat = async (userId: number) => {
+    if (openingChat) return;
+    setOpeningChat(userId);
+    try {
+      const res = await chatApi.getOrCreateThreadForUser(userId);
+      navigate(`/support?thread=${res.threadId}`);
+    } catch (err: any) {
+      toast.error(
+        err?.response?.data?.error || err.message || "Не удалось открыть чат",
+      );
+    } finally {
+      setOpeningChat(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Верхний ряд: заголовок + остальные кнопки */}
@@ -603,6 +624,18 @@ export const Users = () => {
                         )}
                       </TableCell>
                       <TableCell className="text-center space-x-1">
+                        {/* Написать пользователю в поддержку */}
+                        {!["admin", "moderator", "god"].includes(user.role) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleOpenChat(user.id)}
+                            disabled={openingChat === user.id}
+                            title="Написать в поддержку"
+                          >
+                            {openingChat === user.id ? "…" : "✉️"}
+                          </Button>
+                        )}
                         {/* Создателя может редактировать только Создатель:
                           остальным ролям кнопки не показываются */}
                         {user.role !== "god" || viewer?.role === "god" ? (
@@ -969,6 +1002,22 @@ export const Users = () => {
                         {new Date(user.created_at).toLocaleDateString("ru-RU")}
                       </TableCell>
                       <TableCell className="text-center space-x-1">
+                        {/* Кнопка отправки сообщения пользователю */}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleOpenChat(user.id)}
+                          disabled={
+                            openingChat === user.id || user.role === "guest"
+                          }
+                          title={
+                            user.role === "guest"
+                              ? "Гость — email не подтверждён"
+                              : "Написать в поддержку"
+                          }
+                        >
+                          {openingChat === user.id ? "…" : "✉️"}
+                        </Button>
                         {/* Ручное подтверждение в сотрудники: сервер выставит
                             was_employee — пользователь перейдёт во вкладку
                             «Сотрудники» */}

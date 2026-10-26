@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useChatPanel } from "../../hooks/useChatPanel";
 import { ChatWindow } from "../../components/Chat/ChatWindow";
 import { ThreadList } from "../../components/Chat/ThreadList";
@@ -14,10 +15,19 @@ import {
 import { toast } from "sonner";
 
 export const Support = () => {
-  const chat = useChatPanel();
-
   const [showConfirm, setShowConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
+
+  const [searchParams] = useSearchParams();
+
+  const initialThreadId = (() => {
+    const raw = searchParams.get("thread");
+    if (!raw) return null;
+    const n = parseInt(raw, 10);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  })();
+
+  const chat = useChatPanel({ initialThreadId });
 
   const handleClear = async () => {
     setClearing(true);

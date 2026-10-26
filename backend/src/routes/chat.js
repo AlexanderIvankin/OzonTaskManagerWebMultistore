@@ -20,6 +20,9 @@ router.use(authenticate);
 // Свой тред (создаёт при первом обращении)
 router.get('/thread', chatController.getMyThread);
 
+// Инициировать чат с пользователем со стороны staff (создаёт тред + приветствие)
+router.post('/threads/for-user/:userId', chatController.getOrCreateThreadForUser);
+
 // История сообщений треда (user — свой, staff — любой)
 router.get('/threads/:id/messages', chatController.getMessages);
 

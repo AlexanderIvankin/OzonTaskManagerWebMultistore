@@ -135,7 +135,7 @@ export const StoreProfile = () => {
               <Separator />
               <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4 text-yellow-800">
                 <p className="font-medium">
-                  ⚠️ Статус работника этого магазина не подтверждён
+                  ⚠️ Статус работника магазина не подтверждён
                 </p>
                 <p className="text-sm">
                   Обратитесь к Персоналу магазина для подтверждения статуса

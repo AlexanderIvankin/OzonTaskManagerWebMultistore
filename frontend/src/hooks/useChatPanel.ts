@@ -57,7 +57,12 @@ export interface ChatPanelState {
   emitTyping: () => void;
 }
 
-export function useChatPanel(): ChatPanelState {
+export interface UseChatPanelOptions {
+  initialThreadId?: number | null;
+}
+
+export function useChatPanel(opts: UseChatPanelOptions = {}): ChatPanelState {
+  const initialThreadId = opts.initialThreadId ?? null;
   const user = useSelector((s: RootState) => s.auth.user);
   const currentUserId = user?.id ?? 0;
 
@@ -159,6 +164,12 @@ export function useChatPanel(): ChatPanelState {
           setActiveThreadId(data.thread.id);
         } else {
           await loadThreads();
+          // После загрузки списка — открыть тред из URL (если есть).
+          // Тред должен быть в списке, т.к. он содержит приветствие
+          // (не пустой → hideEmpty его не скрывает).
+          if (initialThreadId) {
+            setActiveThreadId(initialThreadId);
+          }
         }
       } catch (err: any) {
         if (cancelled) return;
@@ -175,6 +186,19 @@ export function useChatPanel(): ChatPanelState {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ---------- Инициализация треда ----------
+  useEffect(() => {
+    if (!isStaff || !initialThreadId) return;
+    if (initialThreadId === activeThreadId) return;
+    // Если треда нет в списке — перезагрузим список, потом откроем
+    if (!threads.some((t) => t.id === initialThreadId)) {
+      void loadThreads().then(() => setActiveThreadId(initialThreadId));
+    } else {
+      setActiveThreadId(initialThreadId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialThreadId]);
 
   // ---------- Смена активного треда ----------
   useEffect(() => {
