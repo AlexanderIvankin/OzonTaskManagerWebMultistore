@@ -160,7 +160,7 @@ const renderEmployeeLabel = (
 
   // Триггер: < xl — 3 строки по центру, xl+ — одна строка
   return (
-    <div className="flex w-full min-w-0 flex-col items-center justify-center gap-x-1 gap-y-0.5 text-center xl:flex-row xl:justify-start xl:text-left">
+    <div className="flex w-full min-w-0 flex-col items-center justify-center gap-x-1 gap-y-0.5 text-center xl:flex-row">
       <div>
         <span aria-hidden title="Выданные 3D-модели">
           {coverage.icon}
@@ -534,7 +534,12 @@ export const OrdersManagement = () => {
                               }}
                             </SelectValue>
                           </SelectTrigger>
-                          <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]">
+                          <SelectContent
+                            align="start"
+                            alignItemWithTrigger={false}
+                            sideOffset={4}
+                            className="w-(--anchor-width) min-w-0 max-w-[calc(100vw-2rem)]"
+                          >
                             {list.length === 0 ? (
                               <div className="px-2 py-3 text-sm text-muted-foreground">
                                 {mode === "priority"
