@@ -120,9 +120,10 @@ const filterPriorityEmployees = (
 };
 
 // Подпись сотрудника в стиле бота:
-// 🔴 Имя (ID: 123) | 📦: активные заказы | 🖨️: принтеры | 🗃️: модели
-// На узких экранах (max-md) статистика переносится на вторую строку,
-// чтобы не вылезать за пределы Select.
+// 🔴 - индикатор наличия моделей к данному закаку
+// Имя (ID: 123)
+// 🟩 - идентификатор наличия материалов для данного заказа
+// 📦: активные заказы | 🖨️: принтеры | 🗃️: всего выдано моделей для разных артикулов
 
 const renderEmployeeLabel = (emp: EmployeeOption, order?: AwaitingOrder) => {
   const coverage = order
@@ -164,7 +165,7 @@ const renderEmployeeLabel = (emp: EmployeeOption, order?: AwaitingOrder) => {
         {" | "}
         🖨️: {emp.capacity ?? "—"}
         {" | "}
-        🗃️: {coverage.label}
+        🗃️: {emp.isGod ? "♾️" : emp.issuedOfferIds.length }
       </div>
     </div>
   );
