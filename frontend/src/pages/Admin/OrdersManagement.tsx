@@ -123,64 +123,49 @@ const filterPriorityEmployees = (
 // 🔴 Имя (ID: 123) | 📦: активные заказы | 🖨️: принтеры | 🗃️: модели
 // На узких экранах (max-md) статистика переносится на вторую строку,
 // чтобы не вылезать за пределы Select.
-const renderEmployeeLabel = (
-  emp: EmployeeOption,
-  order?: AwaitingOrder,
-  opts?: { compact?: boolean },
-) => {
-  const compact = !!opts?.compact;
+
+const renderEmployeeLabel = (emp: EmployeeOption, order?: AwaitingOrder) => {
   const coverage = order
     ? modelCoverage(emp, order)
     : { icon: "🔴", label: "нет моделей" };
+
   const materials = order
     ? materialCoverage(emp, order)
     : { icon: "⬛", label: "—" };
 
-  if (compact) {
-    // Пункт поповера: всегда по центру, при нехватке ширины — переносится
-    return (
-      <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-x-1 text-center">
-        <div>
-          <span aria-hidden title="Выданные 3D-модели">
-            {coverage.icon}
-          </span>{" "}
-          <b>{emp.name}</b>{" "}
-          <span>
-            (ID: <code>{emp.id}</code>)
-          </span>
-        </div>
-        <span className="text-muted-foreground">
-          <span className="hidden lg:inline">| </span>
-          📦: {emp.active_count ?? 0} | 🖨️: {emp.capacity ?? "—"} | 🗃️:{" "}
-          {coverage.label} | 🎨: {materials.icon}
-        </span>
-      </div>
-    );
-  }
-
-  // Триггер: < xl — 3 строки по центру, xl+ — одна строка
   return (
-    <div className="flex w-full min-w-0 flex-col items-center justify-center gap-x-1 gap-y-0.5 text-center xl:flex-row">
-      <div>
-        <span aria-hidden title="Выданные 3D-модели">
+    <div className="flex w-full min-w-0 flex-col items-center justify-center gap-y-0.5 text-center">
+      {/* Первая строка: индикаторы и имя */}
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-x-1">
+        <span
+          aria-label={`Выданные 3D-модели: ${coverage.label}`}
+          title={`Выданные 3D-модели: ${coverage.label}`}
+        >
           {coverage.icon}
-        </span>{" "}
-        <b>{emp.name}</b>{" "}
+        </span>
+
+        <b className="break-words">{emp.name}</b>
+
         <span>
           (ID: <code>{emp.id}</code>)
         </span>
+
+        <span
+          aria-label={`Материалы: ${materials.label}`}
+          title={`Материалы: ${materials.label}`}
+        >
+          {materials.icon}
+        </span>
       </div>
 
-      <span className="text-muted-foreground">
-        <span className="hidden xl:inline">| </span>
-        📦: {emp.active_count ?? 0} | 🖨️: {emp.capacity ?? "—"} | 🗃️:{" "}
-        {coverage.label}
-      </span>
-
-      <span className="text-muted-foreground">
-        <span className="hidden xl:inline">| </span>
-        🎨: {materials.icon}
-      </span>
+      {/* Вторая строка: статистика */}
+      <div className="w-full min-w-0 text-center text-sm text-muted-foreground">
+        📦: {emp.active_count ?? 0}
+        {" | "}
+        🖨️: {emp.capacity ?? "—"}
+        {" | "}
+        🗃️: {coverage.label}
+      </div>
     </div>
   );
 };
@@ -518,7 +503,7 @@ export const OrdersManagement = () => {
                         >
                           <SelectTrigger className="w-full h-auto! min-h-10 text-base max-lg:py-1.5 max-lg:text-sm [&>span]:flex-1 [&>span]:min-w-0">
                             <SelectValue
-                              className="text-base font-medium"
+                              className="text-base text-center justify-center font-medium"
                               placeholder="Выберите сотрудника"
                             >
                               {(val) => {
@@ -551,9 +536,7 @@ export const OrdersManagement = () => {
                             ) : (
                               list.map((emp) => (
                                 <SelectItem key={emp.id} value={String(emp.id)}>
-                                  {renderEmployeeLabel(emp, order, {
-                                    compact: true,
-                                  })}
+                                  {renderEmployeeLabel(emp, order)}
                                 </SelectItem>
                               ))
                             )}
