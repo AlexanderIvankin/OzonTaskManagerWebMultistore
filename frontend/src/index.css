@@ -123,6 +123,19 @@
     --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* Скрыть скроллбар в SelectContent (Radix/shadcn) */
+[data-radix-select-viewport],
+[data-slot="select-content"],
+.SelectContent {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+[data-radix-select-viewport]::-webkit-scrollbar,
+[data-slot="select-content"]::-webkit-scrollbar,
+.SelectContent::-webkit-scrollbar {
+  display: none; /* WebKit */
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

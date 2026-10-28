@@ -523,7 +523,10 @@ export const OrdersManagement = () => {
                             align="start"
                             alignItemWithTrigger={false}
                             sideOffset={4}
-                            className="w-(--anchor-width) min-w-0 max-w-[calc(100vw-2rem)]"
+                            className="
+    w-(--anchor-width) min-w-0 max-w-[calc(100vw-2rem)]
+    [mask-image:linear-gradient(to_bottom,transparent,black_8px,black_calc(100%_-_8px),transparent)]
+  "
                           >
                             {list.length === 0 ? (
                               <div className="px-2 py-3 text-sm text-muted-foreground">
