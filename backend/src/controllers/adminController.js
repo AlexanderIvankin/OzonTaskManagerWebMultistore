@@ -124,11 +124,32 @@ exports.getUsers = async (req, res, next) => {
         // models.db может быть недоступна — не критично
       }
 
+      // ── NEW: user_materials (глобальная, users.db) ──
+      // Формат: user_id -> { material: [color, ...] }
+      // Используется фронтом для индикатора «есть ли материалы для товаров заказа».
+      const materialsMap = new Map();
+      try {
+        const { getUsersDB } = require('../config/database');
+        const usersDb = getUsersDB();
+        const materialRows = await usersDb.all(
+          'SELECT user_id, material, color FROM user_materials'
+        );
+        for (const row of materialRows) {
+          if (!materialsMap.has(row.user_id)) materialsMap.set(row.user_id, {});
+          const m = materialsMap.get(row.user_id);
+          if (!m[row.material]) m[row.material] = [];
+          m[row.material].push(row.color);
+        }
+      } catch (e) {
+        console.warn('[getUsers] user_materials недоступна:', e.message);
+      }
+
       res.json(users.map((u) => ({
         ...u,
         warehouses: warehousesMap.get(u.id) || [],
         active_count: countsMap.get(u.id) || 0,
         issued_offer_ids: issuedMap.get(u.id) || [],
+        materials: materialsMap.get(u.id) || {},   // ← NEW
       })));
       return;
     }

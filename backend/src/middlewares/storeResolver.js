@@ -89,6 +89,10 @@ function isGlobalPath(path) {
   // не per-store), переключается и с глобального домена тоже.
   if (path === '/user/toggle-orders') return true;
 
+  // «Мои материалы» — глобальная страница (материалы у человека, не у магазина).
+  // Доступна на любом домене; данные живут в users.db.
+  if (path === '/user/my-materials' || path.startsWith('/user/my-materials/')) return true;
+
   // Глобальный заработок — сумма по всем магазинам пользователя.
   // Доступен с корневого домена (это и есть его основной сценарий).
   if (path === '/user/global-earnings') return true;

@@ -8,6 +8,8 @@ const UserStats = require('./UserStats');
 const Assignment = require('./Assignment');
 const Earnings = require('./Earnings');
 const Warehouse = require('./Warehouse');
+const UserMaterial = require('./UserMaterial');
+
 const ProductStat = require('./ProductStat');
 const OfferModel = require('./OfferModel');
 
@@ -29,6 +31,8 @@ module.exports = {
   Assignment,
   Earnings,
   Warehouse,
+  UserMaterial,
+  
   ProductStat,
   OfferModel,
 

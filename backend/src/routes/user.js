@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate, requireEmployee } = require('../middlewares/auth');
+const { authenticate, requireEmployee, requireStoreAccess } = require('../middlewares/auth');
 const { cooldown } = require('../middlewares/cooldown');
 const userController = require('../controllers/userController');
 
@@ -9,10 +9,6 @@ router.use(authenticate);
 
 // Профиль доступен всем авторизованным (даже с ролью 'user')
 router.get('/profile', userController.getProfile);
-
-// Обновление отображаемого имени (display_name) — только свой профиль,
-// доступно всем авторизованным (даже с ролью 'user')
-router.put('/profile', userController.updateDisplayName);
 
 // ===========================================================================
 // Глобальные (не store-scoped) роуты — доступны ЛЮБОМУ авторизованному,
@@ -26,6 +22,10 @@ router.get('/stores', userController.getUserStores);
 
 // Глобальный заработок сотрудника по всем магазинам
 router.get('/global-earnings', userController.getGlobalEarnings);
+
+// Заполнение/обновление наличия материалов для печати у сотрудника
+router.get('/my-materials', requireStoreAccess, userController.getMyMaterials);
+router.put('/my-materials/:material', requireStoreAccess, userController.updateMyMaterial);
 
 // Web Push: подписки на оповещения.
 // Подписаться может любой авторизованный (личные оповещения приходят всем

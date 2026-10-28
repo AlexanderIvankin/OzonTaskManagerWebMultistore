@@ -172,6 +172,23 @@ exports.logout = async (req, res, next) => {
 };
 
 exports.me = async (req, res) => {
-  // req.user уже установлен в middleware authenticate
-  res.json(req.user);
+  // req.user уже собран в middleware authenticate.
+  // Дополнительно — has_store_access: true, если у user есть доступ
+  // хотя бы к одному магазину (активная запись в user_stores) или он god.
+  // Нужно для глобальных страниц («Мои материалы»), которые открываются
+  // и на root-домене, где user.role = 'user'/'god'/'guest' (без per-store).
+  let hasStoreAccess = req.user.role === 'god';
+  if (!hasStoreAccess) {
+    try {
+      const { getUsersDB } = require('../config/database');
+      const row = await getUsersDB().get(
+        'SELECT 1 AS x FROM user_stores WHERE user_id = ? AND is_fired = 0 LIMIT 1',
+        req.user.id
+      );
+      hasStoreAccess = !!row;
+    } catch {
+      /* не критично: в худшем случае ссылка не покажется */
+    }
+  }
+  res.json({ ...req.user, has_store_access: hasStoreAccess });
 };

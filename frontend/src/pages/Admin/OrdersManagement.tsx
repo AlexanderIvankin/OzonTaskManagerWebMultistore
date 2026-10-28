@@ -48,6 +48,8 @@ interface EmployeeOption {
   warehouses: string[];
   // Выданные 3D-модели (offer_id из issued_models)
   issuedOfferIds: string[];
+  /** Материалы в наличии (глобальные): material -> [colors] */
+  materials: Record<string, string[]>;
   // Роль «Создатель» (god): виден в списке только самому Создателю
   isGod?: boolean;
 }
@@ -74,6 +76,31 @@ const modelCoverage = (emp: EmployeeOption, order: AwaitingOrder) => {
   return { icon: "🟡", label: "часть моделей" };
 };
 
+// === Индикатор наличия материалов у сотрудника по заказу ===
+// Сравниваем product_stats (material, color) с user_materials (глобальные).
+// Считаем только продукты, у которых статистика заполнена — по остальным
+// сравнивать нечего.
+//   ⬛ — статистика ни у одного товара не заполнена
+//   🟥 — нет материалов ни к одному товару (со stats)
+//   🟨 — часть покрыта
+//   🟩 — все покрыты
+const materialCoverage = (emp: EmployeeOption, order: AwaitingOrder) => {
+  const withStats = (order.products || []).filter(
+    (p) => p.stats && p.stats.material && p.stats.color,
+  );
+  if (withStats.length === 0) {
+    return { icon: "⬛", label: "материалы не заполнены" };
+  }
+  const covered = withStats.filter((p) => {
+    const arr = emp.materials?.[p.stats!.material];
+    return Array.isArray(arr) && arr.includes(p.stats!.color);
+  }).length;
+  if (covered === 0) return { icon: "🟥", label: "нет материалов" };
+  if (covered < withStats.length)
+    return { icon: "🟨", label: "часть материалов" };
+  return { icon: "🟩", label: "все материалы" };
+};
+
 // ID склада заказа: сначала верхнеуровневый warehouse_id,
 // затем из полных деталей (delivery_method.warehouse_id)
 const getOrderWarehouseId = (order: AwaitingOrder): string | null => {
@@ -96,23 +123,63 @@ const filterPriorityEmployees = (
 // 🔴 Имя (ID: 123) | 📦: активные заказы | 🖨️: принтеры | 🗃️: модели
 // На узких экранах (max-md) статистика переносится на вторую строку,
 // чтобы не вылезать за пределы Select.
-const renderEmployeeLabel = (emp: EmployeeOption, order?: AwaitingOrder) => {
+const renderEmployeeLabel = (
+  emp: EmployeeOption,
+  order?: AwaitingOrder,
+  opts?: { compact?: boolean },
+) => {
+  const compact = !!opts?.compact;
   const coverage = order
     ? modelCoverage(emp, order)
     : { icon: "🔴", label: "нет моделей" };
+  const materials = order
+    ? materialCoverage(emp, order)
+    : { icon: "⬛", label: "—" };
+
+  if (compact) {
+    // Пункт поповера: всегда по центру, при нехватке ширины — переносится
+    return (
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-x-1 text-center">
+        <div>
+          <span aria-hidden title="Выданные 3D-модели">
+            {coverage.icon}
+          </span>{" "}
+          <b>{emp.name}</b>{" "}
+          <span>
+            (ID: <code>{emp.id}</code>)
+          </span>
+        </div>
+        <span className="text-muted-foreground">
+          <span className="hidden lg:inline">| </span>
+          📦: {emp.active_count ?? 0} | 🖨️: {emp.capacity ?? "—"} | 🗃️:{" "}
+          {coverage.label} | 🎨: {materials.icon}
+        </span>
+      </div>
+    );
+  }
+
+  // Триггер: < xl — 3 строки по центру, xl+ — одна строка
   return (
-    <div className="flex min-w-0 flex-wrap items-center justify-center gap-x-1 text-center lg:text-left">
+    <div className="flex w-full min-w-0 flex-col items-center justify-center gap-x-1 gap-y-0.5 text-center xl:flex-row xl:justify-start xl:text-left">
       <div>
-        {" "}
-        <span aria-hidden>{coverage.icon}</span> <b>{emp.name}</b>{" "}
+        <span aria-hidden title="Выданные 3D-модели">
+          {coverage.icon}
+        </span>{" "}
+        <b>{emp.name}</b>{" "}
         <span>
           (ID: <code>{emp.id}</code>)
         </span>
       </div>
-      <span className="text-muted-foreground max-lg:w-full max-lg:whitespace-normal">
-        <span className="hidden lg:inline">| </span>
+
+      <span className="text-muted-foreground">
+        <span className="hidden xl:inline">| </span>
         📦: {emp.active_count ?? 0} | 🖨️: {emp.capacity ?? "—"} | 🗃️:{" "}
         {coverage.label}
+      </span>
+
+      <span className="text-muted-foreground">
+        <span className="hidden xl:inline">| </span>
+        🎨: {materials.icon}
       </span>
     </div>
   );
@@ -190,6 +257,7 @@ export const OrdersManagement = () => {
           active_count: u.active_count ?? 0,
           warehouses: (u.warehouses || []).map((w) => String(w.warehouse_id)),
           issuedOfferIds: u.issued_offer_ids || [],
+          materials: (u as any).materials || {},
           isGod: u.role === "god",
         }));
       setEmployees(emp);
@@ -330,7 +398,9 @@ export const OrdersManagement = () => {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div>
-                    <div className="font-semibold mb-1 text-center lg:text-start">Склад:</div>
+                    <div className="font-semibold mb-1 text-center lg:text-start">
+                      Склад:
+                    </div>
                     <div className="text-center lg:text-start">
                       {order.analytics_data?.warehouse || "не указан"}
                       {warehouseId && (
@@ -346,7 +416,9 @@ export const OrdersManagement = () => {
                     </div>
                   </div>
                   <div>
-                    <div className="font-semibold text-l text-center lg:text-start">Состав:</div>
+                    <div className="font-semibold text-l text-center lg:text-start">
+                      Состав:
+                    </div>
                     <ul className="text-sm space-y-5">
                       {order.products?.map((p, idx) => (
                         <li key={idx}>
@@ -416,9 +488,21 @@ export const OrdersManagement = () => {
                             </span>{" "}
                             Все ({visibleEmployees.length})
                           </Button>
-                          <span className="text-xs text-muted-foreground">
-                            🗃️ — выданные сотруднику 3D-модели (🟢 все модели
-                            заказа · 🟡 часть · 🔴 нет)
+                          <span className="text-xs text-muted-foreground block">
+                            <div className="flex flex-col lg:flex-row text-center sm:text-start">
+                              <div>
+                                🗃️ — выданные 3D-модели (🟢 все · 🟡 часть · 🔴
+                                нет)
+                              </div>
+
+                              {/* Точка покажется на lg и скроется на экранах поменьше */}
+                              <span className="hidden lg:inline mx-1">·</span>
+
+                              <div>
+                                🎨 — материалы (⬛ не заполнены · 🟩 все · 🟨
+                                часть · 🟥 нет)
+                              </div>
+                            </div>
                           </span>
                         </div>
                       </div>
@@ -432,7 +516,7 @@ export const OrdersManagement = () => {
                             }))
                           }
                         >
-                          <SelectTrigger className="w-full h-10 text-base max-lg:h-auto! max-lg:min-h-10 max-lg:py-1.5 max-lg:text-sm">
+                          <SelectTrigger className="w-full h-auto! min-h-10 text-base max-lg:py-1.5 max-lg:text-sm [&>span]:flex-1 [&>span]:min-w-0">
                             <SelectValue
                               className="text-base font-medium"
                               placeholder="Выберите сотрудника"
@@ -450,7 +534,7 @@ export const OrdersManagement = () => {
                               }}
                             </SelectValue>
                           </SelectTrigger>
-                          <SelectContent className="max-lg:w-auto max-lg:max-w-[calc(100vw-2rem)]">
+                          <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]">
                             {list.length === 0 ? (
                               <div className="px-2 py-3 text-sm text-muted-foreground">
                                 {mode === "priority"
@@ -462,7 +546,9 @@ export const OrdersManagement = () => {
                             ) : (
                               list.map((emp) => (
                                 <SelectItem key={emp.id} value={String(emp.id)}>
-                                  {renderEmployeeLabel(emp, order)}
+                                  {renderEmployeeLabel(emp, order, {
+                                    compact: true,
+                                  })}
                                 </SelectItem>
                               ))
                             )}

@@ -9,6 +9,7 @@ import { VerifyEmail } from "./pages/VerifyEmail/VerifyEmail";
 import { ResetPassword } from "./pages/ResetPassword/ResetPassword";
 import { Profile } from "./pages/Profile/Profile";
 import { MyStores } from "./pages/MyStores/MyStores";
+import { MyMaterials } from "./pages/MyMaterials/MyMaterials";
 import { Orders } from "./pages/Orders/Orders";
 import { Notifications } from "./pages/Notifications/Notifications";
 import { AdminPanel } from "./pages/Admin/AdminPanel";
@@ -49,6 +50,14 @@ function App() {
           <Route element={<Layout />}>
             <Route path="/profile" element={<Profile />} />
             <Route path="/stores" element={<MyStores />} />
+            <Route
+              path="/my-materials"
+              element={
+                <ProtectedRoute>
+                  <MyMaterials />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/orders"
               element={

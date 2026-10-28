@@ -1,6 +1,7 @@
 const { Assignment, UserStats, Earnings, ProductStat, UserStore, User } = require('../models');
 const { getUsersDB, getStoreDB } = require('../config/database');
 const stores = require('../config/stores');
+const UserMaterial = require('../models/UserMaterial');
 const MaterialsService = require('../services/MaterialsService');
 const Notification = require('../models/Notification');
 const OrderService = require('../services/OrderService');
@@ -77,6 +78,66 @@ exports.updateDisplayName = async (req, res) => {
   } catch (err) {
     console.error(`[updateDisplayName][store ${req.storeId}] Ошибка:`, err);
     res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * GET /api/user/my-materials
+ * Возвращает объединённый справочник (materials, colors) и текущее
+ * состояние пользователя (material -> [colors]). Один round-trip
+ * для страницы «Мои материалы».
+ */
+exports.getMyMaterials = async (req, res, next) => {
+  try {
+    const reference = MaterialsService.getMergedReference();
+    const mine = await UserMaterial.listByUser(req.user.id);
+    res.json({
+      reference,
+      mine,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PUT /api/user/my-materials/:material
+ * body: { colors: string[] } — заменяет цвета ОДНОГО материала.
+ * Валидация: material ∈ reference.materials, colors ⊆ reference.colors.
+ */
+exports.updateMyMaterial = async (req, res, next) => {
+  try {
+    const material = String(req.params.material || '').trim();
+    if (!material) {
+      return res.status(400).json({ error: 'Не указан материал' });
+    }
+
+    const reference = MaterialsService.getMergedReference();
+    if (!reference.materials.includes(material)) {
+      return res.status(400).json({ error: `Неизвестный материал: ${material}` });
+    }
+
+    const rawColors = Array.isArray(req.body?.colors) ? req.body.colors : [];
+    const colors = rawColors
+      .map((c) => String(c || '').trim())
+      .filter(Boolean);
+
+    const bad = colors.filter((c) => !reference.colors.includes(c));
+    if (bad.length) {
+      return res.status(400).json({
+        error: `Неизвестные цвета: ${bad.join(', ')}`,
+      });
+    }
+
+    await UserMaterial.replaceMaterial(req.user.id, material, colors);
+
+    res.json({
+      ok: true,
+      material,
+      colors: Array.from(new Set(colors)),
+    });
+  } catch (err) {
+    next(err);
   }
 };
 

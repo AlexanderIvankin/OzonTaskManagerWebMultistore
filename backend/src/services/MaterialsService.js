@@ -96,6 +96,56 @@ class MaterialsService {
     }
   }
 
+  /**
+ * Глобальный СПИСОК материалов и цветов, собранный из ВСЕХ
+ * materials-prices-N.json всех магазинов (мёрж множеств).
+ *
+ * Зачем мёрж, а не отдельный глобальный файл:
+ *   • магазины могут использовать разные наборы материалов;
+ *   • сотруднику нужно «я умею на этом материале» один раз для всех
+ *     магазинов — где он применим, там приоритет и сработает;
+ *   • новые магазины с новыми материалами автоматически попадают в
+ *     справочник без правки конфигов.
+ *
+ * Цены не нужны — только имена. Порядок: как в файлах (первое вхождение),
+ * для стабильного UI.
+ *
+ * @returns {{ materials: string[], colors: string[] }}
+ */
+  static getMergedReference() {
+    const materialsSet = new Set();
+    const colorsSet = new Set();
+
+    const storesList = require('../config/stores');
+
+    for (const storeId of storesList.getStoreIds()) {
+      try {
+        const filePath = this.getFilePath(storeId);
+        if (!fs.existsSync(filePath)) continue;
+        const raw = fs.readFileSync(filePath, 'utf8');
+        const data = JSON.parse(raw);
+
+        if (data && data.materials && typeof data.materials === 'object') {
+          for (const name of Object.keys(data.materials)) {
+            if (name && String(name).trim()) materialsSet.add(String(name).trim());
+          }
+        }
+        if (Array.isArray(data?.colors)) {
+          for (const c of data.colors) {
+            if (c && String(c).trim()) colorsSet.add(String(c).trim());
+          }
+        }
+      } catch (err) {
+        console.warn(`[MaterialsService.getMergedReference] store ${storeId}:`, err.message);
+      }
+    }
+
+    return {
+      materials: Array.from(materialsSet),
+      colors: Array.from(colorsSet),
+    };
+  }
+
   static getMaterials(storeId) {
     const cache = this.#getCache(storeId);
     if (!cache.materials) this.loadMaterials(storeId);

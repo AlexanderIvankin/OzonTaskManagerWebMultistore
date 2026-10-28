@@ -275,6 +275,18 @@ export const Layout = () => {
             <span className="hidden md:inline md:ml-2">Профиль</span>
           </NavLink>
 
+          {/* «Материалы» — личный набор сотрудника (какие цвета каких материалов
+    у него есть). Глобальная настройка: данные общие для всех магазинов,
+    поэтому ссылка только в глобальном контексте (root-домен).
+    На поддомене — скрыта (страница доступна только с root, см. MyMaterials). */}
+          {isGlobalContext &&
+            (user?.role === "god" || user?.has_store_access === true) && (
+              <NavLink to="/my-materials" className={navClass}>
+                <span aria-hidden="true">🎨</span>
+                <span className="hidden md:inline md:ml-2">Материалы</span>
+              </NavLink>
+            )}
+
           {/* «Заказы» — только в магазинном контексте */}
           {!isGlobalContext &&
             ["employee", "moderator", "admin", "god"].includes(

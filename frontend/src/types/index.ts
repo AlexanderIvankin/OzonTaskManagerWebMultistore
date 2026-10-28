@@ -40,6 +40,12 @@ export interface User {
   /** Эффективная роль в текущем магазине (см. EffectiveRole). */
   role: EffectiveRole;
 
+  /** Есть ли у пользователя доступ к сотрудническим фичам хотя бы в одном
+   *  магазине (активная запись в user_stores) или он god. Заполняется только
+   *  в /auth/me и /auth/login (после /auth/me). Для глобальных страниц
+   *  («Мои материалы»), где user.role недостаточно. */
+  has_store_access?: boolean;
+
   /** Уволен ли в ТЕКУЩЕМ магазине (user_stores.is_fired).
    *  SQLite отдаёт 0/1 — используйте Boolean(user.is_fired). */
   is_fired: boolean | number;

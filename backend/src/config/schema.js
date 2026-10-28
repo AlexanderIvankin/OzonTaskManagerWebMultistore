@@ -121,6 +121,23 @@ async function createUsersSchema(db) {
     console.log('✅ push_subscriptions: добавлена колонка origin');
   }
 
+  // Материалы в наличии у сотрудника — ГЛОБАЛЬНО (не per-store).
+  // Строка = «у сотрудника есть цвет X материала Y». Нет строки = нет в наличии.
+  // Справочник материалов/цветов — мёрж всех materials-prices-N.json.
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS user_materials (
+      user_id INTEGER NOT NULL,
+      material TEXT NOT NULL,
+      color TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, material, color),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  await db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_user_materials_user ON user_materials(user_id)'
+  );
+
   // Индексы
   await db.exec('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)');
   await db.exec('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');

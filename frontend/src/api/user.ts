@@ -14,12 +14,31 @@ export interface GlobalEarningsResponse {
   }>;
 }
 
+export interface MyMaterialsResponse {
+  reference: { materials: string[]; colors: string[] };
+  mine: Record<string, string[]>;
+}
+
 export const userApi = {
   /**
    * Список магазинов пользователя (для глобального профиля).
    * Работает без магазина — можно вызвать на корневом домене.
    */
   getStores: () => api.get<StoreInfo[]>("/user/stores").then((res) => res.data),
+
+  // Получить список моих материалов и цветов данного материала в наличии
+  getMyMaterials: () =>
+    api.get<MyMaterialsResponse>("/user/my-materials").then((r) => r.data),
+
+  // Обновить список моих материалов и цветов данного материала в наличии
+  updateMyMaterial: (material: string, colors: string[]) =>
+    api
+      .put<{
+        ok: boolean;
+        material: string;
+        colors: string[];
+      }>(`/user/my-materials/${encodeURIComponent(material)}`, { colors })
+      .then((r) => r.data),
 
   // Материалы и цвета текущего магазина — для формы «Заполнить статистику».
   // Тонкий payload: только названия (без цен за грамм — они для персонала).

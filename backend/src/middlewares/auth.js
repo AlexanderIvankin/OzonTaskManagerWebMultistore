@@ -126,6 +126,46 @@ function requireEmployee(req, res, next) {
   next();
 }
 
+/**
+ * «Есть доступ к сотрудническим фичам хотя бы в одном магазине».
+ *
+ * Отличие от requireEmployee: не смотрит на per-store роль в ТЕКУЩЕМ
+ * контексте (на root-домене у сотрудника req.user.role = 'user' — эффективная
+ * роль без магазина). Проверяет наличие АКТИВНОЙ записи в user_stores
+ * в ЛЮБОМ магазине.
+ *
+ * Используется для ГЛОБАЛЬНЫХ сотруднических фич («Мои материалы»),
+ * которые доступны и с root-домена.
+ */
+async function requireStoreAccess(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+  // god — всегда (даже без записи в user_stores).
+  if (req.user.role === 'god') return next();
+
+  // guest (email не подтверждён) — никогда.
+  if (req.user.role === 'guest') {
+    return res.status(403).json({ error: 'Access denied. Employee role required.' });
+  }
+
+  // employee/moderator/admin — глобальная роль 'user', но доступ есть,
+  // если есть активная запись в user_stores ХОТЯ БЫ в одном магазине.
+  // Один лёгкий индексированный запрос (idx_user_stores_user).
+  try {
+    const { getUsersDB } = require('../config/database');
+    const row = await getUsersDB().get(
+      'SELECT 1 AS x FROM user_stores WHERE user_id = ? AND is_fired = 0 LIMIT 1',
+      req.user.id
+    );
+    if (!row) {
+      return res.status(403).json({ error: 'Access denied. Employee role required.' });
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
 function authorize(...roles) {
   return (req, res, next) => {
     if (!req.user) {
@@ -138,4 +178,4 @@ function authorize(...roles) {
   };
 }
 
-module.exports = { authenticate, requireEmployee, authorize, STAFF_ROLES };
+module.exports = { authenticate, requireEmployee, requireStoreAccess, authorize, STAFF_ROLES };
