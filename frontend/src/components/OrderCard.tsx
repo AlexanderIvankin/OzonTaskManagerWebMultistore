@@ -78,6 +78,8 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
   };
 
   const handleDownloadLabel = async () => {
+    if (loading) return;
+    setLoading(true);
     try {
       const blob = await ordersApi.getLabel(order.orderId);
       const url = window.URL.createObjectURL(blob);
@@ -95,6 +97,8 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
       toast.error(
         payload?.error || err.message || "Не удалось скачать этикетку",
       );
+    } finally {
+      setLoading(false);
     }
   };
 
