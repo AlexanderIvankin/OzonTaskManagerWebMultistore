@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { adminApi, getDownloadFileName } from "../../api/admin";
+import { adminApi, AdjustmentRow, getDownloadFileName } from "../../api/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -34,12 +35,24 @@ interface EmployeeEarnings {
   is_fired: boolean;
 }
 
+const formatDateTime = (ts: number | string) =>
+  new Date(ts).toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
 export const EarningsManagement = () => {
   const [data, setData] = useState<EmployeeEarnings[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedUser, setSelectedUser] = useState<EmployeeEarnings | null>(
     null,
   );
+  const [historyUser, setHistoryUser] = useState<EmployeeEarnings | null>(null);
+  const [history, setHistory] = useState<AdjustmentRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustReason, setAdjustReason] = useState("");
   const [month, setMonth] = useState(() => {
@@ -62,6 +75,18 @@ export const EarningsManagement = () => {
   useEffect(() => {
     loadData();
   }, []);
+
+  const loadHistory = async (userId: number) => {
+    setHistoryLoading(true);
+    try {
+      const rows = await adminApi.getActiveAdjustments(userId);
+      setHistory(rows);
+    } catch (err: any) {
+      toast.error(err.message || "Не удалось загрузить историю корректировок");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   const handleSettle = async (userId: number) => {
     if (!confirm("Обнулить активный заработок сотрудника?")) return;
@@ -304,6 +329,107 @@ export const EarningsManagement = () => {
                                   Добавить корректировку
                                 </Button>
                               </div>
+                            </div>
+                          </DialogContent>
+                        )}
+                      </Dialog>
+                      <Dialog>
+                        <DialogTrigger
+                          render={
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="leading-none"
+                              onClick={() => {
+                                setHistoryUser(user);
+                                setSelectedUser(null);
+                                loadHistory(user.id);
+                              }}
+                            >
+                              📜 История
+                            </Button>
+                          }
+                        >
+                          История
+                        </DialogTrigger>
+                        {historyUser && historyUser.id === user.id && (
+                          <DialogContent className="sm:max-w-lg md:max-w-xl lg:max-w-2xl max-h-[85dvh]">
+                            <DialogHeader>
+                              <DialogTitle className="text-center pr-8 break-words">
+                                История корректировок — {historyUser.name}
+                              </DialogTitle>
+                            </DialogHeader>
+
+                            {/* min-w-0 критичен: без него grid-родитель не даст этому блоку сжаться */}
+                            <div className="space-y-4 min-w-0">
+                              {historyLoading ? (
+                                <div className="text-center py-4 text-muted-foreground">
+                                  Загрузка...
+                                </div>
+                              ) : history.length === 0 ? (
+                                <div className="text-center py-4 text-muted-foreground">
+                                  Нет активных корректировок
+                                </div>
+                              ) : (
+                                <div className="max-h-[60dvh] overflow-y-auto w-full min-w-0 border border-border rounded-lg">
+                                  {/* table-fixed = таблица уважает ширину контейнера, а не контент */}
+                                  <Table className="table-fixed w-full">
+                                    <TableHeader className="sticky top-0 z-10 bg-background shadow-[0_1px_0_0_var(--border)]">
+                                      <TableRow>
+                                        <TableHead className="text-center w-[32%]">
+                                          Дата
+                                        </TableHead>
+                                        <TableHead className="text-center">
+                                          Причина
+                                        </TableHead>
+                                        <TableHead className="text-center w-[26%]">
+                                          Сумма
+                                        </TableHead>
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {history.map((adj) => (
+                                        <TableRow key={adj.id}>
+                                          <TableCell className="text-center text-xs sm:text-sm text-muted-foreground break-words align-center whitespace-normal">
+                                            {formatDateTime(adj.adjusted_at)}
+                                          </TableCell>
+                                          <TableCell className="text-sm text-center align-center whitespace-normal break-words">
+                                            {adj.reason || "—"}
+                                          </TableCell>
+                                          <TableCell
+                                            className="text-center font-medium text-sm break-words align-center whitespace-normal"
+                                            style={{
+                                              color:
+                                                adj.amount >= 0
+                                                  ? "var(--green-10, #15803d)"
+                                                  : "var(--red-10, #b91c1c)",
+                                            }}
+                                          >
+                                            {adj.amount >= 0 ? "+" : ""}{" "}
+                                            {adj.amount.toFixed(2)} ₽
+                                          </TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                    <TableFooter className="sticky bottom-0 z-10 bg-background">
+                                      <TableRow>
+                                        <TableCell
+                                          className="font-bold whitespace-normal text-center"
+                                        >
+                                          Итого:
+                                        </TableCell>
+                                        <TableCell></TableCell>
+                                        <TableCell className="font-bold text-center whitespace-normal break-words">
+                                          {history
+                                            .reduce((s, a) => s + a.amount, 0)
+                                            .toFixed(2)}{" "}
+                                          ₽
+                                        </TableCell>
+                                      </TableRow>
+                                    </TableFooter>
+                                  </Table>
+                                </div>
+                              )}
                             </div>
                           </DialogContent>
                         )}

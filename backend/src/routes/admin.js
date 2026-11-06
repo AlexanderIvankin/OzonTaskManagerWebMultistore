@@ -83,6 +83,7 @@ router.get('/users/:id/stats', adminController.getUserStats);
 // --- Заработок ---
 router.get('/earnings/monthly', adminController.exportMonthlyEarnings);
 router.get('/earnings/active', adminController.getActiveEarningsAll);
+router.get('/earnings/adjustments/:userId', adminController.getActiveAdjustments);
 router.post('/earnings/adjust', adminController.addEarningsAdjustment);
 router.post('/earnings/settle/:id', adminController.settleEarnings);
 router.post('/earnings/reset', authorize(...STAFF_ROLES), adminController.resetAllEarnings); // персонал (admin/moderator/god)

@@ -174,6 +174,17 @@ class Earnings {
     return row ? row.total : 0;
   }
 
+  static async getActiveAdjustments(storeId, userId) {
+    const db = getStoreDB(storeId);
+    return db.all(
+      `SELECT id, amount, reason, adjusted_at
+       FROM earnings_adjustments_active
+       WHERE user_id = ?
+       ORDER BY adjusted_at DESC`,
+      userId
+    );
+  }
+
   static async clearActiveAdjustments(storeId, userId) {
     const db = getStoreDB(storeId);
     await db.run('DELETE FROM earnings_adjustments_active WHERE user_id = ?', userId);

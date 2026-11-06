@@ -136,6 +136,11 @@
   display: none; /* WebKit */
 }
 
+[data-slot="table-container"] {
+  max-width: 100%;
+  min-width: 0;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

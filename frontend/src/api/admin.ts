@@ -97,6 +97,13 @@ export interface StaffStatsRow {
   fake: boolean;
 }
 
+export interface AdjustmentRow {
+  id: number;
+  amount: number;
+  reason: string;
+  adjusted_at: number;
+}
+
 export interface Warehouse {
   warehouse_id: string;
   name: string;
@@ -344,6 +351,11 @@ export const adminApi = {
       params: { month },
       responseType: "blob",
     }),
+
+  getActiveAdjustments: (userId: number) =>
+    api
+      .get<AdjustmentRow[]>(`/admin/earnings/adjustments/${userId}`)
+      .then((res) => res.data),
 
   getActiveEarningsAll: () =>
     api.get("/admin/earnings/active").then((res) => res.data),

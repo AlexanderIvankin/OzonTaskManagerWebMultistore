@@ -1231,6 +1231,20 @@ exports.getActiveEarningsAll = async (req, res, next) => {
   }
 };
 
+exports.getActiveAdjustments = async (req, res, next) => {
+  try {
+    const storeId = req.storeId;
+    const userId = parseInt(req.params.userId);
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    const rows = await Earnings.getActiveAdjustments(storeId, userId);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.addEarningsAdjustment = async (req, res, next) => {
   try {
     const storeId = req.storeId;
