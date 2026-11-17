@@ -54,6 +54,25 @@ class ReturnsReportService {
         return await client.post(apiPath, body);
       } catch (err) {
         const status = err.response?.status;
+
+        // 403 — не ретраим и явно классифицируем: неверный ключ
+        // или нет прав на метод в кабинете Ozon. Retry бессмыслен.
+        if (status === 403) {
+          const ozonMsg = err.response?.data?.message
+            || err.response?.data?.error
+            || 'Доступ запрещён';
+          const e = new Error(
+            `Ozon 403 (${apiPath}): нет прав у магазина ${storeId}. ` +
+            `Ответ Ozon: «${ozonMsg}». ` +
+            `Проверьте OZON_CLIENT_ID / OZON_API_KEY в .env.store${storeId} ` +
+            `и права метода в кабинете Ozon (Настройки → API-ключи).`
+          );
+          e.code = 'OZON_PERMISSION_DENIED';
+          e.storeId = String(storeId);
+          e.apiPath = apiPath;
+          throw e;
+        }
+
         const isRetryable = !status || status === 429 || [500, 502, 503, 504].includes(status);
         if (!isRetryable || attempt === retries) throw err;
 

@@ -341,6 +341,32 @@ function stopCooldownCleaner() {
 //  Первичная синхронизация (после старта) делается через setTimeout,
 //  чтобы не блокировать запуск сервера.
 // ============================================================================
+// Магазины, у которых Ozon вернул 403 на создание отчёта.
+// Не гоняем их каждый час — ждём, пока админ не исправит ключи
+// и не запустит sync вручную из админки.
+const returnsReportBlockedStores = new Set(); // Set<string>
+
+function isReturnsReportBlocked(storeId) {
+  return returnsReportBlockedStores.has(String(storeId));
+}
+
+function blockReturnsReportStore(storeId, reason) {
+  const sid = String(storeId);
+  if (returnsReportBlockedStores.has(sid)) return;
+  returnsReportBlockedStores.add(sid);
+  console.warn(
+    `[SCHEDULER][returnsReportSync] store ${sid} заблокирован до ручного сброса: ${reason}`
+  );
+}
+
+function clearReturnsReportBlock(storeId) {
+  returnsReportBlockedStores.delete(String(storeId));
+}
+
+function clearAllReturnsReportBlocks() {
+  returnsReportBlockedStores.clear();
+}
+
 let returnsReportSyncRunner = null;
 
 function startReturnsReportSyncChecker() {
@@ -352,18 +378,43 @@ function startReturnsReportSyncChecker() {
     name: 'returnsReportSync',
     intervalMs: intervalMinutes * 60 * 1000,
     run: async (storeId) => {
-      await ReturnsReportService.syncAuto(storeId);
+      if (isReturnsReportBlocked(storeId)) {
+        console.log(
+          `[SCHEDULER][returnsReportSync] store ${storeId} пропущен (403 ранее — ждём ручного sync)`
+        );
+        return;
+      }
+      try {
+        await ReturnsReportService.syncAuto(storeId);
+      } catch (err) {
+        if (err?.code === 'OZON_PERMISSION_DENIED') {
+          blockReturnsReportStore(storeId, err.message);
+          NotificationService.logServerError(
+            'scheduler.returnsReportSync.permission',
+            err,
+            { storeId, level: 'warn' },   // warn — не спамит push'ами
+            'warn'
+          );
+          return;  // НЕ пробрасываем: пусть runs продолжает остальные магазины
+        }
+        throw err;
+      }
     },
   });
+
   returnsReportSyncRunner.start();
 
   // Первичная синхронизация — через 10 сек после старта
   setTimeout(async () => {
     for (const storeId of stores.getStoreIds()) {
       try {
-        console.log(`[SCHEDULER][returnsReportSync] Первичная синхронизация store ${storeId}...`);
         await ReturnsReportService.syncAuto(storeId);
       } catch (err) {
+        if (err?.code === 'OZON_PERMISSION_DENIED') {
+          blockReturnsReportStore(storeId, err.message);
+          console.warn(`[SCHEDULER][returnsReportSync] store ${storeId}: 403, заблокирован до фикса ключей`);
+          continue;
+        }
         console.error(`[SCHEDULER][returnsReportSync] initial store ${storeId} упал:`, err.message);
         NotificationService.logServerError('scheduler.returnsReportSync.initial', err, { storeId });
       }
@@ -1268,6 +1319,10 @@ module.exports = {
 
   startCooldownCleaner,
   stopCooldownCleaner,
+
+  clearReturnsReportBlock,
+  clearAllReturnsReportBlocks,
+  isReturnsReportBlocked,
 
   startReturnsReportSyncChecker,
   stopReturnsReportSyncChecker,

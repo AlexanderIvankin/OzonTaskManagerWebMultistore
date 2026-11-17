@@ -1642,10 +1642,31 @@ exports.syncReturnsReport = async (req, res, next) => {
     console.log(
       `[ADMIN][store ${storeId}] ${req.user?.name || req.user?.id} запустил ручную синхронизацию отчёта возвратов`
     );
+
+    // Ручной запуск всегда снимает блокировку — если админ поправил ключи,
+    // следующий авто-прогон снова попробует.
+    try {
+      const scheduler = require('../scheduler');
+      if (typeof scheduler.clearReturnsReportBlock === 'function') {
+        scheduler.clearReturnsReportBlock(storeId);
+      }
+    } catch { /* не критично */ }
+
     const result = await ReturnsReportService.syncAuto(storeId);
     res.json({ message: 'Синхронизация возвратов выполнена', ...result });
   } catch (err) {
     console.error(`[syncReturnsReport][store ${req.storeId}] Ошибка:`, err);
+
+    // 403 — не «ошибка сервера», а неверная конфигурация магазина.
+    // Отдаём 400 с понятным кодом, чтобы фронт показал не «Internal Server Error»,
+    // а конкретную инструкцию.
+    if (err?.code === 'OZON_PERMISSION_DENIED') {
+      return res.status(400).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
+
     if (err.response?.data) {
       return res.status(400).json({
         error: `Ozon API: ${err.message}`,
