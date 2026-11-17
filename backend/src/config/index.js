@@ -142,6 +142,24 @@ module.exports = {
     intervalMinutes: int('ORDER_STATUS_SYNC_INTERVAL_MINUTES', 60),
   },
 
+  // --- Возвраты: шаг 1 — синхронизация отчёта постингов ---
+  returnsReport: {
+    // Окно первой загрузки / после долгого простоя (дни)
+    syncDaysFull: int('RETURNS_REPORT_SYNC_DAYS_FULL', 30),
+    // Перекрытие с предыдущим прогоном (часы) — защита от пропусков
+    syncOverlapHours: int('RETURNS_REPORT_SYNC_OVERLAP_HOURS', 48),
+    // Интервал между прогонами (минуты)
+    syncIntervalMin: int('RETURNS_REPORT_SYNC_INTERVAL_MIN', 60),
+
+    // delivery_schema для отчёта постингов (массив: ['fbs'] / ['fbs','fbo'])
+    deliverySchema: str('RETURNS_REPORT_DELIVERY_SCHEMA', 'fbs')
+      .split(',').map((s) => s.trim()).filter(Boolean),
+
+    // status_alias (массив, пусто — не передаём, фильтр только по CSV-колонке G)
+    statusAlias: str('RETURNS_REPORT_STATUS_ALIAS', '')
+      .split(',').map((s) => s.trim()).filter(Boolean),
+  },
+
   // --- Очистка акций (глобальное время; per-store enabled — в stores.js) ---
   promotions: {
     cleanHour: int('PROMOTION_CLEAN_HOUR', 3),

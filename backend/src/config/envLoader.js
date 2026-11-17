@@ -68,18 +68,59 @@ const storeEnvs = loadAllStoreEnvs();
  *   - затем per-store переопределения из .env.store<ID>
  * Также подставляет {STORE_ID} в шаблонных строках (например, DB_PATH=./store-{STORE_ID}.db).
  */
+/**
+ * Собирает конфиг одного магазина:
+ *   - глобальные переменные (process.env)
+ *   - затем per-store переопределения из .env.store<ID>
+ *   - затем раскрывает ${VAR} / {VAR} для ВСЕХ известных ключей merged
+ *     (включая STORE_ID → SUBDOMAIN → CLIENT_ORIGIN — цепочки любой длины).
+ *
+ * Раскрытие делается в несколько проходов (до 5), чтобы цепочки
+ * вида CLIENT_ORIGIN=https://${SUBDOMAIN}.x, SUBDOMAIN=store${STORE_ID}
+ * срабатывали независимо от порядка строк в .env файле.
+ *
+ * Имена переменных регистронезависимы: ${SUBDOMAIN} и ${subdomain} → одно и то же.
+ * Неизвестные ссылки остаются как есть (${NOPE} → "${NOPE}").
+ */
 function getStoreConfig(storeId) {
   const perStore = storeEnvs[String(storeId)] || {};
-
-  // Мерджим: per-store переопределяет глобальные
   const merged = { ...process.env, ...perStore };
   merged.STORE_ID = String(storeId);
 
-  // Подставляем {STORE_ID} в значениях
-  for (const key of Object.keys(merged)) {
-    if (typeof merged[key] === 'string') {
-      merged[key] = merged[key].replace(/\{STORE_ID\}/g, merged.STORE_ID);
+  const VAR_RE = /\$?\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  const MAX_PASSES = 5;
+
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    // Регистронезависимая карта ключей: 'subdomain' → 'SUBDOMAIN'
+    const keyMap = new Map();
+    for (const k of Object.keys(merged)) {
+      keyMap.set(k.toUpperCase(), k);
     }
+
+    let changed = false;
+    for (const key of Object.keys(merged)) {
+      const value = merged[key];
+      if (typeof value !== 'string' || !value.includes('{')) continue;
+
+      const replaced = value.replace(VAR_RE, (match, varName) => {
+        // Не раскрываем self-reference (X=${X})
+        if (varName.toUpperCase() === key.toUpperCase()) return match;
+
+        const actualKey = keyMap.get(varName.toUpperCase());
+        if (!actualKey) return match;             // неизвестная переменная — оставить как есть
+
+        const replacement = merged[actualKey];
+        if (replacement === undefined || replacement === null) return match;
+        if (String(replacement) === match) return match; // защита от циклов
+
+        changed = true;
+        return String(replacement);
+      });
+
+      if (replaced !== value) merged[key] = replaced;
+    }
+
+    if (!changed) break;
   }
 
   return merged;

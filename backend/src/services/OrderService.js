@@ -14,6 +14,7 @@ const {
 } = require('../state');
 const EarningsService = require('./EarningsService');
 const ModelService = require('./ModelService');
+const StoredReturnsService = require('./StoredReturnsService');
 
 // Статусы Ozon, в которых заказ считается «живым» для сотрудника:
 //   awaiting_packaging — активный заказ (в работе);
@@ -238,22 +239,65 @@ class OrderService {
       pendingNewOrdersByStore.set(storeKey, newOrders);
       console.log(`[CHECK][store ${storeId}] Очередь обновлена, заказов: ${newOrders.length}`);
 
+      // === ХРАНИЛИЩЕ ВОЗВРАТОВ: матчинг по offer_id/sku ===
+      // Ищем готовые возвраты у сотрудников ЭТОГО магазина. Не блокируем
+      // основной поток, если что-то упадёт: логируем и шлём как обычно.
+      let storedMatchesByOrder = new Map();
+      try {
+        storedMatchesByOrder = await StoredReturnsService.findMatchesForOrders(
+          storeId,
+          newOrders.map((o) => ({
+            orderId: o.posting_number,
+            products: o.products || [],
+          })),
+        );
+      } catch (storedErr) {
+        console.error(`[CHECK][store ${storeId}] findMatchesForOrders:`, storedErr.message);
+        NotificationService.logServerError(
+          'OrderService.checkNewOrders.storedReturns',
+          storedErr,
+          { storeId }
+        );
+      }
+
+      const ordersPayload = newOrders.map(o => ({
+        posting_number: o.posting_number,
+        products_count: o.products?.length || 0,
+        stored_matches_count: (storedMatchesByOrder.get(o.posting_number) || []).length,
+      }));
+
       NotificationService.notifyStaff(
         'new_orders_available',
         {
           count: newOrders.length,
-          orders: newOrders.map(o => ({
-            posting_number: o.posting_number,
-            products_count: o.products?.length || 0,
+          orders: ordersPayload,
+          storedMatches: Array.from(storedMatchesByOrder.entries()).map(([orderId, ms]) => ({
+            orderId,
+            matches: ms,
           })),
         },
-        {
-          storeId,
-          roles: ['moderator'],
-          replaceUnreadType: 'new_orders_available',
-          push: false,
-        },
+        { storeId, roles: ['moderator'], replaceUnreadType: 'new_orders_available', push: false },
       );
+
+      // Отдельное «жирное» оповещение — только если есть совпадения.
+      if (storedMatchesByOrder.size > 0) {
+        NotificationService.notifyStaff(
+          'stored_return_available',
+          {
+            count: storedMatchesByOrder.size,
+            orders: Array.from(storedMatchesByOrder.entries()).map(([orderId, ms]) => ({
+              orderId,
+              matches: ms,
+            })),
+          },
+          {
+            storeId,
+            roles: ['moderator'],
+            replaceUnreadType: 'stored_return_available',
+            push: false,
+          }
+        );
+      }
 
       // Если нет активного заказа и есть заказы – берём первый
       if (!currentOrderProcessingByStore.has(storeKey) && newOrders.length) {
@@ -450,6 +494,7 @@ class OrderService {
   static async finishOrder(storeId, orderId, userId) {
     console.log(`[FINISH][store ${storeId}] === Начало завершения заказа ${orderId} сотрудником ${userId} ===`);
     let transactionCompleted = false;
+    let consumedStoredReturns = [];
     const compositeKey = stateKey(storeId, orderId);
 
     try {
@@ -535,6 +580,43 @@ class OrderService {
         await db.run('COMMIT');
         transactionCompleted = true;
         console.log(`[FINISH][store ${storeId}] Транзакция закоммичена для заказа ${orderId}`);
+
+        // === СПИСАНИЕ ИЗ ХРАНИЛИЩА ВОЗВРАТОВ ===
+        // Делаем ПОСЛЕ коммита store-транзакции. Хранилище — users.db,
+        // отдельная транзакция (2-файловую атомарность SQLite не гарантирует).
+        // При ошибке — не роняем заказ (он уже completed), логируем и
+        // уведомляем персонал: разберутся вручную.
+        try {
+          consumedStoredReturns = await StoredReturnsService.consumeForOrder(
+            userId,
+            orderId,
+            storeId,
+            orderDetails?.products || []
+          );
+          if (consumedStoredReturns.length) {
+            console.log(
+              `[FINISH][store ${storeId}] Списано из хранилища возвратов: ` +
+              `${consumedStoredReturns.reduce((s, c) => s + c.quantity, 0)} шт. (${consumedStoredReturns.length} партий)`
+            );
+          }
+        } catch (consumeErr) {
+          console.error(
+            `[FINISH][store ${storeId}] consumeForOrder упал:`, consumeErr
+          );
+          NotificationService.logServerError(
+            'OrderService.finishOrder.storedReturns',
+            consumeErr,
+            { storeId, orderId, userId }
+          );
+          NotificationService.notifyStaff('stored_return_consume_failed', {
+            orderId,
+            userName: user.name,
+            error: consumeErr.message,
+          }, { storeId });
+        }
+        // Прикрепляем к объекту завершения, чтобы потом попало в payload.
+        finishOrder._lastConsumed = consumedStoredReturns; // (передадим ниже через замыкание)
+
       } catch (txError) {
         await db.run('ROLLBACK');
         console.error(`[FINISH][store ${storeId}] Ошибка в транзакции для заказа ${orderId}:`, txError);
@@ -581,6 +663,14 @@ class OrderService {
           earningsPerUnit: item.earningsPerUnit,
           totalForProduct: item.totalForProduct,
           isSpecial: item.isSpecial,
+        })),
+        // NEW: что списали из хранилища возвратов (пойдёт в order_finished)
+        consumedStoredReturns: consumedStoredReturns.map((c) => ({
+          lozon_id: c.lozon_id,
+          box_number: c.box_number,
+          quantity: c.quantity,
+          offer_id: c.offer_id,
+          sku: c.sku,
         })),
       };
       NotificationService.notifyUser(userId, 'order_finished', finishedPayload, { storeId });

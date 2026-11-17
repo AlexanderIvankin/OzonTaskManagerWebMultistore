@@ -12,9 +12,13 @@ const ProductStatsService = require('../services/ProductStatsService');
 const ModelService = require('../services/ModelService');
 const AuthService = require('../services/AuthService');
 const NotificationService = require('../services/NotificationService');
+const ReturnsReportService = require('../services/ReturnsReportService');
+const ReturnsCacheService = require('../services/ReturnsCacheService');
+const ReturnsPdfService = require('../services/ReturnsPdfService');
 const scheduler = require('../scheduler');
 const stores = require('../config/stores');
-const { getStoreDB } = require('../config/database');
+const { getStoreDB, getUsersDB } = require('../config/database');
+const { getReturnsDB } = require('../config/returnsDatabase');
 const {
   getLocalTimestamp,
   getVersionedFileName,
@@ -129,7 +133,6 @@ exports.getUsers = async (req, res, next) => {
       // Используется фронтом для индикатора «есть ли материалы для товаров заказа».
       const materialsMap = new Map();
       try {
-        const { getUsersDB } = require('../config/database');
         const usersDb = getUsersDB();
         const materialRows = await usersDb.all(
           'SELECT user_id, material, color FROM user_materials'
@@ -656,7 +659,27 @@ exports.getAwaitingOrders = async (req, res, next) => {
       ordersWithImages.push({ ...order, products: withImages, details });
     }
 
-    res.json(ordersWithImages);
+    // Обогащение готовыми возвратами (для бейджа «🎁 у сотрудника X, ящик N»)
+    let storedMatchesByOrder = new Map();
+    try {
+      const StoredReturnsService = require('../services/StoredReturnsService');
+      storedMatchesByOrder = await StoredReturnsService.findMatchesForOrders(
+        storeId,
+        ordersWithImages.map((o) => ({
+          orderId: o.posting_number,
+          products: o.products || [],
+        })),
+      );
+    } catch (storedErr) {
+      console.error(`[getAwaitingOrders][store ${storeId}] storedMatches:`, storedErr.message);
+    }
+
+    res.json(
+      ordersWithImages.map((o) => ({
+        ...o,
+        storedMatches: storedMatchesByOrder.get(o.posting_number) || [],
+      }))
+    );
   } catch (err) {
     next(err);
   }
@@ -1605,6 +1628,175 @@ exports.downloadModel = async (req, res, next) => {
     if (err.message && err.message.includes('ENOENT')) {
       return res.status(404).json({ error: 'Модель не найдена' });
     }
+    next(err);
+  }
+};
+
+// ============================================================================
+// --- ВОЗВРАТЫ: ручная синхронизация и диагностика (шаг 1) ---
+// ============================================================================
+
+exports.syncReturnsReport = async (req, res, next) => {
+  try {
+    const storeId = req.storeId;
+    console.log(
+      `[ADMIN][store ${storeId}] ${req.user?.name || req.user?.id} запустил ручную синхронизацию отчёта возвратов`
+    );
+    const result = await ReturnsReportService.syncAuto(storeId);
+    res.json({ message: 'Синхронизация возвратов выполнена', ...result });
+  } catch (err) {
+    console.error(`[syncReturnsReport][store ${req.storeId}] Ошибка:`, err);
+    if (err.response?.data) {
+      return res.status(400).json({
+        error: `Ozon API: ${err.message}`,
+        details: err.response.data,
+      });
+    }
+    next(err);
+  }
+};
+
+exports.getReturnsCount = async (req, res, next) => {
+  try {
+    const count = await ReturnsCacheService.count(req.storeId);
+    res.json({ count });
+  } catch (err) { next(err); }
+};
+
+exports.listReturns = async (req, res, next) => {
+  try {
+    const storeId = req.storeId;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const filterRaw = String(req.query.filter || '').trim();
+    const filterCargo = filterRaw === 'cargo' || filterRaw === 'full';
+    const filterFull = filterRaw === 'full';
+
+    // 1. Кэш возвратов этого магазина
+    const returnsDb = getReturnsDB(storeId);
+    const totalRow = await returnsDb.get('SELECT COUNT(*) AS n FROM returns');
+    const returnsRows = await returnsDb.all(
+      'SELECT * FROM returns ORDER BY updated_at DESC LIMIT ? OFFSET ?',
+      limit, offset
+    );
+
+    // 2. Записи «в ящиках» этого магазина (только у активных сотрудников)
+    const usersDb = getUsersDB();
+    const storedRows = await usersDb.all(
+      `SELECT sr.id, sr.user_id, sr.box_number, sr.lozon_id, sr.offer_id, sr.sku,
+              sr.cargo_box_id, sr.quantity, sr.created_at,
+              u.name AS user_name, u.username AS user_username
+       FROM stored_returns sr
+       INNER JOIN user_stores us ON us.user_id = sr.user_id
+       INNER JOIN users u ON u.id = sr.user_id
+       WHERE us.store_id = ? AND us.is_fired = 0 AND sr.status = 'stored'`,
+      String(storeId)
+    );
+
+    // 3. Индексы для матчинга: по cargo_box_id (приоритет) и по offer_id (fallback)
+    const byCargo = new Map();
+    const byOffer = new Map();
+    for (const sr of storedRows) {
+      if (sr.cargo_box_id) {
+        if (!byCargo.has(sr.cargo_box_id)) byCargo.set(sr.cargo_box_id, []);
+        byCargo.get(sr.cargo_box_id).push(sr);
+      } else if (sr.offer_id) {
+        if (!byOffer.has(sr.offer_id)) byOffer.set(sr.offer_id, []);
+        byOffer.get(sr.offer_id).push(sr);
+      }
+    }
+
+    // 4. Обогащение
+    const items = returnsRows.map((r) => {
+      const owners =
+        (r.cargo_box_id && byCargo.get(r.cargo_box_id)) ||
+        (r.offer_id && byOffer.get(r.offer_id)) ||
+        [];
+      return {
+        ...r,
+        stored_owners: owners.map((sr) => ({
+          stored_return_id: sr.id,
+          user_id: sr.user_id,
+          user_name: sr.user_name,
+          user_username: sr.user_username,
+          box_number: sr.box_number,
+          quantity: sr.quantity,
+          lozon_id: sr.lozon_id,
+        })),
+      };
+    });
+
+    // 5. Фильтры
+    let filtered = items;
+    if (filterCargo) filtered = filtered.filter((r) => !!r.cargo_box_id);
+    if (filterFull) filtered = filtered.filter((r) => r.stored_owners.length > 0);
+
+    res.json({
+      items: filtered,
+      total: totalRow?.n || 0,
+      filter: filterRaw || null,
+      limit,
+      offset,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ============================================================================
+// --- PDF-АКТЫ ВОЗВРАТОВ: заливка пачкой (шаг 2 пайплайна) ---
+// ============================================================================
+
+/**
+ * POST /api/admin/returns-pdf/upload
+ * multipart/form-data, поле files[] (1–10 PDF).
+ *
+ * Парсит каждый PDF, извлекает пары { cargo_box_id, barcode },
+ * применяет к returns-N.db. Один файл — один summary в ответе.
+ */
+exports.uploadReturnsPdf = async (req, res, next) => {
+  const files = Array.isArray(req.files) ? req.files : [];
+  const cleanup = () => {
+    for (const f of files) {
+      try { fs.unlinkSync(f.path); } catch { /* ignore */ }
+    }
+  };
+
+  try {
+    const storeId = req.storeId;
+    if (!files.length) {
+      return res.status(400).json({ error: 'Не передано ни одного PDF-файла (поле files)' });
+    }
+    if (files.length > 10) {
+      cleanup();
+      return res.status(400).json({ error: 'Максимум 10 PDF-файлов за раз' });
+    }
+
+    const result = await ReturnsPdfService.processBatch(
+      storeId,
+      files.map((f) => ({
+        buffer: fs.readFileSync(f.path),
+        originalName: f.originalname || 'file.pdf',
+      }))
+    );
+
+    cleanup();
+
+    console.log(
+      `[ADMIN][store ${storeId}] ${req.user?.name || req.user?.id} залил PDF-акты: ` +
+      `${result.total} файл(ов), обновлено cargo_box_id: ${result.totalUpdated}, ` +
+      `не найдено barcode: ${result.totalNotFound}`
+    );
+
+    res.json({
+      message:
+        `Обработано PDF: ${result.total} (успешно ${result.okCount}, с ошибками ${result.failCount}). ` +
+        `Обновлено cargo_box_id: ${result.totalUpdated}. Не найдено по barcode: ${result.totalNotFound}.`,
+      ...result,
+    });
+  } catch (err) {
+    cleanup();
+    console.error(`[uploadReturnsPdf][store ${req.storeId}] Ошибка:`, err);
     next(err);
   }
 };

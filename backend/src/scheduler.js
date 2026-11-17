@@ -15,6 +15,9 @@ const NotificationService = require('./services/NotificationService');
 const PushService = require('./services/PushService');
 const AuthService = require('./services/AuthService');
 const CooldownService = require('./services/CooldownService');
+const StoredReturnsService = require('./services/StoredReturnsService');
+const ReturnsReportService = require('./services/ReturnsReportService');
+const config = require('./config');
 
 // ============================================================================
 // УСИЛЕННАЯ ЗАЩИТА ОТ ПРОПУСКОВ ПРОВЕРОК:
@@ -323,6 +326,60 @@ function stopCooldownCleaner() {
     cooldownCleanInterval = null;
   }
   isCooldownCleanRunning = false;
+}
+
+// ============================================================================
+//  СИНХРОНИЗАЦИЯ ОТЧЁТА ВОЗВРАТОВ (per-store, интервально)
+//
+//  Каждый час (настраивается через RETURNS_REPORT_SYNC_INTERVAL_MIN):
+//  → create-report → poll → download .xlsx → upsert в returns-N.db.
+//
+//  Период выбирается автоматически (ReturnsReportService.computeRange):
+//    • пустая БД → последние RETURNS_REPORT_SYNC_DAYS_FULL дней;
+//    • иначе → от MAX(updated_at) − overlap до now.
+//
+//  Первичная синхронизация (после старта) делается через setTimeout,
+//  чтобы не блокировать запуск сервера.
+// ============================================================================
+let returnsReportSyncRunner = null;
+
+function startReturnsReportSyncChecker() {
+  const rawMin = config.returnsReport.syncIntervalMin;
+  const intervalMinutes = Math.max(15, Math.min(rawMin || 60, 24 * 60));
+  if (returnsReportSyncRunner) returnsReportSyncRunner.stop();
+
+  returnsReportSyncRunner = createPerStoreIntervalRunner({
+    name: 'returnsReportSync',
+    intervalMs: intervalMinutes * 60 * 1000,
+    run: async (storeId) => {
+      await ReturnsReportService.syncAuto(storeId);
+    },
+  });
+  returnsReportSyncRunner.start();
+
+  // Первичная синхронизация — через 10 сек после старта
+  setTimeout(async () => {
+    for (const storeId of stores.getStoreIds()) {
+      try {
+        console.log(`[SCHEDULER][returnsReportSync] Первичная синхронизация store ${storeId}...`);
+        await ReturnsReportService.syncAuto(storeId);
+      } catch (err) {
+        console.error(`[SCHEDULER][returnsReportSync] initial store ${storeId} упал:`, err.message);
+        NotificationService.logServerError('scheduler.returnsReportSync.initial', err, { storeId });
+      }
+    }
+  }, 10000).unref?.();
+
+  console.log(
+    `[SCHEDULER] Синхронизация отчёта возвратов запущена (per-store, каждые ${intervalMinutes} мин.)`
+  );
+}
+
+function stopReturnsReportSyncChecker() {
+  if (returnsReportSyncRunner) {
+    returnsReportSyncRunner.stop();
+    returnsReportSyncRunner = null;
+  }
 }
 
 // ============================================================================
@@ -642,8 +699,80 @@ async function runAwaitingDeliverReminder(storeId, delayHours, options = {}) {
         if (result.revoked) {
           revoked += 1;
           console.log(
-            `[REMINDER][store ${storeId}] Заказ ${orderId}: заработок обнулён (${result.amount} руб.), сотрудник ${userName || userId}`
+            `[CANCEL][store ${storeId}] Заказ ${orderId} отменён — заработок ${result.amount} руб. сторнирован (${userName || userId})`
           );
+          try {
+            OrderService.forgetOrderState(storeId, orderId);
+          } catch (forgetErr) {
+            console.warn(`[CANCEL][store ${storeId}] forgetOrderState(${orderId}):`, forgetErr.message);
+          }
+
+          // === ВОЗВРАТ СПИСАННОГО В ХРАНИЛИЩЕ ===
+          // Если по заказу уже был finishOrder и из хранилища возвратов
+          // что-то списалось — возвращаем обратно (idempotent: consumptions.restored_at).
+          try {
+            const dbUsers = require('./config/database').getUsersDB();
+            const consumedRows = await dbUsers.all(
+              `SELECT stored_return_id, lozon_id, box_number, quantity, offer_id, sku
+             FROM stored_returns_consumptions
+             WHERE order_id = ? AND store_id = ? AND restored_at IS NULL`,
+              orderId, String(storeId)
+            );
+            if (consumedRows.length) {
+              const restoredCount = await StoredReturnsService.restoreForOrder(orderId, storeId);
+              if (restoredCount > 0) {
+                console.log(
+                  `[CANCEL][store ${storeId}] Заказ ${orderId}: возвращено в хранилище ${restoredCount} партий`
+                );
+                try {
+                  await NotificationService.notifyUser(
+                    userId,
+                    'stored_return_restored',
+                    {
+                      orderId,
+                      userName: userName || null,
+                      items: consumedRows.map((r) => ({
+                        lozon_id: r.lozon_id,
+                        box_number: r.box_number,
+                        quantity: r.quantity,
+                        offer_id: r.offer_id,
+                        sku: r.sku,
+                      })),
+                    },
+                    { storeId }
+                  );
+                  await NotificationService.notifyStaff(
+                    'stored_return_restored',
+                    {
+                      orderId,
+                      userName: userName || null,
+                      items: consumedRows.map((r) => ({
+                        lozon_id: r.lozon_id,
+                        box_number: r.box_number,
+                        quantity: r.quantity,
+                      })),
+                    },
+                    { storeId, push: false }
+                  );
+                } catch (notifyErr) {
+                  console.warn(
+                    `[CANCEL][store ${storeId}] notify stored_return_restored (${orderId}):`,
+                    notifyErr.message
+                  );
+                }
+              }
+            }
+          } catch (restoreErr) {
+            console.error(
+              `[CANCEL][store ${storeId}] restoreForOrder(${orderId}) упал:`,
+              restoreErr.message
+            );
+            NotificationService.logServerError(
+              'scheduler.cancelledOrders.restoreStoredReturns',
+              restoreErr,
+              { storeId, orderId, userId }
+            );
+          }
         }
       } catch (err) {
         console.error(`[REMINDER][store ${storeId}] Не удалось обнулить заработок по заказу ${orderId}:`, err.message);
@@ -1114,6 +1243,7 @@ function stopChatAutoClose() {
 function stopAll() {
   try { stopOrderChecker(); } catch { /* ignore */ }
   try { stopCooldownCleaner(); } catch { /* ignore */ }
+  try { stopReturnsReportSyncChecker(); } catch { /* ignore */ }
   try { stopDailyBackupChecker(); } catch { /* ignore */ }
   try { stopDailyPromotionCleaner(); } catch { /* ignore */ }
   try { stopMonthlyExportChecker(); } catch { /* ignore */ }
@@ -1138,6 +1268,9 @@ module.exports = {
 
   startCooldownCleaner,
   stopCooldownCleaner,
+
+  startReturnsReportSyncChecker,
+  stopReturnsReportSyncChecker,
 
   startDailyBackupChecker,
   stopDailyBackupChecker,

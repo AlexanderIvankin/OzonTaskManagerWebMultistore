@@ -4,6 +4,20 @@ const { authenticate, requireEmployee, requireStoreAccess } = require('../middle
 const { cooldown } = require('../middlewares/cooldown');
 const userController = require('../controllers/userController');
 
+const multer = require('multer');
+const storedReturnsController = require('../controllers/storedReturnsController');
+
+// Импорт Excel: временное хранилище, лимит 5 МБ, только .xlsx/.xls
+const storedReturnsUpload = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = /\.(xlsx|xls)$/i.test(file.originalname || '');
+    if (!ok) return cb(new Error('Ожидается Excel-файл (.xlsx / .xls)'));
+    cb(null, true);
+  },
+});
+
 // Аутентификация для всех маршрутов
 router.use(authenticate);
 
@@ -55,6 +69,24 @@ router.post(
 // в магазинах display_name показывается, но не редактируется.
 // Работает без магазина (req.storeId = null на глобальном домене).
 router.put('/display-name', userController.updateDisplayName);
+
+// ===========================================================================
+// ХРАНИЛИЩЕ ВОЗВРАТОВ (глобально, users.db)
+// Доступно ЛЮБОМУ авторизованному (проверка «есть ли доступ хотя бы к одному
+// магазину» — внутри controller.updateSettings). На store-домене эти же
+// роуты работают — req.storeId используется как source_store_id.
+// ===========================================================================
+router.get('/returns-storage/settings', storedReturnsController.getSettings);
+router.patch('/returns-storage/settings', storedReturnsController.updateSettings);
+
+router.get('/stored-returns', storedReturnsController.listMy);
+router.post('/stored-returns', storedReturnsController.addManual);
+router.post(
+  '/stored-returns/import',
+  storedReturnsUpload.single('file'),
+  storedReturnsController.importExcel
+);
+router.delete('/stored-returns/:id', storedReturnsController.removeEntry);
 
 // Для всех остальных маршрутов требуется роль сотрудника (employee, moderator, admin)
 router.use(requireEmployee);

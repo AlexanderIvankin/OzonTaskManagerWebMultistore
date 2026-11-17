@@ -1,6 +1,12 @@
 import api from ".";
 import type { AxiosResponse } from "axios";
 import type { ProductPrice, ProductStats } from "./orders";
+import type {
+  ReturnsPdfUploadResult,
+  ReturnsSyncResult,
+  ReturnsCacheItem,
+  StoredReturn,
+} from "../types/returns";
 
 export interface User {
   id: number;
@@ -438,6 +444,49 @@ export const adminApi = {
   deleteProductStats: (offerId: string) =>
     api
       .delete(`/admin/product-stats/${encodeURIComponent(offerId)}`)
+      .then((res) => res.data),
+
+  // === Возвраты: шаг 2 — загрузка PDF-актов ===
+  uploadReturnsPdf: (files: File[]) => {
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    return api
+      .post<ReturnsPdfUploadResult>("/admin/returns-pdf/upload", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((res) => res.data);
+  },
+
+  // === Возвраты: шаг 1 — ручной запуск синхронизации отчёта ===
+  syncReturnsReport: () =>
+    api.post<ReturnsSyncResult>("/admin/returns/sync").then((res) => res.data),
+
+  getReturnsCount: () =>
+    api.get<{ count: number }>("/admin/returns/count").then((res) => res.data),
+
+  listReturns: (params?: {
+    limit?: number;
+    offset?: number;
+    filter?: "all" | "cargo" | "full";
+  }) =>
+    api
+      .get<{
+        items: ReturnsCacheItem[];
+        total: number;
+        filter: string | null;
+        limit: number;
+        offset: number;
+      }>("/admin/returns/list", { params })
+      .then((res) => res.data),
+
+  // === Возвраты: список записей сотрудников магазина ===
+  listStoredReturns: (params?: {
+    userId?: number;
+    status?: string;
+    resolutionStatus?: string;
+  }) =>
+    api
+      .get<{ items: StoredReturn[] }>("/admin/stored-returns", { params })
       .then((res) => res.data),
 
   // === Этикетка заказа (аналог /admin_send_label) ===

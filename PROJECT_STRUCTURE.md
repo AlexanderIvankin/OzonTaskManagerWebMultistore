@@ -1,10 +1,10 @@
 # Project Structure
 
-_Auto-generated: 2026-10-25 15:16:42 UTC_
+_Auto-generated: 2026-11-17 21:11:12 UTC_
 
 **Root:** `OzonTaskManagerWebMultistore`  
-**Files shown:** 203  
-**Directories shown:** 41
+**Files shown:** 222  
+**Directories shown:** 43
 
 ## Tree
 
@@ -14,6 +14,10 @@ OzonTaskManagerWebMultistore/
 │   └── settings.json
 ├── backend/
 │   ├── scripts/
+│   │   ├── match-csv-pdf.js
+│   │   ├── ozon-postings-report-explore.js
+│   │   ├── ozon-returns-explore.js
+│   │   ├── parse-returns-pdf.js
 │   │   ├── prune-push-subs.js
 │   │   └── prune-user-subs.js
 │   ├── src/
@@ -23,6 +27,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── envLoader.js
 │   │   │   ├── index.js
 │   │   │   ├── notificationsDatabase.js
+│   │   │   ├── returnsDatabase.js
 │   │   │   ├── s3.js
 │   │   │   ├── schema.js
 │   │   │   ├── staffRoles.js
@@ -32,6 +37,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── authController.js
 │   │   │   ├── chatController.js
 │   │   │   ├── modelsController.js
+│   │   │   ├── storedReturnsController.js
 │   │   │   └── userController.js
 │   │   ├── middlewares/
 │   │   │   ├── auth.js
@@ -51,7 +57,9 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── OfferModel.js
 │   │   │   ├── PasswordReset.js
 │   │   │   ├── ProductStat.js
+│   │   │   ├── StoredReturn.js
 │   │   │   ├── User.js
+│   │   │   ├── UserMaterial.js
 │   │   │   ├── UserStats.js
 │   │   │   ├── UserStore.js
 │   │   │   └── Warehouse.js
@@ -70,14 +78,20 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── CooldownService.js
 │   │   │   ├── EarningsService.js
 │   │   │   ├── EmailService.js
+│   │   │   ├── LozonResolver.js
 │   │   │   ├── MaterialsService.js
 │   │   │   ├── ModelService.js
 │   │   │   ├── NotificationService.js
 │   │   │   ├── OrderService.js
 │   │   │   ├── OzonService.js
+│   │   │   ├── PdfReturnsTableParser.js
 │   │   │   ├── ProductStatsService.js
 │   │   │   ├── PushService.js
+│   │   │   ├── ReturnsCacheService.js
+│   │   │   ├── ReturnsPdfService.js
+│   │   │   ├── ReturnsReportService.js
 │   │   │   ├── StorageService.js
+│   │   │   ├── StoredReturnsService.js
 │   │   │   └── SyncService.js
 │   │   ├── debugMode.js
 │   │   ├── scheduler.js
@@ -127,6 +141,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── index.ts
 │   │   │   ├── notifications.ts
 │   │   │   ├── orders.ts
+│   │   │   ├── returns.ts
 │   │   │   └── user.ts
 │   │   ├── components/
 │   │   │   ├── Chat/
@@ -179,11 +194,16 @@ OzonTaskManagerWebMultistore/
 │   │   │   │   ├── Materials.tsx
 │   │   │   │   ├── Models.tsx
 │   │   │   │   ├── OrdersManagement.tsx
+│   │   │   │   ├── ReturnsManagement.tsx
 │   │   │   │   ├── StaffStats.tsx
 │   │   │   │   ├── Users.tsx
 │   │   │   │   └── Warehouses.tsx
 │   │   │   ├── Login/
 │   │   │   │   └── Login.tsx
+│   │   │   ├── MyMaterials/
+│   │   │   │   └── MyMaterials.tsx
+│   │   │   ├── MyStorage/
+│   │   │   │   └── MyStorage.tsx
 │   │   │   ├── MyStores/
 │   │   │   │   └── MyStores.tsx
 │   │   │   ├── Notifications/
@@ -206,7 +226,8 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── authSlice.ts
 │   │   │   └── index.ts
 │   │   ├── types/
-│   │   │   └── index.ts
+│   │   │   ├── index.ts
+│   │   │   └── returns.ts
 │   │   ├── App.tsx
 │   │   ├── main.tsx
 │   │   └── vite-env.d.ts

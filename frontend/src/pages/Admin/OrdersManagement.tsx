@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { ProductImages } from "../../components/ProductImages";
 import { ProductStatsBlock } from "../../components/ProductStatsBlock";
@@ -37,6 +38,15 @@ interface AwaitingOrder {
   details?: {
     delivery_method?: { warehouse_id?: string | number | null };
   };
+  storedMatches?: Array<{
+    offer_id: string | null;
+    sku: string | null;
+    user_id: number;
+    user_name: string;
+    box_number: string;
+    quantity: number;
+    lozon_ids: string[];
+  }>;
 }
 
 interface EmployeeOption {
@@ -165,7 +175,7 @@ const renderEmployeeLabel = (emp: EmployeeOption, order?: AwaitingOrder) => {
         {" | "}
         🖨️: {emp.capacity ?? "—"}
         {" | "}
-        🗃️: {emp.isGod ? "♾️" : emp.issuedOfferIds.length }
+        🗃️: {emp.isGod ? "♾️" : emp.issuedOfferIds.length}
       </div>
     </div>
   );
@@ -402,6 +412,25 @@ export const OrdersManagement = () => {
                     </div>
                   </div>
                   <div>
+                    {order.storedMatches && order.storedMatches.length > 0 && (
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-900 p-3">
+                        <div className="text-sm font-semibold text-emerald-700 dark:text-emerald-300 mb-1">
+                          🎁 Товар уже в хранилище:
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {order.storedMatches.map((m, i) => (
+                            <Badge
+                              key={`${m.user_id}-${m.box_number}-${i}`}
+                              variant="secondary"
+                              className="text-xs"
+                            >
+                              {m.user_name} — ящик «{m.box_number}» (
+                              {m.quantity} шт.)
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div className="font-semibold text-l text-center lg:text-start">
                       Состав:
                     </div>

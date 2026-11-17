@@ -62,6 +62,9 @@ function buildStore(storeId) {
     // Путь к БД этого магазина
     dbPath: env.DB_PATH || `./store-${storeIdFinal}.db`,
 
+    // БД локального кэша возвратов (шаг 1/2/3 пайплайна)
+    returnsDbPath: env.RETURNS_DB_PATH || `./returns-${storeIdFinal}.db`,
+
     // CORS origin (свой поддомен)
     clientOrigin: env.CLIENT_ORIGIN,
 

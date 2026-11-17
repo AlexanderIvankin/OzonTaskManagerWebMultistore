@@ -294,7 +294,18 @@ export const Layout = () => {
             ) && (
               <NavLink to="/orders" className={navClass}>
                 <span aria-hidden="true">📦</span>
-                <span className="hidden md:inline md:ml-2">Заказы</span>
+                <span className="hidden md:inline md:ml-2">Мои заказы</span>
+              </NavLink>
+            )}
+
+          {/* Мой склад — только в магазинном контексте */}
+          {!isGlobalContext &&
+            ["employee", "moderator", "admin", "god"].includes(
+              user?.role || "",
+            ) && (
+              <NavLink to="/my-storage" className={navClass}>
+                <span aria-hidden="true">🏠</span>
+                <span className="hidden md:inline md:ml-2">Мой склад</span>
               </NavLink>
             )}
 
@@ -385,6 +396,10 @@ export const Layout = () => {
                   <span className="hidden md:inline md:ml-2">
                     Завершённые заказы
                   </span>
+                </NavLink>
+                <NavLink to="/admin/returns" className={navClass}>
+                  <span aria-hidden="true">🎁</span>
+                  <span className="hidden md:inline md:ml-2">Возвраты</span>
                 </NavLink>
                 <NavLink to="/admin/materials" className={navClass}>
                   <span aria-hidden="true">📁</span>

@@ -34,6 +34,13 @@ async function createUsersSchema(db) {
     console.log('✅ users: добавлена колонка push_disabled');
   }
 
+  // Мягкая миграция: returns_storage_enabled (глобальный тумблер «хранилище возвратов»)
+  const userColsReturns = await db.all('PRAGMA table_info(users)');
+  if (!userColsReturns.some((c) => c.name === 'returns_storage_enabled')) {
+    await db.exec('ALTER TABLE users ADD COLUMN returns_storage_enabled INTEGER NOT NULL DEFAULT 0');
+    console.log('✅ users: добавлена колонка returns_storage_enabled');
+  }
+
   // Per-store роли и статусы.
   // Нет записи = пользователь не имеет отношения к магазину
   // (обычный user, зарегистрированный на этом субдомене, но не сотрудник).
@@ -120,6 +127,91 @@ async function createUsersSchema(db) {
     await db.exec('ALTER TABLE push_subscriptions ADD COLUMN origin TEXT');
     console.log('✅ push_subscriptions: добавлена колонка origin');
   }
+
+  // ==========================================================================
+  //  ХРАНИЛИЩЕ ВОЗВРАТОВ (глобально; один «склад возвратов» на всю систему)
+  // ==========================================================================
+  // Одна строка = партия одного lozon_id в одной коробке у одного сотрудника.
+  //   • lozon_id  — штрихкод с возвратной этикетки (обязательный);
+  //   • offer_id  — артикул (заполняется после резолва; null до него);
+  //   • sku       — Ozon sku (заполняется после резолва, опционально);
+  //   • box_number — свободный ярлык, который сотрудник сам задаёт
+  //                  («Ящик 3», «Красная коробка 8» и т.п.);
+  //   • status: 'stored' | 'used' | 'removed';
+  //   • resolution_status: 'pending' | 'resolved' | 'unresolved'.
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS stored_returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      box_number TEXT NOT NULL,
+      lozon_id TEXT NOT NULL,
+      offer_id TEXT,
+      sku TEXT,
+      product_name TEXT,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      resolution_status TEXT NOT NULL DEFAULT 'pending',
+      resolution_attempts INTEGER NOT NULL DEFAULT 0,
+      last_resolution_attempt_at INTEGER,
+      resolution_error TEXT,
+      source_store_id TEXT,
+      source_order_id TEXT,
+      status TEXT NOT NULL DEFAULT 'stored',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_stored_returns_user_status ON stored_returns(user_id, status)');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_stored_returns_offer_status ON stored_returns(offer_id, status)');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_stored_returns_sku_status ON stored_returns(sku, status)');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_stored_returns_lozon ON stored_returns(lozon_id)');
+  // Очередь резолвера: pending / unresolved
+  await db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_stored_returns_pending ON stored_returns(resolution_status, status) " +
+    "WHERE resolution_status IN ('pending','unresolved') AND status = 'stored'"
+  );
+  // Partial unique index: одна «живая» запись на (user, lozon, box).
+  // Обеспечивает идемпотентность upsert'а при повторном скане того же товара.
+  await db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_stored_returns_unique_stored " +
+    "ON stored_returns(user_id, lozon_id, box_number) WHERE status = 'stored'"
+  );
+
+  // Мягкая миграция: resolution_method (как получен offer_id: api | manual)
+  const srCols = await db.all('PRAGMA table_info(stored_returns)');
+  if (!srCols.some((c) => c.name === 'resolution_method')) {
+    await db.exec('ALTER TABLE stored_returns ADD COLUMN resolution_method TEXT');
+    console.log('✅ stored_returns: добавлена колонка resolution_method');
+  }
+
+  // Мягкая миграция: cargo_box_id — ключ матчинга с returns-N.db
+  const srCols2 = await db.all('PRAGMA table_info(stored_returns)');
+  if (!srCols2.some((c) => c.name === 'cargo_box_id')) {
+    await db.exec('ALTER TABLE stored_returns ADD COLUMN cargo_box_id TEXT');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_stored_returns_cargo_box ON stored_returns(cargo_box_id) WHERE cargo_box_id IS NOT NULL');
+    console.log('✅ stored_returns: добавлена колонка cargo_box_id');
+  }
+
+  // История списаний: аудит + возможность восстановления при отмене заказа.
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS stored_returns_consumptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      stored_return_id INTEGER NOT NULL,
+      order_id TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      lozon_id TEXT NOT NULL,
+      offer_id TEXT,
+      sku TEXT,
+      box_number TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      consumed_at INTEGER NOT NULL,
+      restored_at INTEGER,
+      FOREIGN KEY (stored_return_id) REFERENCES stored_returns(id)
+    )
+  `);
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_sr_consumptions_order ON stored_returns_consumptions(order_id, store_id)');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_sr_consumptions_sr ON stored_returns_consumptions(stored_return_id)');
 
   // Материалы в наличии у сотрудника — ГЛОБАЛЬНО (не per-store).
   // Строка = «у сотрудника есть цвет X материала Y». Нет строки = нет в наличии.

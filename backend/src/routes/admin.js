@@ -3,11 +3,28 @@ const router = express.Router();
 const { authenticate, authorize, STAFF_ROLES } = require('../middlewares/auth');
 const { requireModelsEnabled } = require('../middlewares/requireModelsEnabled');
 const adminController = require('../controllers/adminController');
+const storedReturnsController = require('../controllers/storedReturnsController');
 const multer = require('multer');
 const path = require('path');
 
 // Настройка multer для загрузки файлов (временное хранилище)
 const upload = multer({ dest: 'uploads/' });
+
+// PDF-акты приёма-передачи (шаг 2 пайплайна возвратов).
+// Один запрос — до 10 PDF-файлов, лимит 10 МБ каждый.
+const returnsPdfUpload = multer({
+  dest: 'uploads/',
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 10,
+  },
+  fileFilter: (_req, file, cb) => {
+    if (!/\.pdf$/i.test(file.originalname || '')) {
+      return cb(new Error('Ожидается PDF-файл (.pdf)'));
+    }
+    cb(null, true);
+  },
+});
 
 // Все маршруты требуют аутентификации и роли персонала (admin/moderator/god).
 // Модератор = Администратор по правам.
@@ -22,6 +39,24 @@ router.post('/users', adminController.createUserByAdmin);
 router.put('/users/:id', adminController.updateUser);
 router.delete('/users/:id', adminController.fireUser);
 router.post('/users/:id/restore', adminController.restoreUser);
+
+
+// Хранилище возвратов: список записей сотрудников ЭТОГО магазина.
+// ?userId=&status=stored&resolutionStatus=pending|resolved|unresolved
+router.get('/stored-returns', storedReturnsController.listForStaff);
+
+// --- Возвраты: шаг 1 — синхронизация отчёта Ozon + диагностика ---
+router.post('/returns/sync', authorize(...STAFF_ROLES), adminController.syncReturnsReport);
+router.get('/returns/count', authorize(...STAFF_ROLES), adminController.getReturnsCount);
+router.get('/returns/list', authorize(...STAFF_ROLES), adminController.listReturns);
+
+// --- Возвраты: PDF-акты (шаг 2 пайплайна) ---
+router.post(
+  '/returns-pdf/upload',
+  authorize(...STAFF_ROLES),
+  returnsPdfUpload.array('files', 10),
+  adminController.uploadReturnsPdf
+);
 
 // --- Статистика персонала (вкладка «Статистика», только персонал) ---
 router.get('/stats', adminController.getStaffStats);

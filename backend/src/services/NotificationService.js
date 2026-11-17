@@ -48,16 +48,21 @@ const TEMPLATES = {
       p.earnings !== null && p.earnings !== undefined
         ? `Заработок: ${p.earnings} руб.`
         : '';
+    const consumed = Array.isArray(p.consumedStoredReturns) ? p.consumedStoredReturns : [];
+    const consumedLine = consumed.length
+      ? `\n📦 Из хранилища возвратов списано:\n` +
+      consumed.map((c) => `• ${c.lozon_id} — ящик «${c.box_number}» × ${c.quantity}`).join('\n')
+      : '';
     return {
       user: {
         title: `✅ Заказ ${p.orderId} завершён`,
         message: p.labelAvailable
-          ? `Заказ ${p.orderId} завершён. Этикетка доступна для скачивания.\n${earningsStr}`
-          : `Заказ ${p.orderId} завершён.\n${earningsStr}`,
+          ? `Заказ ${p.orderId} завершён. Этикетка доступна для скачивания.\n${earningsStr}${consumedLine}`
+          : `Заказ ${p.orderId} завершён.\n${earningsStr}${consumedLine}`,
       },
       staff: {
         title: `✅ ${p.userName}: завершил заказ ${p.orderId}`,
-        message: `Сотрудник ${p.userName} завершил заказ ${p.orderId}.\n${earningsStr}`,
+        message: `Сотрудник ${p.userName} завершил заказ ${p.orderId}.\n${earningsStr}${consumedLine}`,
       },
     };
   },
@@ -167,6 +172,80 @@ const TEMPLATES = {
       message: `После ${p.attempts || 3} попыток заказ ${p.orderId} не назначен: ${p.error || 'неизвестная ошибка'}.`,
     },
   }),
+
+  stored_return_available: (p) => {
+    const orders = Array.isArray(p.orders) ? p.orders : [];
+    const shown = orders.slice(0, 5);
+    const lines = shown.map((o) => {
+      const matches = (o.matches || [])
+        .map((m) => `${m.user_name || `#${m.user_id}`} — ящик «${m.box_number}» (${m.quantity} шт.)`)
+        .join('; ');
+      return `• ${o.orderId}: ${matches}`;
+    }).join('\n');
+    const more = orders.length - shown.length;
+    return {
+      user: null,
+      staff: {
+        title: `🎁 Готовые возвраты для ${p.count || orders.length} заказ(ов)`,
+        message:
+          `В очереди есть заказы, для которых у сотрудников уже лежат возвраты:\n` +
+          `${lines}${more > 0 ? `\n… и ещё ${more}` : ''}\n\n` +
+          `Назначайте такие заказы этим сотрудникам — товар уже готов.`,
+      },
+    };
+  },
+
+  stored_return_consumed: (p) => {
+    const items = Array.isArray(p.items) ? p.items : [];
+    const lines = items
+      .map((it) => `• ${it.lozon_id} — ящик «${it.box_number}» × ${it.quantity}`)
+      .join('\n');
+    return {
+      user: {
+        title: `📦 Из хранилища списано под заказ ${p.orderId}`,
+        message:
+          `При завершении заказа ${p.orderId} автоматически списаны возвраты:\n${lines}\n\n` +
+          `Если это ошибка — сообщите модератору.`,
+      },
+      staff: {
+        title: `📦 ${p.userName || 'Сотрудник'}: списаны возвраты под ${p.orderId}`,
+        message:
+          `При завершении заказа ${p.orderId} (${p.userName || '—'}) списаны из хранилища:\n${lines}`,
+      },
+    };
+  },
+
+  stored_return_consume_failed: (p) => ({
+    user: null,
+    staff: {
+      title: `⚠️ Не удалось списать возвраты под заказ ${p.orderId}`,
+      message:
+        `Заказ ${p.orderId} завершён сотрудником ${p.userName || '—'}, но списание из хранилища ` +
+        `возвратов упало: ${p.error || 'неизвестная ошибка'}.\n` +
+        `Проверьте «Мой склад» этого сотрудника — возможно, требуется ручная корректировка.`,
+    },
+  }),
+
+  stored_return_restored: (p) => {
+    const items = Array.isArray(p.items) ? p.items : [];
+    const lines = items
+      .map((it) => `• ${it.lozon_id} — ящик «${it.box_number}» × ${it.quantity}`)
+      .join('\n');
+    return {
+      user: {
+        title: `↩️ Возвраты вернулись в хранилище`,
+        message:
+          `Заказ ${p.orderId} отменён. Товары, которые были списаны из хранилища, ` +
+          `возвращены обратно:\n${lines}\n\n` +
+          `Проверьте «Мой склад» — товар снова доступен для будущих заказов.`,
+      },
+      staff: {
+        title: `↩️ ${p.userName || 'Сотрудник'}: возвраты восстановлены после отмены ${p.orderId}`,
+        message:
+          `Заказ ${p.orderId} (${p.userName || '—'}) отменён. Из хранилища возвращено:\n${lines}`,
+      },
+    };
+  },
 
   label_ready: (p) => ({
     user: {

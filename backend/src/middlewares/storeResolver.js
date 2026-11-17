@@ -107,6 +107,11 @@ function isGlobalPath(path) {
   // storeId в сообщении фиксируется, если оно отправлено с поддомена.
   if (path === '/chat' || path.startsWith('/chat/')) return true;
 
+  // Хранилище возвратов — ГЛОБАЛЬНОЕ (users.db), доступно с любого домена.
+  // Настройки (тумблер) + собственный список + ввод/импорт/резолв.
+  if (path === '/user/returns-storage' || path.startsWith('/user/returns-storage/')) return true;
+  if (path === '/user/stored-returns' || path.startsWith('/user/stored-returns/')) return true;
+
   return false;
 }
 

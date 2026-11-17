@@ -27,6 +27,7 @@ const helmet = require('helmet');
 const config = require('./src/config');
 const stores = require('./src/config/stores');
 const { initDB, closeAll } = require('./src/config/database');
+const { initReturnsDB, closeAllReturnsDB } = require('./src/config/returnsDatabase');
 const { initNotificationsDB, closeNotificationsDB } = require('./src/config/notificationsDatabase');
 const { initChatDB, closeChatDB } = require('./src/config/chatDatabase');
 const { storeResolver, resolveStoreId } = require('./src/middlewares/storeResolver');
@@ -183,6 +184,9 @@ initSocket(server);
     await initDB();
     console.log('✅ Подключение к БД установлено');
 
+    await initReturnsDB();
+    console.log('✅ БД возвратов установлены');
+
     await initNotificationsDB();
     await initChatDB();
 
@@ -195,6 +199,9 @@ initSocket(server);
     scheduler.startGuestCleanupChecker();
     scheduler.startChatOrphanCleanup();
     scheduler.startChatAutoClose();
+
+    // PER-STORE заполнение БД возвратов
+    scheduler.startReturnsReportSyncChecker();
 
     // PER-STORE (проходят циклом по всем магазинам последовательно)
     const SYNC_ORDERS_TIME = parseInt(process.env.SYNC_ORDERS_TIME, 10) || 60;
@@ -294,6 +301,12 @@ initSocket(server);
         console.log('[Shutdown] Основные БД закрыты');
       } catch (err) {
         console.warn('[Shutdown] closeAll:', err.message);
+      }
+      try {
+        await closeAllReturnsDB();
+        console.log('[Shutdown] БД возвратов закрыты');
+      } catch (err) {
+        console.warn('[Shutdown] closeAllReturnsDB:', err.message);
       }
       try {
         await closeChatDB();

@@ -1,0 +1,488 @@
+// frontend/src/pages/MyStorage/MyStorage.tsx
+//
+// Страница «Мой склад»: сотрудник видит свои возвраты, кладёт новые (по
+// lozon_id) или заливает пачкой через Excel. Резолв — синхронный: если
+// lozon_id не опознан — показываем понятную ошибку и НЕ создаём запись.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Package, Plus, Trash2, Upload, AlertCircle } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+
+import { returnsStorageApi } from "@/api/returns";
+import type { StoredReturn, ImportStoredReturnsResult } from "@/types/returns";
+
+function formatDate(ms: number): string {
+  try {
+    return new Date(ms).toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+export default function MyStorage() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [items, setItems] = useState<StoredReturn[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [{ enabled }, list] = await Promise.all([
+        returnsStorageApi.getSettings(),
+        returnsStorageApi.list(),
+      ]);
+      setEnabled(enabled);
+      setItems(list.items || []);
+    } catch (err: any) {
+      setError(err?.response?.data?.error || err?.message || "Ошибка загрузки");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleRemove = async (id: number) => {
+    if (!window.confirm("Удалить запись из хранилища?")) return;
+    try {
+      await returnsStorageApi.remove(id);
+      setItems((prev) => prev.filter((x) => x.id !== id));
+    } catch (err: any) {
+      setError(err?.response?.data?.error || "Не удалось удалить");
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <Package className="h-6 w-6 animate-pulse text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (enabled === false) {
+    return (
+      <Card className="p-6">
+        <div className="flex flex-col items-center gap-4 py-8 text-center">
+          <Package className="h-12 w-12 text-muted-foreground" />
+          <div>
+            <h3 className="text-lg font-semibold">
+              Хранилище возвратов отключено
+            </h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Включите «Хранилище возвратов» в глобальном профиле — тогда
+              сможете складывать возвращённые товары в коробки и получать
+              подсказки при назначении заказов.
+            </p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4 p-4 md:p-6">
+      <div className="flex flex-col items-center justify-center text-center lg:justify-between lg:text-start gap-3 lg:flex-row">
+        <div>
+          <h1 className="text-2xl font-semibold">🏠 Мой склад</h1>
+          <p className="text-sm text-muted-foreground">
+            Возвраты, которые вы храните в коробках. При поступлении заказа с
+            таким товаром модератор увидит, что товар уже готов у вас.
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Button variant="outline" onClick={() => setShowImport(true)}>
+            <Upload className="mr-2 h-4 w-4" />
+            Загрузить Excel
+          </Button>
+          <Button onClick={() => setShowAdd(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Добавить возврат
+          </Button>
+        </div>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      <Card>
+        {items.length === 0 ? (
+          <div className="p-8 text-center text-muted-foreground">
+            У вас пока нет сохранённых возвратов. Добавьте первый через
+            «Добавить возврат» или загрузите Excel.
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Коробка</TableHead>
+                <TableHead>Штрихкод</TableHead>
+                <TableHead>Артикул</TableHead>
+                <TableHead>SKU</TableHead>
+                <TableHead className="text-center">Кол-во</TableHead>
+                <TableHead>Добавлено</TableHead>
+                <TableHead className="text-right">Действие</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((it) => (
+                <TableRow key={it.id}>
+                  <TableCell className="font-medium">{it.box_number}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {it.lozon_id}
+                  </TableCell>
+                  <TableCell>
+                    {it.offer_id ? (
+                      <span className="font-mono text-sm">{it.offer_id}</span>
+                    ) : (
+                      <Badge variant="outline" className="text-xs">
+                        не опознан
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {it.sku || "—"}
+                  </TableCell>
+                  <TableCell className="text-center">{it.quantity}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {formatDate(it.created_at)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleRemove(it.id)}
+                      title="Удалить из хранилища"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </Card>
+
+      <AddDialog
+        open={showAdd}
+        onOpenChange={setShowAdd}
+        onSuccess={(created) => {
+          setItems((prev) => [created, ...prev]);
+        }}
+      />
+      <ImportDialog
+        open={showImport}
+        onOpenChange={setShowImport}
+        onSuccess={load}
+      />
+    </div>
+  );
+}
+
+// ── Диалог добавления ──────────────────────────────────────────────────────
+
+function AddDialog({
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onSuccess: (item: StoredReturn) => void;
+}) {
+  const [boxNumber, setBoxNumber] = useState("");
+  const [lozonId, setLozonId] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const reset = () => {
+    setBoxNumber("");
+    setLozonId("");
+    setQuantity("1");
+    setErr(null);
+  };
+
+  const handleSubmit = async () => {
+    if (!boxNumber.trim()) {
+      setErr("Укажите номер коробки");
+      return;
+    }
+    if (!lozonId.trim()) {
+      setErr("Укажите штрихкод возврата (lozon_id)");
+      return;
+    }
+    const qty = parseInt(quantity, 10);
+    if (!Number.isFinite(qty) || qty < 1) {
+      setErr("Количество должно быть целым и не меньше 1");
+      return;
+    }
+
+    setBusy(true);
+    setErr(null);
+    try {
+      const result = await returnsStorageApi.addManual({
+        boxNumber: boxNumber.trim(),
+        lozonId: lozonId.trim(),
+        quantity: qty,
+      });
+      // Оптимистично собираем запись из ответа — точное состояние подтянется
+      // при следующем list(), но для UX хватит этого.
+      const newItem: StoredReturn = {
+        id: result.id,
+        user_id: 0,
+        box_number: boxNumber.trim(),
+        lozon_id: lozonId.trim(),
+        offer_id: result.offer_id,
+        sku: result.sku,
+        product_name: null,
+        quantity: result.quantity,
+        resolution_status: "resolved",
+        source_store_id: null,
+        source_order_id: null,
+        status: "stored",
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      };
+      onSuccess(newItem);
+      reset();
+      onOpenChange(false);
+    } catch (e: any) {
+      setErr(e?.response?.data?.error || e?.message || "Не удалось добавить");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        if (!busy) {
+          onOpenChange(v);
+          if (!v) reset();
+        }
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle className="text-center">Добавить возврат на хранение</DialogTitle>
+          <DialogDescription className="text-center">
+            Напишите штрихкод с возвратной этикетки. Артикул и SKU
+            определятся автоматически.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label className="mb-2" htmlFor="boxNumber">Коробка</Label>
+            <Input
+              id="boxNumber"
+              placeholder="Например, «Ящик 3» или «Красная коробка 8»"
+              value={boxNumber}
+              onChange={(e) => setBoxNumber(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+          <div>
+            <Label className="mb-2" htmlFor="lozonId">Штрихкод возврата (lozon_id)</Label>
+            <Input
+              id="lozonId"
+              value={lozonId}
+              onChange={(e) => setLozonId(e.target.value)}
+              disabled={busy}
+              className="font-mono"
+            />
+          </div>
+          <div>
+            <Label className="mb-2" htmlFor="quantity">Количество</Label>
+            <Input
+              id="quantity"
+              type="number"
+              min={1}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+          {err && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{err}</AlertDescription>
+            </Alert>
+          )}
+        </div>
+        <DialogFooter className="text-center sm:justify-center">
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Отмена
+          </Button>
+          <Button onClick={handleSubmit} disabled={busy}>
+            {busy ? "Добавляем..." : "Добавить"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Диалог импорта Excel ──────────────────────────────────────────────────
+
+function ImportDialog({
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ImportStoredReturnsResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const reset = () => {
+    setFile(null);
+    setResult(null);
+    setErr(null);
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const handleFile = (f: File | null) => {
+    setFile(f);
+    setResult(null);
+    setErr(null);
+  };
+
+  const handleImport = async () => {
+    if (!file) {
+      setErr("Выберите файл");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await returnsStorageApi.importExcel(file);
+      setResult(res);
+      onSuccess();
+    } catch (e: any) {
+      setErr(e?.response?.data?.error || e?.message || "Ошибка импорта");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        if (!busy) {
+          onOpenChange(v);
+          if (!v) reset();
+        }
+      }}
+    >
+      <DialogContent className="max-w-2xl">
+        <DialogHeader className="text-center">
+          <DialogTitle>Импорт из Excel</DialogTitle>
+          <DialogDescription>
+            Колонки: <code>box_number</code>, <code>lozon_id</code>,{" "}
+            <code>quantity</code> (регистр не важен, поддерживаются русские
+            алиасы «коробка», «лоzon», «количество»).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 justify-center items-center">
+          <Input
+            ref={inputRef}
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={(e) => handleFile(e.target.files?.[0] || null)}
+            disabled={busy}
+          />
+          {result && (
+            <div className="space-y-2">
+              <Alert>
+                <AlertDescription>
+                  Всего: {result.total}, добавлено: {result.inserted},
+                  обновлено: {result.updated}, отклонено: {result.rejected}
+                </AlertDescription>
+              </Alert>
+              {result.errors.length > 0 && (
+                <div className="max-h-48 overflow-auto rounded border p-2 text-xs">
+                  {result.errors.slice(0, 50).map((e, i) => (
+                    <div key={i}>
+                      строка {e.row}: {e.lozon_id ? `${e.lozon_id} — ` : ""}
+                      {e.error}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {err && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{err}</AlertDescription>
+            </Alert>
+          )}
+        </div>
+        <DialogFooter className="text-center sm:justify-center">
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Закрыть
+          </Button>
+          <Button onClick={handleImport} disabled={busy || !file}>
+            {busy ? "Импортируем..." : "Импортировать"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

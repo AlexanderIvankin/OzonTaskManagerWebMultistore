@@ -26,6 +26,8 @@ import { ExportData } from "./pages/Admin/ExportData";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Layout } from "./components/Layout/Layout";
 import { Support } from "./pages/Support/Support";
+import MyStorage from "./pages/MyStorage/MyStorage";
+import { ReturnsManagement } from "./pages/Admin/ReturnsManagement";
 import { useCrossTabAuthGuard } from "./hooks/useCrossTabAuthGuard";
 
 function App() {
@@ -68,6 +70,16 @@ function App() {
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/my-storage"
+              element={
+                <ProtectedRoute
+                  allowedRoles={["employee", "moderator", "admin", "god"]}
+                >
+                  <MyStorage />
+                </ProtectedRoute>
+              }
+            />
             {/* Оповещения доступны всем ролям (личные); журнал действий и
                 ошибки сервера отображаются внутри страницы только персоналу */}
             <Route path="/notifications" element={<Notifications />} />
@@ -107,6 +119,7 @@ function App() {
                 path="/admin/completed-orders"
                 element={<CompletedOrders />}
               />
+              <Route path="/admin/returns" element={<ReturnsManagement />} />
               <Route path="/admin/materials" element={<Materials />} />
               <Route path="/admin/models" element={<Models />} />
               <Route path="/admin/earnings" element={<EarningsManagement />} />

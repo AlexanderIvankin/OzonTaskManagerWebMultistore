@@ -16,6 +16,7 @@ backend/store*.db*
 backend/users*.db*
 backend/models*.db*
 backend/chat*.db*
+backend/returns*.db*
 
 # Временные файлы smoke-тестов
 backend/tests/tmp/
@@ -30,6 +31,10 @@ backend/employees-db*.xlsx
 *.xlsx~
 *.xls~
 ~$*.xlsx
+
+backend/report.xlsx
+backend/report.csv
+backend/act.pdf
 
 backend/.env.production
 backend/.env

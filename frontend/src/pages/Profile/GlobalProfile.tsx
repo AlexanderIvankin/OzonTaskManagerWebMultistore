@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { RootState, AppDispatch } from "../../store";
 import { updateUser } from "../../store/authSlice";
 import { userApi, GlobalEarningsResponse } from "../../api/user";
+import { returnsStorageApi } from "../../api/returns";
 import { usePushSubscription } from "../../hooks/usePushSubscription";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,6 +48,9 @@ export const GlobalProfile = () => {
   );
   const [loadingToggle, setLoadingToggle] = useState(false);
 
+  const [returnsEnabled, setReturnsEnabled] = useState<boolean | null>(null);
+  const [loadingReturnsToggle, setLoadingReturnsToggle] = useState(false);
+
   const {
     status: pushStatus,
     globallyDisabled,
@@ -59,6 +63,14 @@ export const GlobalProfile = () => {
   useEffect(() => {
     setTakingOrders(Boolean(user?.taking_orders));
   }, [user?.taking_orders]);
+
+  useEffect(() => {
+    if (!user?.has_store_access) return;
+    returnsStorageApi
+      .getSettings()
+      .then((s) => setReturnsEnabled(s.enabled))
+      .catch(() => setReturnsEnabled(false));
+  }, [user?.has_store_access]);
 
   const loadGlobalEarnings = useCallback(async () => {
     try {
@@ -114,6 +126,27 @@ export const GlobalProfile = () => {
       );
     } finally {
       setLoadingToggle(false);
+    }
+  };
+
+  const handleToggleReturns = async () => {
+    if (loadingReturnsToggle || returnsEnabled === null) return;
+    const next = !returnsEnabled;
+    setLoadingReturnsToggle(true);
+    try {
+      const res = await returnsStorageApi.setEnabled(next);
+      setReturnsEnabled(res.enabled);
+      toast.success(
+        `Хранилище возвратов ${res.enabled ? "включено" : "выключено"}`,
+      );
+    } catch (err: any) {
+      toast.error(
+        err?.response?.data?.error ||
+          err.message ||
+          "Не удалось переключить хранилище",
+      );
+    } finally {
+      setLoadingReturnsToggle(false);
     }
   };
 
@@ -273,6 +306,45 @@ export const GlobalProfile = () => {
                 </span>
               )}
             </div>
+
+            {user?.has_store_access && (
+              <>
+                <Separator />
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <Switch
+                      checked={!!returnsEnabled}
+                      onCheckedChange={handleToggleReturns}
+                      disabled={returnsEnabled === null || loadingReturnsToggle}
+                      id="returns-storage-enabled"
+                    />
+                    <Label
+                      htmlFor="returns-storage-enabled"
+                      className={
+                        loadingReturnsToggle
+                          ? "cursor-not-allowed"
+                          : "cursor-pointer"
+                      }
+                    >
+                      {returnsEnabled
+                        ? "🏠 Хранилище возвратов включено"
+                        : "🏠 Хранилище возвратов выключено"}
+                    </Label>
+                  </div>
+                  {loadingReturnsToggle && (
+                    <span className="text-sm text-muted-foreground">
+                      Сохранение...
+                    </span>
+                  )}
+                  <p className="text-xs text-muted-foreground max-w-md">
+                    Складывайте возвращённые товары в коробки — при назначении
+                    заказов модератор увидит, что товар уже готов у вас, а при
+                    завершении заказа он спишется автоматически. Работает во
+                    всех магазинах, где вы сотрудник.
+                  </p>
+                </div>
+              </>
+            )}
 
             <Separator />
 

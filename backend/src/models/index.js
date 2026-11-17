@@ -10,6 +10,8 @@ const Earnings = require('./Earnings');
 const Warehouse = require('./Warehouse');
 const UserMaterial = require('./UserMaterial');
 
+const StoredReturn = require('./StoredReturn');
+
 const ProductStat = require('./ProductStat');
 const OfferModel = require('./OfferModel');
 
@@ -32,6 +34,8 @@ module.exports = {
   Earnings,
   Warehouse,
   UserMaterial,
+
+  StoredReturn,
   
   ProductStat,
   OfferModel,
