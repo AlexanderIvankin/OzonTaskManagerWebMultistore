@@ -296,7 +296,7 @@ class PushService {
         }
       }
 
-      return true;
+      return { ok: true };
     } catch (err) {
       console.error('[Push] subscribe:', err.message);
       return { ok: false, reason: 'internal_error' };
