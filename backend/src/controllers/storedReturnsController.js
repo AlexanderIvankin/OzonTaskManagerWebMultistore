@@ -4,6 +4,7 @@ const { User, UserStore } = require('../models');
 const { getUsersDB } = require('../config/database');
 const StoredReturnsService = require('../services/StoredReturnsService');
 const NotificationService = require('../services/NotificationService');
+const CooldownService = require('../services/CooldownService');
 
 // ============================================================================
 //  Хранилище возвратов — контроллер.
@@ -48,6 +49,8 @@ exports.updateSettings = async (req, res, next) => {
     }
 
     const next_value = await StoredReturnsService.setEnabled(userId, enabled);
+    // Кулдаун ставится только после успешного переключения (как в toggleOrders)
+    CooldownService.touch('toggleReturns', req.storeId, userId);
     res.json({ enabled: !!next_value });
   } catch (err) { next(err); }
 };

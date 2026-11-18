@@ -20,12 +20,14 @@ const SEND_ALL_LABELS_COOLDOWN_MS = 3600 * 1000; // 1 час (после усп�
 const SEND_ALL_LABELS_EMPTY_COOLDOWN_MS = 60 * 1000; // 1 минута (пусто/ошибка)
 const TOGGLE_ORDERS_COOLDOWN_MS = 60 * 1000; // 1 минута
 const REFRESH_ORDERS_COOLDOWN_MS = 60 * 1000; // 1 минута
+const TOGGLE_RETURNS_COOLDOWN_MS = 60 * 1000; // 1 минута
 
 const labelCooldowns = new Map();
 const sendAllLabelsCooldowns = new Map();
 const sendAllLabelsEmptyCooldowns = new Map();
 const toggleOrdersCooldowns = new Map();
 const refreshOrdersCooldowns = new Map();
+const toggleReturnsCooldowns = new Map();
 
 /**
  * Описание кулдаунов по kind: массив «хранилищ» (у allLabels их два —
@@ -64,6 +66,13 @@ const DEFINITIONS = {
       map: refreshOrdersCooldowns,
       limitMs: REFRESH_ORDERS_COOLDOWN_MS,
       message: (sec) => `⏳ Подождите ${sec} сек. перед повторным обновлением заказов.`,
+    },
+  ],
+  toggleReturns: [
+    {
+      map: toggleReturnsCooldowns,
+      limitMs: TOGGLE_RETURNS_COOLDOWN_MS,
+      message: (sec) => `⏳ Подождите ${sec} сек. перед повторным изменением статуса возвратов.`,
     },
   ],
 };
@@ -153,6 +162,7 @@ module.exports = {
   SEND_ALL_LABELS_COOLDOWN_MS,
   SEND_ALL_LABELS_EMPTY_COOLDOWN_MS,
   TOGGLE_ORDERS_COOLDOWN_MS,
+  TOGGLE_RETURNS_COOLDOWN_MS,
   REFRESH_ORDERS_COOLDOWN_MS,
   makeKey,
   check,

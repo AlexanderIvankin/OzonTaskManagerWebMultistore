@@ -77,7 +77,11 @@ router.put('/display-name', userController.updateDisplayName);
 // роуты работают — req.storeId используется как source_store_id.
 // ===========================================================================
 router.get('/returns-storage/settings', storedReturnsController.getSettings);
-router.patch('/returns-storage/settings', storedReturnsController.updateSettings);
+router.patch(
+  '/returns-storage/settings',
+  cooldown('toggleReturns', 'Переключение хранилища возвратов'),
+  storedReturnsController.updateSettings,
+);
 
 router.get('/stored-returns', storedReturnsController.listMy);
 router.post('/stored-returns', storedReturnsController.addManual);

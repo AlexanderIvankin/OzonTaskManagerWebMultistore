@@ -122,7 +122,7 @@ export const GlobalProfile = () => {
     } catch (err: any) {
       if (err?.response?.data?.cooldown) {
         const data = err.response.data;
-        toast.warning(
+        toast.info(
           data.error ||
             `Подождите ${data.retryAfterSec ?? 60} секунд перед повторным изменением статуса.`,
         );
@@ -147,6 +147,14 @@ export const GlobalProfile = () => {
         `Хранилище возвратов ${res.enabled ? "включено" : "выключено"}`,
       );
     } catch (err: any) {
+      if (err?.response?.data?.cooldown) {
+        const data = err.response.data;
+        toast.info(
+          data.error ||
+            `Подождите ${data.retryAfterSec ?? 60} секунд перед повторным изменением статуса.`,
+        );
+        return;
+      }
       toast.error(
         err?.response?.data?.error ||
           err.message ||

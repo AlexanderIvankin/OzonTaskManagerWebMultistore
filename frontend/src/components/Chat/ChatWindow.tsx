@@ -284,7 +284,8 @@ export const ChatWindow = ({
             !prev ||
             new Date(prev.createdAt).toDateString() !==
               new Date(m.createdAt).toDateString();
-          const showAuthor = !isOwn && (!prev || prev.authorId !== m.authorId);
+//          const showAuthor = !isOwn && (!prev || prev.authorId !== m.authorId);
+          const showAuthor = !prev || prev.authorId !== m.authorId;
           const isRead =
             isOwn &&
             otherLastRead !== null &&
