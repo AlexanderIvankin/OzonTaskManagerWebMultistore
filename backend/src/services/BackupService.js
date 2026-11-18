@@ -58,7 +58,9 @@ async function buildZipArchive(files, zipPath) {
 
     archive.pipe(output);
     for (const f of files) {
-      archive.file(f, { name: path.basename(f) });
+      // Имя в архиве включает подпапку (подкатегорию БД), чтобы избежать
+      // коллизий имён при одинаковых базовых именах файлов.
+      archive.file(f, { name: path.join(path.basename(path.dirname(f)), path.basename(f)) });
     }
     archive.finalize();
   });
@@ -388,7 +390,8 @@ class BackupService {
           const zipSize = fs.statSync(tmpZip).size;
           console.log(
             `[Backup] ZIP собран: ${path.basename(tmpZip)} ` +
-            `(${created.length} БД, ${(zipSize / 1024 / 1024).toFixed(2)} МБ)`
+            `(${created.length} БД: ${created.map(f => path.basename(f)).join(', ')}, ` +
+            `${(zipSize / 1024 / 1024).toFixed(2)} МБ)`
           );
           await uploadToBackupS3(tmpZip, keyName);
         } catch (err) {
