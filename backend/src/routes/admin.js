@@ -81,6 +81,10 @@ router.get('/export/database', authorize(...STAFF_ROLES), adminController.downlo
 router.get('/export/database/users', authorize(...STAFF_ROLES), adminController.downloadUsersDb);
 router.get('/export/database/models', authorize(...STAFF_ROLES), adminController.downloadModelsDb);
 router.get('/export/database/notifications', authorize(...STAFF_ROLES), adminController.downloadNotificationsDb);
+// Единая БД чата поддержки (глобальная)
+router.get('/export/database/chat', authorize(...STAFF_ROLES), adminController.downloadChatDb);
+// БД возвратов текущего магазина (per-store)
+router.get('/export/database/returns', authorize(...STAFF_ROLES), adminController.downloadReturnsDb);
 // ZIP: контекст одного магазина (store-N + 3 глобальные)
 router.get('/export/database/store-all', authorize(...STAFF_ROLES), adminController.downloadStoreAllDatabases);
 // ZIP: всё приложение (все store-N + 3 глобальные)

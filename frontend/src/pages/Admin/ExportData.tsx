@@ -33,6 +33,8 @@ export const ExportData = () => {
   const [loadingUsersDb, setLoadingUsersDb] = useState(false);
   const [loadingModelsDb, setLoadingModelsDb] = useState(false);
   const [loadingNotificationsDb, setLoadingNotificationsDb] = useState(false);
+  const [loadingChatDb, setLoadingChatDb] = useState(false);
+  const [loadingReturnsDb, setLoadingReturnsDb] = useState(false);
   const [loadingStoreAll, setLoadingStoreAll] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
 
@@ -113,6 +115,22 @@ export const ExportData = () => {
       "notifications.db",
       setLoadingNotificationsDb,
       "Ошибка скачивания notifications.db",
+    );
+
+  const handleDownloadChatDb = () =>
+    downloadBlobWithName(
+      () => adminApi.downloadChatDb(),
+      "chat.db",
+      setLoadingChatDb,
+      "Ошибка скачивания chat.db",
+    );
+
+  const handleDownloadReturnsDb = () =>
+    downloadBlobWithName(
+      () => adminApi.downloadReturnsDb(),
+      "returns-N.db",
+      setLoadingReturnsDb,
+      "Ошибка скачивания returns-N.db",
     );
 
   const handleDownloadStoreAll = () => {
@@ -333,6 +351,16 @@ export const ExportData = () => {
                   </span>
                 </Button>
                 <Button
+                  onClick={handleDownloadReturnsDb}
+                  disabled={loadingReturnsDb}
+                  variant="outline"
+                  className="min-w-0"
+                >
+                  <span className="truncate min-w-0">
+                    {loadingReturnsDb ? "..." : "↩️ returns-N.db"}
+                  </span>
+                </Button>
+                <Button
                   onClick={handleDownloadStoreAll}
                   disabled={loadingStoreAll}
                   variant="outline"
@@ -356,7 +384,6 @@ export const ExportData = () => {
                   disabled={loadingUsersDb}
                   variant="outline"
                   className="min-w-0"
-                  size="sm"
                 >
                   <span className="truncate min-w-0">
                     {loadingUsersDb ? "..." : "👥 users.db"}
@@ -380,6 +407,16 @@ export const ExportData = () => {
                 >
                   <span className="truncate min-w-0">
                     {loadingNotificationsDb ? "..." : "🔔 notifications.db"}
+                  </span>
+                </Button>
+                <Button
+                  onClick={handleDownloadChatDb}
+                  disabled={loadingChatDb}
+                  variant="outline"
+                  className="min-w-0"
+                >
+                  <span className="truncate min-w-0">
+                    {loadingChatDb ? "..." : "💬 chat.db"}
                   </span>
                 </Button>
               </div>

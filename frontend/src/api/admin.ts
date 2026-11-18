@@ -412,6 +412,12 @@ export const adminApi = {
     api.get("/admin/export/database/models", { responseType: "blob" }),
   downloadNotificationsDb: (): Promise<AxiosResponse<Blob>> =>
     api.get("/admin/export/database/notifications", { responseType: "blob" }),
+  // Единая БД чата поддержки (глобальная)
+  downloadChatDb: (): Promise<AxiosResponse<Blob>> =>
+    api.get("/admin/export/database/chat", { responseType: "blob" }),
+  // БД возвратов текущего магазина (per-store)
+  downloadReturnsDb: (): Promise<AxiosResponse<Blob>> =>
+    api.get("/admin/export/database/returns", { responseType: "blob" }),
   downloadStoreAllDatabases: (): Promise<AxiosResponse<Blob>> =>
     api.get("/admin/export/database/store-all", { responseType: "blob" }),
   downloadAllDatabases: (): Promise<AxiosResponse<Blob>> =>

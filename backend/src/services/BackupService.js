@@ -17,6 +17,8 @@ const {
   resolveDbPath,
 } = require('../config/database');
 const { getNotificationsDB } = require('../config/notificationsDatabase');
+const { getChatDB } = require('../config/chatDatabase');
+const { getReturnsDB, resolveReturnsPath } = require('../config/returnsDatabase');
 const {
   formatLocalTimestamp,
   getVersionedDatedFileName,
@@ -264,6 +266,36 @@ class BackupService {
         });
       } catch (err) {
         console.warn(`[Backup] store-${storeId}.db недоступна:`, err.message);
+      }
+    }
+
+    // chat.db — единая глобальная БД чата поддержки
+    try {
+      const chatPath = resolveDbPath(config.chatDbPath);
+      tasks.push({
+        label: 'chat.db',
+        subdir: 'chat',
+        baseName: 'chat',
+        livePath: chatPath,
+        db: getChatDB(),
+      });
+    } catch (err) {
+      console.warn('[Backup] chat.db недоступна:', err.message);
+    }
+
+    // returns-N.db — БД возвратов каждого магазина
+    for (const storeId of stores.getStoreIds()) {
+      try {
+        const livePath = resolveReturnsPath(storeId);
+        tasks.push({
+          label: `returns-${storeId}.db`,
+          subdir: `returns-${storeId}`,
+          baseName: `returns-${storeId}`,
+          livePath,
+          db: getReturnsDB(storeId),
+        });
+      } catch (err) {
+        console.warn(`[Backup] returns-${storeId}.db недоступна:`, err.message);
       }
     }
 

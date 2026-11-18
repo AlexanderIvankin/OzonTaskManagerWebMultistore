@@ -19,6 +19,7 @@ const scheduler = require('../scheduler');
 const stores = require('../config/stores');
 const { getStoreDB, getUsersDB } = require('../config/database');
 const { getReturnsDB } = require('../config/returnsDatabase');
+const { getChatDB } = require('../config/chatDatabase');
 const {
   getLocalTimestamp,
   getVersionedFileName,
@@ -1002,6 +1003,41 @@ exports.downloadNotificationsDb = async (req, res, next) => {
 };
 
 /**
+ * Снимок единой БД чата поддержки (chat.db).
+ */
+exports.downloadChatDb = async (req, res, next) => {
+  let snapshotPath = null;
+  try {
+    const db = getChatDB();
+    const outputDir = path.join(__dirname, '../../outputs', 'tmp');
+    snapshotPath = await vacuumSnapshot(db, 'chat', outputDir);
+    sendSnapshot(res, snapshotPath, 'chat.db', 'downloadChatDb');
+  } catch (err) {
+    if (snapshotPath) { try { fs.unlinkSync(snapshotPath); } catch { } }
+    console.error('[downloadChatDb] Ошибка:', err);
+    next(err);
+  }
+};
+
+/**
+ * Снимок БД возвратов текущего магазина (returns-N.db).
+ */
+exports.downloadReturnsDb = async (req, res, next) => {
+  let snapshotPath = null;
+  try {
+    const storeId = req.storeId;
+    const db = getReturnsDB(storeId);
+    const outputDir = path.join(__dirname, '../../outputs', `store-${storeId}`, 'tmp');
+    snapshotPath = await vacuumSnapshot(db, `returns-${storeId}`, outputDir);
+    sendSnapshot(res, snapshotPath, `returns-${storeId}.db`, 'downloadReturnsDb');
+  } catch (err) {
+    if (snapshotPath) { try { fs.unlinkSync(snapshotPath); } catch { } }
+    console.error(`[downloadReturnsDb][store ${storeId}] Ошибка:`, err);
+    next(err);
+  }
+};
+
+/**
  * Собрать снимки ВСЕХ переданных БД в один ZIP и отправить.
  * После завершения потока — удалить временные снимки.
  *
@@ -1087,6 +1123,8 @@ exports.downloadStoreAllDatabases = async (req, res, next) => {
       { db: require('../config/database').getUsersDB(), label: 'users' },
       { db: require('../config/database').getModelsDB(), label: 'models' },
       { db: require('../config/notificationsDatabase').getNotificationsDB(), label: 'notifications' },
+      { db: getChatDB(), label: 'chat' },
+      { db: getReturnsDB(storeId), label: `returns-${storeId}` },
       { db: getStoreDB(storeId), label: `store-${storeId}` },
     ];
     const ts = getLocalTimestamp().replace(/[:\s]/g, '_');
@@ -1110,10 +1148,12 @@ exports.downloadAllDatabases = async (req, res, next) => {
       { db: dbCfg.getUsersDB(), label: 'users' },
       { db: dbCfg.getModelsDB(), label: 'models' },
       { db: require('../config/notificationsDatabase').getNotificationsDB(), label: 'notifications' },
+      { db: getChatDB(), label: 'chat' },
     ];
     for (const storeId of stores.getStoreIds()) {
       try {
         targets.push({ db: getStoreDB(storeId), label: `store-${storeId}` });
+        targets.push({ db: getReturnsDB(storeId), label: `returns-${storeId}` });
       } catch (e) {
         console.warn(`[downloadAllDatabases] store-${storeId} недоступна:`, e.message);
       }
