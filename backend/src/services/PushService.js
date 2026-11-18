@@ -101,11 +101,42 @@ if (!webpush) {
 
 class PushService {
   /** Настроен ли Web Push на сервере (пакет установлен + валидные VAPID-ключи). */
-  /** Настроен ли Web Push на сервере (пакет + оба ключа присутствуют). */
   static get enabled() {
     return Boolean(webpush)
       && Boolean(process.env.VAPID_PUBLIC_KEY)
       && Boolean(process.env.VAPID_PRIVATE_KEY);
+  }
+
+    // «Мёртвые» endpoint'ы: push-сервис ответил 410 Gone — браузер держит
+  // подписку, но фактически она отозвана. Если клиент попытается
+  // подписаться на неё снова — отклоняем, чтобы не было петли
+  // subscribe → push → 410 → delete → subscribe → …
+  // TTL — 10 минут: если пользователь реально «оживил» устройство —
+  // endpoint сменится при пересоздании подписки, а старый всё равно не оживёт.
+  static get _deadEndpoints() {
+    if (!this.__deadEndpoints) this.__deadEndpoints = new Map();
+    return this.__deadEndpoints;
+  }
+
+  static isEndpointDead(endpoint) {
+    if (!endpoint) return false;
+    const until = this._deadEndpoints.get(endpoint);
+    if (!until) return false;
+    if (Date.now() > until) {
+      this._deadEndpoints.delete(endpoint);
+      return false;
+    }
+    return true;
+  }
+
+  static markEndpointDead(endpoint) {
+    if (endpoint) {
+      this._deadEndpoints.set(endpoint, Date.now() + 10 * 60 * 1000);
+    }
+  }
+
+  static unmarkEndpointDead(endpoint) {
+    if (endpoint) this._deadEndpoints.delete(endpoint);
   }
 
   /** Публичный VAPID-ключ для клиента (applicationServerKey). */
@@ -158,17 +189,25 @@ class PushService {
   }
 
   static async subscribe(userId, subscription, userAgent = null, origin = null) {
-    if (!PushService.isValidSubscription(subscription)) return false;
+    if (!PushService.isValidSubscription(subscription)) {
+      return { ok: false, reason: 'invalid_subscription' };
+    }
     try {
       const db = getUsersDB();
 
-      // Глобальный opt-out: если пользователь отключил push — не сохраняем
-      // новые подписки и не воскрешаем старые. Снять флаг может только явное
-      // включение через UI (см. userController.pushEnable).
+      // 1. «Зомби» endpoint — не восстанавливаем (Fix 2).
+      if (PushService.isEndpointDead(subscription.endpoint)) {
+        console.log(
+          `[Push] user=${userId}: отклонён subscribe — endpoint помечен dead (был 410 недавно)`
+        );
+        return { ok: false, reason: 'dead_endpoint' };
+      }
+
+      // 2. Глобальный opt-out
       const u = await db.get('SELECT push_disabled FROM users WHERE id = ?', userId);
       if (u && u.push_disabled) {
         console.log(`[Push] user=${userId}: push_disabled=1, подписка проигнорирована`);
-        return false;
+        return { ok: false, reason: 'push_disabled' };
       }
 
       const now = Date.now();
@@ -256,7 +295,7 @@ class PushService {
       return true;
     } catch (err) {
       console.error('[Push] subscribe:', err.message);
-      return false;
+      return { ok: false, reason: 'internal_error' };
     }
   }
 
@@ -472,11 +511,11 @@ class PushService {
         } catch (err) {
           const code = err?.statusCode ?? '?';
           if (isGone(err)) {
+            // Помечаем endpoint «мёртвым» (см. Fix 2) и копим id для удаления.
+            // console.warn отсюда УБИРАЕМ — параллельный вызов мог уже удалить.
+            PushService.markEndpointDead(sub.endpoint);
             expired.push(sub.id);
-            console.warn(`[Push] Подписка #${sub.id} удалена (status=${code})`);
           } else if (code === 429) {
-            // Rate limit push-сервиса: не долбим дальше, не считаем провалом,
-            // не удаляем подписку. Уведомление на этом endpoint уйдёт в следующий раз.
             result.failed++;
             console.warn(
               `[Push] #${sub.id} (user=${userId}, store=${storeId ?? '—'}) — 429 rate limit, пропускаю`
@@ -492,7 +531,15 @@ class PushService {
       }
 
       if (expired.length) {
-        result.removed = await PushService._deleteByIds(expired);
+        const removed = await PushService._deleteByIds(expired);
+        result.removed = removed;
+        // Логируем только когда ЭТОТ вызов реально удалил строки.
+        // Параллельные вызовы, которые «проиграли гонку», ничего не пишут.
+        if (removed > 0) {
+          console.log(
+            `[Push] user=${userId}: удалено мёртвых подписок: ${removed} (id: ${expired.join(', ')})`
+          );
+        }
       }
     } catch (err) {
       console.error('[Push] sendToUser:', err.message);
@@ -527,7 +574,7 @@ class PushService {
     return root ? `https://${root}${path}` : path;
   }
 
-  /** Удалить подписки по id (внутреннее). */
+  /** Удалить подписки по id (внутреннее). Возвращает число реально удалённых строк. */
   static async _deleteByIds(ids) {
     if (!Array.isArray(ids) || !ids.length) return 0;
     try {

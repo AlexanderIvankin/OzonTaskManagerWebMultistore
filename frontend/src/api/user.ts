@@ -114,8 +114,8 @@ export const pushApi = {
   /** Сохранить/обновить подписку устройства (endpoint уникален на сервере) */
   subscribe: (subscription: PushSubscriptionJSON) =>
     api
-      .post<{ ok: boolean }>("/user/push-subscribe", { subscription })
-      .then((res) => res.data),
+      .post<{ ok: boolean; reason?: string }>("/user/push-subscribe", { subscription })
+      .then((r) => r.data),
 
   /** Удалить подписку: одного устройства (endpoint) или всех (all: true) */
   unsubscribe: (body: { endpoint?: string; all?: boolean; device?: boolean }) =>

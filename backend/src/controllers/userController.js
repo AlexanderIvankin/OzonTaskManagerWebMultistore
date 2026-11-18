@@ -501,17 +501,20 @@ exports.pushSubscribe = async (req, res) => {
     if (!PushService.isValidSubscription(subscription)) {
       return res.status(400).json({ error: 'Некорректная подписка' });
     }
-    // origin важен: один браузер создаёт отдельный SW и endpoint для каждого
-    // origin (store1.na3d.ru vs na3d.ru). По origin мы фильтруем push, чтобы
-    // store-уведомление уходило в контекст магазина, а не на все домены.
     const origin = req.headers.origin || null;
-    const saved = await PushService.subscribe(
+    const result = await PushService.subscribe(
       req.user.id,
       subscription,
       req.headers['user-agent'] || null,
       origin
     );
-    if (!saved) {
+
+    // `dead_endpoint` и `push_disabled` — не ошибка сервера, а сигнал
+    // клиенту: «не восстанавливай эту подписку». Клиент отпишется и создаст новую.
+    if (result && result.ok === false) {
+      return res.json({ ok: false, reason: result.reason || 'unknown' });
+    }
+    if (!result || !result.ok) {
       return res.status(500).json({ error: 'Не удалось сохранить подписку' });
     }
     res.json({ ok: true });

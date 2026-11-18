@@ -235,9 +235,32 @@ export function usePushSubscription(): UsePushSubscriptionResult {
           });
         }
 
-        await pushApi.subscribe(
+        // Первая попытка сохранить подписку
+        const first = await pushApi.subscribe(
           subscription.toJSON() as unknown as PushSubscriptionJSON,
         );
+
+        // Сервер помнит, что этот endpoint «мёртвый» (недавно был 410 Gone).
+        // Локально отписываемся и создаём НОВУЮ подписку с новым endpoint.
+        if (first && first.ok === false && first.reason === "dead_endpoint") {
+          console.warn("[Push] endpoint помечен dead — пересоздаём подписку");
+          await subscription.unsubscribe().catch(() => undefined);
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey),
+          });
+          const retry = await pushApi.subscribe(
+            subscription.toJSON() as unknown as PushSubscriptionJSON,
+          );
+          if (!retry || retry.ok === false) {
+            return "error";
+          }
+        } else if (first && first.ok === false) {
+          // push_disabled или invalid — не «ошибка доставки», просто не сохранили
+          console.warn("[Push] subscribe отклонён:", first.reason);
+          return "error";
+        }
+
         return "subscribed";
       } catch (err) {
         console.warn("[Push] Не удалось подписаться:", err);
