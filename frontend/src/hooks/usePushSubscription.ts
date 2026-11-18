@@ -244,6 +244,7 @@ export function usePushSubscription(): UsePushSubscriptionResult {
         // Локально отписываемся и создаём НОВУЮ подписку с новым endpoint.
         if (first && first.ok === false && first.reason === "dead_endpoint") {
           console.warn("[Push] endpoint помечен dead — пересоздаём подписку");
+          const oldEndpoint = subscription.endpoint;
           await subscription.unsubscribe().catch(() => undefined);
           subscription = await registration.pushManager.subscribe({
             userVisibleOnly: true,
@@ -253,10 +254,23 @@ export function usePushSubscription(): UsePushSubscriptionResult {
             subscription.toJSON() as unknown as PushSubscriptionJSON,
           );
           if (!retry || retry.ok === false) {
+            if (retry?.reason === "push_disabled") {
+              return "prompt";
+            }
             return "error";
           }
+          // Чистим старую мёртвую запись на сервере, если endpoint сменился.
+          if (oldEndpoint && oldEndpoint !== subscription.endpoint) {
+            await pushApi
+              .unsubscribe({ endpoint: oldEndpoint })
+              .catch(() => undefined);
+          }
         } else if (first && first.ok === false) {
-          // push_disabled или invalid — не «ошибка доставки», просто не сохранили
+          // push_disabled — не «ошибка доставки», а сигнал включить push.
+          if (first.reason === "push_disabled") {
+            console.warn("[Push] push_disabled — предлагаем включить");
+            return "prompt";
+          }
           console.warn("[Push] subscribe отклонён:", first.reason);
           return "error";
         }
