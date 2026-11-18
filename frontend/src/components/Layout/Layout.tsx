@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "../../store";
@@ -50,6 +56,11 @@ export const Layout = () => {
 
   // Тема: значение уже применено к <html> (inline-скрипт в index.html)
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme() ?? "light");
+
+  // Ссылка на скроллируемый nav — для fade-подсказок сверху/снизу
+  const navRef = useRef<HTMLElement>(null);
+  const topFadeRef = useRef<HTMLDivElement>(null);
+  const bottomFadeRef = useRef<HTMLDivElement>(null);
 
   const handleToggleTheme = () => {
     setTheme(toggleTheme(theme));
@@ -169,6 +180,52 @@ export const Layout = () => {
     };
   }, [loadUnread]);
 
+  // Fade-подсказка о скролле: высота растёт/уменьшается в зависимости от
+  // позиции. В самом верху topFade = 0, bottomFade = MAX (сильно намекает
+  // «ниже есть ещё»), в самом низу наоборот. Сумма высот всегда ≤ max,
+  // так что два слоя никогда не перекрывают друг друга и не «съедают»
+  // всё пространство при малом overflow.
+  // Пишем напрямую в style.height (не через state), чтобы не ре-рендерить
+  // Layout с <Outlet /> на каждом кадре скролла. rAF схлопывает серии
+  // scroll-событий в один апдейт за кадр.
+  useLayoutEffect(() => {
+    const el = navRef.current;
+    if (!el) return;
+
+    const MAX_FADE = 72; // подберите под высоту одного пункта меню
+
+    let raf = 0;
+    const apply = () => {
+      raf = 0;
+      const top = el.scrollTop;
+      const max = Math.max(0, el.scrollHeight - el.clientHeight);
+      const topH = Math.min(top, MAX_FADE);
+      const botH = Math.min(max - top, MAX_FADE);
+
+      if (topFadeRef.current) topFadeRef.current.style.height = `${topH}px`;
+      if (bottomFadeRef.current)
+        bottomFadeRef.current.style.height = `${botH}px`;
+    };
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(apply);
+    };
+
+    apply();
+    el.addEventListener("scroll", schedule, { passive: true });
+    const ro = new ResizeObserver(schedule);
+    ro.observe(el);
+
+    return () => {
+      el.removeEventListener("scroll", schedule);
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
+    // Пересчёт при смене роли/контекста — тогда меняется набор ссылок,
+    // а значит и scrollHeight (сам nav при этом может не менять размер,
+    // поэтому ResizeObserver один бы это не поймал).
+  }, [user?.role, isGlobalContext]);
+
   const handleLogout = async () => {
     await disablePush();
     disconnectSocket();
@@ -235,106 +292,85 @@ export const Layout = () => {
             реально дал себя сжать и выпустил overflow в scroll; без него
             overflow-y-auto не сработает (min-height: auto у flex-item).
             Скрытый скроллбар — как в чате (единый стиль). */}
-        <nav
-          className="flex-1 min-h-0 overflow-y-auto space-y-1 pb-1
-                     [scrollbar-width:none] [-ms-overflow-style:none]
-                     [&::-webkit-scrollbar]:hidden"
-        >
-          {/* «Мои магазины» — отдельная вкладка.
+        <div className="relative flex-1 min-h-0">
+          <nav
+            ref={navRef}
+            className="h-full overflow-y-auto space-y-1 pb-2
+               [scrollbar-width:none] [-ms-overflow-style:none]
+               [&::-webkit-scrollbar]:hidden"
+          >
+            {/* «Мои магазины» — отдельная вкладка.
               • В глобальном контексте: NavLink на /stores (та же вкладка).
               • В магазинном: cross-origin ссылка на корень (/stores) с
                 токеном в URL-хэше. */}
-          {isGlobalContext ? (
-            <NavLink to="/stores" className={navClass}>
-              <span aria-hidden="true" className="inline-block align-middle">
-                🏬
-              </span>
-              <span className="hidden md:inline md:ml-2">Магазины</span>
-            </NavLink>
-          ) : (
-            <a
-              href={buildCrossOriginUrl(getMyStoresUrl())}
-              className="flex items-center justify-center md:justify-start px-2 md:px-3 py-2 rounded-md transition-colors hover:bg-accent"
-            >
-              <span aria-hidden="true" className="inline-block align-middle">
-                🏬
-              </span>
-              <span className="hidden md:inline md:ml-2">Магазины</span>
-            </a>
-          )}
+            {isGlobalContext ? (
+              <NavLink to="/stores" className={navClass}>
+                <span aria-hidden="true" className="inline-block align-middle">
+                  🏬
+                </span>
+                <span className="hidden md:inline md:ml-2">Магазины</span>
+              </NavLink>
+            ) : (
+              <a
+                href={buildCrossOriginUrl(getMyStoresUrl())}
+                className="flex items-center justify-center md:justify-start px-2 md:px-3 py-2 rounded-md transition-colors hover:bg-accent"
+              >
+                <span aria-hidden="true" className="inline-block align-middle">
+                  🏬
+                </span>
+                <span className="hidden md:inline md:ml-2">Магазины</span>
+              </a>
+            )}
 
-          {/* «Профиль» — всегда. В глобальном контексте: GlobalProfile
+            {/* «Профиль» — всегда. В глобальном контексте: GlobalProfile
               (личные данные + настройки). В магазинном: StoreProfile. */}
-          <NavLink to="/profile" className={navClass}>
-            <span
-              aria-hidden="true"
-              className="inline-block align-middle -translate-y-[3px]"
-            >
-              🪪
-            </span>
-            <span className="hidden md:inline md:ml-2">Профиль</span>
-          </NavLink>
+            <NavLink to="/profile" className={navClass}>
+              <span
+                aria-hidden="true"
+                className="inline-block align-middle -translate-y-[3px]"
+              >
+                🪪
+              </span>
+              <span className="hidden md:inline md:ml-2">Профиль</span>
+            </NavLink>
 
-          {/* «Материалы» — личный набор сотрудника (какие цвета каких материалов
+            {/* «Материалы» — личный набор сотрудника (какие цвета каких материалов
     у него есть). Глобальная настройка: данные общие для всех магазинов,
     поэтому ссылка только в глобальном контексте (root-домен).
     На поддомене — скрыта (страница доступна только с root, см. MyMaterials). */}
-          {isGlobalContext &&
-            (user?.role === "god" || user?.has_store_access === true) && (
-              <NavLink to="/my-materials" className={navClass}>
-                <span aria-hidden="true">🎨</span>
-                <span className="hidden md:inline md:ml-2">Материалы</span>
-              </NavLink>
-            )}
+            {isGlobalContext &&
+              (user?.role === "god" || user?.has_store_access === true) && (
+                <NavLink to="/my-materials" className={navClass}>
+                  <span aria-hidden="true">🎨</span>
+                  <span className="hidden md:inline md:ml-2">Материалы</span>
+                </NavLink>
+              )}
 
-          {/* «Заказы» — только в магазинном контексте */}
-          {!isGlobalContext &&
-            ["employee", "moderator", "admin", "god"].includes(
-              user?.role || "",
-            ) && (
-              <NavLink to="/orders" className={navClass}>
-                <span aria-hidden="true">📦</span>
-                <span className="hidden md:inline md:ml-2">Мои заказы</span>
-              </NavLink>
-            )}
+            {/* «Заказы» — только в магазинном контексте */}
+            {!isGlobalContext &&
+              ["employee", "moderator", "admin", "god"].includes(
+                user?.role || "",
+              ) && (
+                <NavLink to="/orders" className={navClass}>
+                  <span aria-hidden="true">📦</span>
+                  <span className="hidden md:inline md:ml-2">Мои заказы</span>
+                </NavLink>
+              )}
 
-          {/* Мой склад — только в магазинном контексте */}
-          {!isGlobalContext &&
-            ["employee", "moderator", "admin", "god"].includes(
-              user?.role || "",
-            ) && (
-              <NavLink to="/my-storage" className={navClass}>
-                <span aria-hidden="true">🏠</span>
-                <span className="hidden md:inline md:ml-2">Мой склад</span>
-              </NavLink>
-            )}
+            {/* Мой склад — только в магазинном контексте */}
+            {!isGlobalContext &&
+              ["employee", "moderator", "admin", "god"].includes(
+                user?.role || "",
+              ) && (
+                <NavLink to="/my-storage" className={navClass}>
+                  <span aria-hidden="true">🏠</span>
+                  <span className="hidden md:inline md:ml-2">Мой склад</span>
+                </NavLink>
+              )}
 
-          {/* «Оповещения» — всегда */}
-          <NavLink
-            to="/notifications"
-            className={({ isActive }) =>
-              `relative flex items-center justify-center md:justify-between px-2 md:px-3 py-2 rounded-md transition-colors ${
-                isActive
-                  ? "bg-primary/10 font-medium text-primary"
-                  : "hover:bg-accent"
-              }`
-            }
-          >
-            <span className="flex items-center">
-              <span aria-hidden="true">🔔</span>
-              <span className="hidden md:inline md:ml-2">Оповещения</span>
-            </span>
-            {unreadCount > 0 && (
-              <Badge className="absolute top-0 right-0 h-4 min-w-4 px-1 text-[10px] leading-none md:static md:h-auto md:min-w-0 md:px-2 md:py-0.5 md:text-xs md:ml-2">
-                {unreadCount > 99 ? "99+" : unreadCount}
-              </Badge>
-            )}
-          </NavLink>
-
-          {/* «Поддержка» — сквозная, доступна всем (user + staff) */}
-          {user?.role !== "guest" && (
+            {/* «Оповещения» — всегда */}
             <NavLink
-              to="/support"
+              to="/notifications"
               className={({ isActive }) =>
                 `relative flex items-center justify-center md:justify-between px-2 md:px-3 py-2 rounded-md transition-colors ${
                   isActive
@@ -344,90 +380,132 @@ export const Layout = () => {
               }
             >
               <span className="flex items-center">
-                <span aria-hidden="true">💬</span>
-                <span className="hidden md:inline md:ml-2">Поддержка</span>
+                <span aria-hidden="true">🔔</span>
+                <span className="hidden md:inline md:ml-2">Оповещения</span>
               </span>
-              {chatUnread > 0 && (
+              {unreadCount > 0 && (
                 <Badge className="absolute top-0 right-0 h-4 min-w-4 px-1 text-[10px] leading-none md:static md:h-auto md:min-w-0 md:px-2 md:py-0.5 md:text-xs md:ml-2">
-                  {chatUnread > 99 ? "99+" : chatUnread}
+                  {unreadCount > 99 ? "99+" : unreadCount}
                 </Badge>
               )}
             </NavLink>
-          )}
 
-          {/* Админка — только в магазинном контексте */}
-          {!isGlobalContext &&
-            ["moderator", "admin", "god"].includes(user?.role || "") && (
-              <NavLink to="/admin" end className={navClass}>
-                <span aria-hidden="true">⚙️</span>
-                <span className="hidden md:inline md:ml-2">Админка</span>
+            {/* «Поддержка» — сквозная, доступна всем (user + staff) */}
+            {user?.role !== "guest" && (
+              <NavLink
+                to="/support"
+                className={({ isActive }) =>
+                  `relative flex items-center justify-center md:justify-between px-2 md:px-3 py-2 rounded-md transition-colors ${
+                    isActive
+                      ? "bg-primary/10 font-medium text-primary"
+                      : "hover:bg-accent"
+                  }`
+                }
+              >
+                <span className="flex items-center">
+                  <span aria-hidden="true">💬</span>
+                  <span className="hidden md:inline md:ml-2">Поддержка</span>
+                </span>
+                {chatUnread > 0 && (
+                  <Badge className="absolute top-0 right-0 h-4 min-w-4 px-1 text-[10px] leading-none md:static md:h-auto md:min-w-0 md:px-2 md:py-0.5 md:text-xs md:ml-2">
+                    {chatUnread > 99 ? "99+" : chatUnread}
+                  </Badge>
+                )}
               </NavLink>
             )}
-          {!isGlobalContext &&
-            ["moderator", "admin", "god"].includes(user?.role || "") && (
-              <>
-                <NavLink to="/admin/users" className={navClass}>
-                  <span
-                    aria-hidden="true"
-                    className="inline-block align-middle -translate-y-[2px]"
-                  >
-                    👥
-                  </span>
-                  <span className="hidden md:inline md:ml-2">Пользователи</span>
+
+            {/* Админка — только в магазинном контексте */}
+            {!isGlobalContext &&
+              ["moderator", "admin", "god"].includes(user?.role || "") && (
+                <NavLink to="/admin" end className={navClass}>
+                  <span aria-hidden="true">⚙️</span>
+                  <span className="hidden md:inline md:ml-2">Админка</span>
                 </NavLink>
-                <NavLink to="/admin/warehouses" className={navClass}>
-                  <span aria-hidden="true">🏭</span>
-                  <span className="hidden md:inline md:ml-2">Склады</span>
-                </NavLink>
-                <NavLink to="/admin/orders" className={navClass}>
-                  <span aria-hidden="true">⏳</span>
-                  <span className="hidden md:inline md:ml-2">
-                    Очередь заказов
-                  </span>
-                </NavLink>
-                <NavLink to="/admin/active-orders" className={navClass}>
-                  <span aria-hidden="true">📋</span>
-                  <span className="hidden md:inline md:ml-2">
-                    Активные заказы
-                  </span>
-                </NavLink>
-                <NavLink to="/admin/completed-orders" className={navClass}>
-                  <span aria-hidden="true">📜</span>
-                  <span className="hidden md:inline md:ml-2">
-                    Завершённые заказы
-                  </span>
-                </NavLink>
-                <NavLink to="/admin/returns" className={navClass}>
-                  <span aria-hidden="true">🎁</span>
-                  <span className="hidden md:inline md:ml-2">Возвраты</span>
-                </NavLink>
-                <NavLink to="/admin/materials" className={navClass}>
-                  <span aria-hidden="true">📁</span>
-                  <span className="hidden md:inline md:ml-2">Материалы</span>
-                </NavLink>
-                {!user?.store?.features?.disableModels && (
-                  <NavLink to="/admin/models" className={navClass}>
-                    <span aria-hidden="true">🧊</span>
-                    <span className="hidden md:inline md:ml-2">Модели</span>
+              )}
+            {!isGlobalContext &&
+              ["moderator", "admin", "god"].includes(user?.role || "") && (
+                <>
+                  <NavLink to="/admin/users" className={navClass}>
+                    <span
+                      aria-hidden="true"
+                      className="inline-block align-middle -translate-y-[2px]"
+                    >
+                      👥
+                    </span>
+                    <span className="hidden md:inline md:ml-2">
+                      Пользователи
+                    </span>
                   </NavLink>
-                )}
-                <NavLink to="/admin/export" className={navClass}>
-                  <span aria-hidden="true">📤</span>
-                  <span className="hidden md:inline md:ml-2">
-                    Экспорт данных
-                  </span>
-                </NavLink>
-                <NavLink to="/admin/earnings" className={navClass}>
-                  <span aria-hidden="true">🏦</span>
-                  <span className="hidden md:inline md:ml-2">Заработок</span>
-                </NavLink>
-                <NavLink to="/admin/stats" className={navClass}>
-                  <span aria-hidden="true">📊</span>
-                  <span className="hidden md:inline md:ml-2">Статистика</span>
-                </NavLink>
-              </>
-            )}
-        </nav>
+                  <NavLink to="/admin/warehouses" className={navClass}>
+                    <span aria-hidden="true">🏭</span>
+                    <span className="hidden md:inline md:ml-2">Склады</span>
+                  </NavLink>
+                  <NavLink to="/admin/orders" className={navClass}>
+                    <span aria-hidden="true">⏳</span>
+                    <span className="hidden md:inline md:ml-2">
+                      Очередь заказов
+                    </span>
+                  </NavLink>
+                  <NavLink to="/admin/active-orders" className={navClass}>
+                    <span aria-hidden="true">📋</span>
+                    <span className="hidden md:inline md:ml-2">
+                      Активные заказы
+                    </span>
+                  </NavLink>
+                  <NavLink to="/admin/completed-orders" className={navClass}>
+                    <span aria-hidden="true">📜</span>
+                    <span className="hidden md:inline md:ml-2">
+                      Завершённые заказы
+                    </span>
+                  </NavLink>
+                  <NavLink to="/admin/returns" className={navClass}>
+                    <span aria-hidden="true">🎁</span>
+                    <span className="hidden md:inline md:ml-2">Возвраты</span>
+                  </NavLink>
+                  <NavLink to="/admin/materials" className={navClass}>
+                    <span aria-hidden="true">📁</span>
+                    <span className="hidden md:inline md:ml-2">Материалы</span>
+                  </NavLink>
+                  {!user?.store?.features?.disableModels && (
+                    <NavLink to="/admin/models" className={navClass}>
+                      <span aria-hidden="true">🧊</span>
+                      <span className="hidden md:inline md:ml-2">Модели</span>
+                    </NavLink>
+                  )}
+                  <NavLink to="/admin/export" className={navClass}>
+                    <span aria-hidden="true">📤</span>
+                    <span className="hidden md:inline md:ml-2">
+                      Экспорт данных
+                    </span>
+                  </NavLink>
+                  <NavLink to="/admin/earnings" className={navClass}>
+                    <span aria-hidden="true">🏦</span>
+                    <span className="hidden md:inline md:ml-2">Заработок</span>
+                  </NavLink>
+                  <NavLink to="/admin/stats" className={navClass}>
+                    <span aria-hidden="true">📊</span>
+                    <span className="hidden md:inline md:ml-2">Статистика</span>
+                  </NavLink>
+                </>
+              )}
+          </nav>
+
+          {/* Сверху: сплошной card на верхних 40%, дальше — в прозрачность цвета card */}
+          <div
+            ref={topFadeRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0
+             bg-gradient-to-b from-card from-40% to-card/0"
+          />
+
+          {/* Снизу: симметрично — сплошной card на нижних 40% */}
+          <div
+            ref={bottomFadeRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0
+             bg-gradient-to-t from-card from-40% to-card/0"
+          />
+        </div>
 
         {/* Footer — фиксирован снизу, не скроллится */}
         <div className="shrink-0 border-t pt-2 md:pt-4 space-y-2">
