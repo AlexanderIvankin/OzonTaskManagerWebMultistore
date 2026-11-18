@@ -120,7 +120,14 @@ export const GlobalProfile = () => {
       if (user) dispatch(updateUser({ ...user, taking_orders: next }));
       toast.success(`Приём заказов ${next ? "включён" : "выключен"}`);
     } catch (err: any) {
-      if (err?.response?.data?.cooldown) return;
+      if (err?.response?.data?.cooldown) {
+        const data = err.response.data;
+        toast.warning(
+          data.error ||
+            `Подождите ${data.retryAfterSec ?? 60} секунд перед повторным изменением статуса.`,
+        );
+        return;
+      }
       toast.error(
         err?.response?.data?.error || err.message || "Ошибка переключения",
       );
