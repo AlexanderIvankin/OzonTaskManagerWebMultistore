@@ -459,8 +459,14 @@ export const Layout = () => {
                     </span>
                   </NavLink>
                   <NavLink to="/admin/returns" className={navClass}>
+                    <span aria-hidden="true">🗳️</span>
+                    <span className="hidden md:inline md:ml-2">
+                      Кэш возвратов
+                    </span>
+                  </NavLink>
+                  <NavLink to="/admin/stored-returns" className={navClass}>
                     <span aria-hidden="true">🎁</span>
-                    <span className="hidden md:inline md:ml-2">Возвраты</span>
+                    <span className="hidden md:inline md:ml-2">Хранилище</span>
                   </NavLink>
                   <NavLink to="/admin/materials" className={navClass}>
                     <span aria-hidden="true">📁</span>

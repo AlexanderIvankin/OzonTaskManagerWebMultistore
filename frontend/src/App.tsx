@@ -28,6 +28,7 @@ import { Layout } from "./components/Layout/Layout";
 import { Support } from "./pages/Support/Support";
 import MyStorage from "./pages/MyStorage/MyStorage";
 import { ReturnsManagement } from "./pages/Admin/ReturnsManagement";
+import { StoredReturnsManagement } from "./pages/Admin/StoredReturnsManagement";
 import { useCrossTabAuthGuard } from "./hooks/useCrossTabAuthGuard";
 
 function App() {
@@ -120,6 +121,7 @@ function App() {
                 element={<CompletedOrders />}
               />
               <Route path="/admin/returns" element={<ReturnsManagement />} />
+              <Route path="/admin/stored-returns" element={<StoredReturnsManagement />} />
               <Route path="/admin/materials" element={<Materials />} />
               <Route path="/admin/models" element={<Models />} />
               <Route path="/admin/earnings" element={<EarningsManagement />} />

@@ -1732,6 +1732,7 @@ exports.listReturns = async (req, res, next) => {
     const filterRaw = String(req.query.filter || '').trim();
     const filterCargo = filterRaw === 'cargo' || filterRaw === 'full';
     const filterFull = filterRaw === 'full';
+    const filterMulti = filterRaw === 'multi';
 
     // 1. Кэш возвратов этого магазина
     const returnsDb = getReturnsDB(storeId);
@@ -1745,7 +1746,7 @@ exports.listReturns = async (req, res, next) => {
     const usersDb = getUsersDB();
     const storedRows = await usersDb.all(
       `SELECT sr.id, sr.user_id, sr.box_number, sr.lozon_id, sr.offer_id, sr.sku,
-              sr.cargo_box_id, sr.quantity, sr.created_at,
+              sr.cargo_box_id, sr.quantity, sr.created_at, sr.source,
               u.name AS user_name, u.username AS user_username
        FROM stored_returns sr
        INNER JOIN user_stores us ON us.user_id = sr.user_id
@@ -1783,6 +1784,7 @@ exports.listReturns = async (req, res, next) => {
           box_number: sr.box_number,
           quantity: sr.quantity,
           lozon_id: sr.lozon_id,
+          source: sr.source || 'lozon_id',
         })),
       };
     });
@@ -1791,6 +1793,9 @@ exports.listReturns = async (req, res, next) => {
     let filtered = items;
     if (filterCargo) filtered = filtered.filter((r) => !!r.cargo_box_id);
     if (filterFull) filtered = filtered.filter((r) => r.stored_owners.length > 0);
+    if (filterMulti) {
+      filtered = filtered.filter((r) => r.resolution_reason === 'multiple_products');
+    }
 
     res.json({
       items: filtered,

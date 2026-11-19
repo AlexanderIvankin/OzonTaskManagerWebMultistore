@@ -108,17 +108,23 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
     try {
       const grant = await ordersApi.requestModelToken(offerId);
       const blob = await ordersApi.downloadModelByToken(grant.token);
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = grant.fileName || fileName;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
-      toast.success(`Модель ${grant.fileName} скачана`);
+
+      toast.success(`Модель ${grant.fileName || fileName} скачана`);
     } catch (err: any) {
-      const message =
-        err.response?.data?.error || err.message || "Не удалось скачать модель";
-      toast.error(message);
+      toast.error(
+        err?.response?.data?.error ||
+          err.message ||
+          "Не удалось скачать модель",
+      );
     } finally {
       setModelLoading((prev) => ({ ...prev, [offerId]: false }));
     }

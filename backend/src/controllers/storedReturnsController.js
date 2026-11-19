@@ -68,21 +68,32 @@ exports.listMy = async (req, res, next) => {
 
 exports.addManual = async (req, res, next) => {
   try {
-    const { boxNumber, lozonId, quantity } = req.body || {};
+    const { boxNumber, offerId, input, quantity } = req.body || {};
     const result = await StoredReturnsService.addManual(
       req.user.id,
-      { boxNumber, lozonId, quantity },
+      { boxNumber, offerId, input, quantity },
       { storeId: req.storeId || null }
     );
     res.status(201).json({ ok: true, ...result });
   } catch (err) {
-    if (err.message && (
-      err.message.includes('Укажите') ||
-      err.message.includes('отключено') ||
-      err.message.includes('максимум')
-    )) {
+    // Бизнес-ошибки → 400 с текстом, без next(err).
+    // next(err) — только для настоящих 500 (неожиданные исключения).
+    const BUSINESS_PATTERNS = [
+      'Укажите', 'отключено', 'максимум',
+      'Не удалось опознать', 'несколько товаров',
+      'не сопоставлен', 'не синхронизирован', 'не найден',
+    ];
+    if (err.message && BUSINESS_PATTERNS.some((p) => err.message.includes(p))) {
       return res.status(400).json({ error: err.message });
     }
+    // Ozon API вернул ошибку (сеть/5xx) — тоже 400 с деталями
+    if (err.response?.data) {
+      return res.status(400).json({
+        error: `Ozon API: ${err.message}`,
+        details: err.response.data,
+      });
+    }
+    console.error('[addManual] Неожиданная ошибка:', err);
     next(err);
   }
 };
@@ -133,14 +144,14 @@ exports.listForStaff = async (req, res, next) => {
     const storeId = req.storeId;
     const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
     const status = typeof req.query.status === 'string' && req.query.status
-      ? String(req.query.status)
-      : 'stored';
+      ? String(req.query.status) : 'stored';
     const resolutionStatus = typeof req.query.resolutionStatus === 'string' && req.query.resolutionStatus
-      ? String(req.query.resolutionStatus)
-      : null;
+      ? String(req.query.resolutionStatus) : null;
+    const source = typeof req.query.source === 'string' && req.query.source
+      ? String(req.query.source) : null;
 
     const items = await StoredReturnsService.listForStaff({
-      storeId, userId, status, resolutionStatus,
+      storeId, userId, status, resolutionStatus, source,
     });
     res.json({ items });
   } catch (err) { next(err); }

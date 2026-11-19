@@ -32,32 +32,28 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { ReturnsCacheItem, ReturnsPdfUploadResult } from "@/types/returns";
+import type {
+  ReturnsCacheItem,
+  ReturnsPdfUploadResult,
+  ReturnOwner,
+} from "@/types/returns";
 
-// Расширенный тип: бэкенд обогащает stored_owners
 interface ReturnRowWithOwners extends ReturnsCacheItem {
-  stored_owners: Array<{
-    stored_return_id: number;
-    user_id: number;
-    user_name: string;
-    user_username: string;
-    box_number: string;
-    quantity: number;
-    lozon_id: string;
-  }>;
+  stored_owners: ReturnOwner[];
 }
 
-type FilterMode = "all" | "cargo" | "full";
+type CacheFilter = "all" | "cargo" | "full" | "multi";
 
 export const ReturnsManagement = () => {
+  // ── Таблица: кэш возвратов из Ozon ──────────────────────────────
   const [items, setItems] = useState<ReturnRowWithOwners[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [filter, setFilter] = useState<FilterMode>("all");
+  const [filter, setFilter] = useState<CacheFilter>("all");
   const [error, setError] = useState<string | null>(null);
 
-  // Заливка PDF
+  // ── Заливка PDF ────────────────────────────────────────────────────
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pdfFiles, setPdfFiles] = useState<File[]>([]);
   const [uploadingPdf, setUploadingPdf] = useState(false);
@@ -65,14 +61,14 @@ export const ReturnsManagement = () => {
     null,
   );
 
-  const loadList = useCallback(async (filterMode: FilterMode) => {
+  const loadList = useCallback(async (filterMode: CacheFilter) => {
     setLoading(true);
     setError(null);
     try {
       const res = await adminApi.listReturns({
         limit: 1000,
         filter: filterMode !== "all" ? filterMode : undefined,
-      } as any);
+      });
       setItems((res.items || []) as ReturnRowWithOwners[]);
       setTotal(res.total || 0);
     } catch (err: any) {
@@ -82,7 +78,7 @@ export const ReturnsManagement = () => {
     }
   }, []);
 
-  useEffect(() => {
+    useEffect(() => {
     loadList(filter);
   }, [filter, loadList]);
 
@@ -91,11 +87,16 @@ export const ReturnsManagement = () => {
     setError(null);
     try {
       const res = await adminApi.syncReturnsReport();
-      toast.success(
-        `Синхронизация выполнена: ${res.parse.deduplicated} записей, ` +
-          `ready ${res.ready}, skip ${res.skip}, ` +
-          `обновлено ${res.updated}, добавлено ${res.inserted}`,
-      );
+      const parts = [
+        `${res.uniqueRows} строк`,
+        `ready ${res.ready}`,
+        `skip ${res.skip}`,
+      ];
+      if (res.multiProductBarcodes > 0)
+        parts.push(`multi ${res.multiProductBarcodes}`);
+      if (res.inserted > 0) parts.push(`+${res.inserted}`);
+      if (res.updated > 0) parts.push(`~${res.updated}`);
+      toast.success(`Sync: ${parts.join(", ")}`);
       await loadList(filter);
     } catch (err: any) {
       const msg =
@@ -124,7 +125,7 @@ export const ReturnsManagement = () => {
 
   const handleUploadPdf = async () => {
     if (!pdfFiles.length) {
-      toast.error("Выберите хотя бы один PDF-файл");
+      toast.error("Выберите хотя бы один PDF");
       return;
     }
     setUploadingPdf(true);
@@ -133,8 +134,8 @@ export const ReturnsManagement = () => {
       const res = await adminApi.uploadReturnsPdf(pdfFiles);
       setPdfResult(res);
       toast.success(res.message || "PDF обработаны");
-      if (res.totalUpdated > 0) await loadList(filter);
-      // Очистим file input
+      if (res.totalUpdated > 0)
+        await loadList(filter);
       setPdfFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err: any) {
@@ -151,26 +152,28 @@ export const ReturnsManagement = () => {
       <div className="flex flex-col items-center justify-center gap-3 text-center lg:flex-row lg:justify-between">
         <h1 className="text-2xl font-bold">
           <span className="inline-block align-middle -translate-y-[2px] mr-1">
-            🎁
+            🗳️
           </span>
-          Возвраты
+          Кэш возвратов
           <span className="block text-muted-foreground mt-1 text-base font-normal">
-            Записей в кэше: <span className="text-blue-600">{total}</span>
+            Синхронизирован с Ozon ·{" "}
+            <span className="text-blue-600">{total}</span> записей
           </span>
         </h1>
-
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end">
           <div className="flex flex-col items-center sm:items-start">
-            <Label className="mb-2">Фильтр</Label>
+            <Label className="mb-2">Фильтр кэша</Label>
             <Select
               value={filter}
-              onValueChange={(v) => setFilter(v as FilterMode)}
+              onValueChange={(v) => setFilter(v as CacheFilter)}
             >
               <SelectTrigger className="w-full sm:w-64">
                 <SelectValue>
                   {(val) => {
                     if (val === "cargo") return "📍 Только с номером предмета";
                     if (val === "full") return "✅ Только с полной цепочкой";
+                    if (val === "multi")
+                      return "⚠️ Только multi (несколько товаров)";
                     return "🌐 Все";
                   }}
                 </SelectValue>
@@ -183,10 +186,10 @@ export const ReturnsManagement = () => {
                 <SelectItem value="full">
                   ✅ Только с полной цепочкой
                 </SelectItem>
+                <SelectItem value="multi">⚠️ Только multi</SelectItem>
               </SelectContent>
             </Select>
           </div>
-
           <Button onClick={handleSync} disabled={syncing || loading}>
             <RefreshCw
               className={`mr-2 h-4 w-4 ${syncing ? "animate-spin" : ""}`}
@@ -203,6 +206,7 @@ export const ReturnsManagement = () => {
         </Alert>
       )}
 
+      {/* === Таблица: Кэш возвратов === */}
       <Card>
         <CardHeader>
           <CardTitle className="text-lg text-center">
@@ -216,7 +220,7 @@ export const ReturnsManagement = () => {
             </div>
           ) : items.length === 0 ? (
             <div className="text-center py-10 text-muted-foreground">
-              Нет записей. Нажмите «Обновить из Ozon», чтобы загрузить данные.
+              Нет записей. Нажмите «Обновить из Ozon».
             </div>
           ) : (
             <Table>
@@ -228,62 +232,98 @@ export const ReturnsManagement = () => {
                   <TableHead className="text-center hidden md:table-cell">
                     SKU
                   </TableHead>
+                  <TableHead className="text-center hidden lg:table-cell">
+                    Кол-во
+                  </TableHead>
                   <TableHead className="text-center">Сотрудник</TableHead>
                   <TableHead className="text-center">Ящик</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {items.map((r) => (
-                  <TableRow key={r.id}>
-                    <TableCell className="text-center font-mono text-xs">
-                      {r.cargo_box_id || (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-center font-mono text-xs">
-                      {r.barcode || "—"}
-                    </TableCell>
-                    <TableCell className="text-center font-mono text-xs">
-                      {r.offer_id || (
-                        <Badge variant="outline" className="text-xs">
-                          нет
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-center font-mono text-xs hidden md:table-cell">
-                      {r.sku || "—"}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {r.stored_owners.length === 0 ? (
-                        <span className="text-muted-foreground text-xs">—</span>
-                      ) : (
-                        <div className="flex flex-col gap-1">
-                          {r.stored_owners.map((o) => (
-                            <Badge key={o.stored_return_id} variant="secondary">
-                              {o.user_name}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {r.stored_owners.length === 0 ? (
-                        <span className="text-muted-foreground text-xs">—</span>
-                      ) : (
-                        <div className="flex flex-col gap-1">
-                          {r.stored_owners.map((o) => (
-                            <span
-                              key={o.stored_return_id}
-                              className="text-xs font-mono"
+                {items.map((r) => {
+                  const isMulti = r.resolution_reason === "multiple_products";
+                  return (
+                    <TableRow
+                      key={r.id}
+                      className={
+                        isMulti ? "bg-amber-50/50 dark:bg-amber-950/20" : ""
+                      }
+                    >
+                      <TableCell className="text-center font-mono text-xs">
+                        {r.cargo_box_id || (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center font-mono text-xs">
+                        {r.barcode || "—"}
+                      </TableCell>
+                      <TableCell className="text-center font-mono text-xs">
+                        {isMulti ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <Badge
+                              variant="destructive"
+                              className="text-xs"
+                              title="В одной упаковке несколько товаров — авторезолв невозможен"
                             >
-                              {o.box_number} × {o.quantity}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                              ⚠️ multi
+                            </Badge>
+                            {r.offer_id && <span>{r.offer_id}</span>}
+                          </div>
+                        ) : r.offer_id ? (
+                          r.offer_id
+                        ) : (
+                          <Badge variant="outline" className="text-xs">
+                            {r.resolution_reason === "no_offer_id"
+                              ? "нет артикула"
+                              : "нет"}
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center font-mono text-xs hidden md:table-cell">
+                        {r.sku || "—"}
+                      </TableCell>
+                      <TableCell className="text-center text-xs hidden lg:table-cell">
+                        {r.quantity || 1}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {r.stored_owners.length === 0 ? (
+                          <span className="text-muted-foreground text-xs">
+                            —
+                          </span>
+                        ) : (
+                          <div className="flex flex-col gap-1">
+                            {r.stored_owners.map((o) => (
+                              <Badge
+                                key={o.stored_return_id}
+                                variant="secondary"
+                              >
+                                {o.user_name}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {r.stored_owners.length === 0 ? (
+                          <span className="text-muted-foreground text-xs">
+                            —
+                          </span>
+                        ) : (
+                          <div className="flex flex-col gap-1">
+                            {r.stored_owners.map((o) => (
+                              <span
+                                key={o.stored_return_id}
+                                className="text-xs font-mono"
+                              >
+                                {o.box_number} × {o.quantity}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}
@@ -321,8 +361,8 @@ export const ReturnsManagement = () => {
               </p>
             )}
             <p className="text-xs text-muted-foreground mt-2 text-center">
-              Парсер извлекает из акта пары «Номер предмета» → «Штрих-код» и
-              обновляет <code>cargo_box_id</code> в кэше возвратов.
+              Парсер извлекает пары «Номер предмета» → «Штрих-код» и обновляет{" "}
+              <code>cargo_box_id</code> в кэше.
             </p>
           </div>
           <div className="flex justify-center">

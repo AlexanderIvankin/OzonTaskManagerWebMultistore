@@ -78,8 +78,8 @@ class ReturnsReportService {
 
         const retryAfterSec = parseInt(err.response?.headers?.['retry-after'], 10);
         const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
-          ? retryAfterSec * 1000
-          : baseDelay * Math.pow(2, attempt - 1);
+          ? Math.max(retryAfterSec * 1000, 2000)   // минимум 2 сек
+          : Math.max(baseDelay * Math.pow(2, attempt - 1), 2000);
 
         console.warn(
           `[${context}] ${status || 'network'} (попытка ${attempt}/${retries}), ` +
@@ -110,7 +110,8 @@ class ReturnsReportService {
       (statusAlias.length ? ` status_alias=${statusAlias.join(',')}` : '')
     );
     const res = await this._post(
-      storeId, '/v1/report/postings/create', body, `createPostingsReport[${storeId}]`
+      storeId, '/v1/report/postings/create', body, `createPostingsReport[${storeId}]`,
+      { retries: 5, baseDelay: 3000 }
     );
     const code = res.data?.result?.code;
     if (!code) {
@@ -161,135 +162,146 @@ class ReturnsReportService {
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
     if (!rows.length) throw new Error('Пустая таблица');
 
-    // Индексы колонок (по факту)
-    const COL_BARCODE = 2; // C
-    const COL_STATUS = 6;  // G
-    const COL_SKU = 15;    // P
-    const COL_OFFER = 16;  // Q
-
-    // Проверим, что заголовки совпадают — если Ozon поменяет порядок, увидим
+    // ── Динамическое определение колонок по заголовку ─────────────────────
     const header = rows[0] || [];
-    const headerWarnings = [];
     const norm = (s) => String(s || '').toLowerCase().trim();
-    if (!norm(header[COL_BARCODE]).includes('код') && !norm(header[COL_BARCODE]).includes('этикет')) {
-      headerWarnings.push(
-        `Колонка C («${header[COL_BARCODE]}») не похожа на «Код этикетки» — проверьте маппинг`
-      );
-    }
-    if (!norm(header[COL_OFFER]).includes('артикул')) {
-      headerWarnings.push(
-        `Колонка Q («${header[COL_OFFER]}») не похожа на «Артикул» — проверьте маппинг`
-      );
-    }
-    if (!norm(header[COL_SKU]).includes('sku')) {
-      headerWarnings.push(
-        `Колонка P («${header[COL_SKU]}») не похожа на «SKU» — проверьте маппинг`
-      );
-    }
+    const findCol = (pattern, fallback) => {
+      for (let i = 0; i < header.length; i++) {
+        if (pattern.test(norm(header[i]))) return i;
+      }
+      return fallback;
+    };
 
-    // Фильтр «отменённых». Ищем в статусе «отмен» или «cancel».
+    const COL_BARCODE = findCol(/код.*этикет/, 2);
+    const COL_STATUS = findCol(/статус/, 6);
+    const COL_SKU = findCol(/^sku$/, 15);
+    const COL_OFFER = findCol(/артикул/, 16);
+    const COL_QUANTITY = findCol(/количеств|кол-во/, 21);
+
     const isCanceledStatus = (s) => {
       const v = norm(s);
       return v.includes('отмен') || v.includes('cancel');
     };
 
-    // Дедупликация по barcode: берём первую с непустым offer_id/sku
-    const byBarcode = new Map();
-    const collisions = [];
-    let totalRows = 0;
-    let canceledRows = 0;
-    let skippedEmptyBarcode = 0;
-    let skippedNotCanceled = 0;
-    let skippedNoOffer = 0;
+    // Одиночный ID: alnum + . _ - % : (barcode может быть %301%..., offer_id ARD-001)
+    const looksSingle = (s) => /^[A-Za-z0-9_\-%.:]+$/.test(s);
+
+    // Ячейка содержит несколько значений?
+    const hasMultipleValues = (s) => {
+      const t = String(s || '').trim();
+      if (!t) return false;
+      if (looksSingle(t)) return false;
+      return /[,;\n\t]/.test(t) || /\s/.test(t);
+    };
+
+    // ── Парсинг строк ─────────────────────────────────────────────────────
+    const rawData = [];
+    const stats = {
+      totalRows: 0,
+      canceledRows: 0,
+      skippedEmptyBarcode: 0,
+      skippedNotCanceled: 0,
+      skippedMultipleInCell: 0,
+      skippedNoOffer: 0,
+    };
 
     for (let i = 1; i < rows.length; i++) {
-      totalRows++;
+      stats.totalRows++;
       const row = rows[i] || [];
       const barcode = String(row[COL_BARCODE] || '').trim();
       const status = String(row[COL_STATUS] || '').trim();
-      const offerId = String(row[COL_OFFER] || '').trim();
-      const sku = String(row[COL_SKU] || '').trim();
+      const offerRaw = String(row[COL_OFFER] || '').trim();
+      const skuRaw = String(row[COL_SKU] || '').trim();
+      const qtyRaw = String(row[COL_QUANTITY] || '').trim();
 
-      if (!barcode) { skippedEmptyBarcode++; continue; }
-      if (!isCanceledStatus(status)) { skippedNotCanceled++; continue; }
-      canceledRows++;
+      if (!barcode) { stats.skippedEmptyBarcode++; continue; }
+      if (!isCanceledStatus(status)) { stats.skippedNotCanceled++; continue; }
+      stats.canceledRows++;
 
-      if (!offerId && !sku) {
-        skippedNoOffer++;
-        // Сохраняем как 'skip', чтобы barcode был в БД, но без матчинга
-        if (!byBarcode.has(barcode)) {
-          byBarcode.set(barcode, {
-            id: barcode,
-            barcode,
-            offer_id: null,
-            sku: null,
-            resolution_status: 'skip',
-          });
-        }
+      // Мульти-значение в ячейке → пропускаем строку
+      if (hasMultipleValues(offerRaw) || hasMultipleValues(skuRaw)) {
+        stats.skippedMultipleInCell++;
         continue;
       }
 
-      if (!byBarcode.has(barcode)) {
-        byBarcode.set(barcode, {
-          id: barcode,
-          barcode,
-          offer_id: offerId || null,
-          sku: sku || null,
-          resolution_status: 'ready',
-        });
-      } else {
-        const existing = byBarcode.get(barcode);
-        if (existing.resolution_status === 'skip') {
-          // Апгрейд: был skip, теперь есть offer_id
-          existing.offer_id = offerId || null;
-          existing.sku = sku || null;
-          existing.resolution_status = 'ready';
-        } else if (existing.offer_id !== (offerId || null) || existing.sku !== (sku || null)) {
-          collisions.push({ barcode, kept: existing.offer_id, dropped: offerId });
+      if (!offerRaw && !skuRaw) {
+        stats.skippedNoOffer++;
+        // сохраняем как skip-строку, чтобы знать о «слепом» возврате
+      }
+
+      const quantity = Math.max(1, parseInt(qtyRaw, 10) || 1);
+      const offerId = offerRaw || null;
+      const sku = skuRaw || null;
+      const id = `${barcode}|${offerId || sku || 'NO_OFFER'}`;
+
+      rawData.push({
+        id,
+        barcode,
+        offer_id: offerId,
+        sku,
+        quantity,
+        resolution_status: (offerId || sku) ? 'ready' : 'skip',
+        resolution_reason: (offerId || sku) ? null : 'no_offer_id',
+      });
+    }
+
+    // ── Детект multi-product: barcode с >1 уникальным offer_id/sku ────────
+    const byBarcode = new Map();
+    for (const r of rawData) {
+      if (!byBarcode.has(r.barcode)) byBarcode.set(r.barcode, []);
+      byBarcode.get(r.barcode).push(r);
+    }
+    let multiCount = 0;
+    for (const [barcode, group] of byBarcode) {
+      const uniqueIds = new Set(group.map((r) => r.offer_id || r.sku || 'NO_OFFER'));
+      if (uniqueIds.size > 1) {
+        // Все строки этого barcode → skip/multiple_products
+        for (const r of group) {
+          r.resolution_status = 'skip';
+          r.resolution_reason = 'multiple_products';
         }
+        multiCount++;
       }
     }
 
-    const data = Array.from(byBarcode.values());
+    // ── Агрегация quantity по композитному id внутри батча ────────────────
+    const aggregated = new Map();
+    for (const r of rawData) {
+      if (aggregated.has(r.id)) {
+        aggregated.get(r.id).quantity += r.quantity;
+      } else {
+        aggregated.set(r.id, { ...r });
+      }
+    }
+
+    const data = Array.from(aggregated.values());
     return {
       rows: data,
       stats: {
-        totalRows,
-        canceledRows,
-        skippedEmptyBarcode,
-        skippedNotCanceled,
-        skippedNoOffer,
-        deduplicated: data.length,
-        collisions: collisions.length,
+        ...stats,
+        uniqueRows: data.length,
+        multiProductBarcodes: multiCount,
+        ready: data.filter((r) => r.resolution_status === 'ready').length,
+        skip: data.filter((r) => r.resolution_status === 'skip').length,
       },
-      warnings: headerWarnings,
-      collisions: collisions.slice(0, 20), // первые 20 для лога
+      warnings: [],
     };
   }
 
-  static computeRange(maxTsMs) {
+  static computeRange() {
     const now = Date.now();
     const fullDays = config.returnsReport.syncDaysFull;
-    const overlapHours = config.returnsReport.syncOverlapHours;
-    const fullMs = fullDays * 86400000;
-    const overlapMs = overlapHours * 3600000;
-
-    let dateFromMs;
-    if (maxTsMs && maxTsMs > now - fullMs) {
-      dateFromMs = Math.max(maxTsMs - overlapMs, now - fullMs);
-    } else {
-      dateFromMs = now - fullMs;
-      if (maxTsMs) {
-        const gapDays = ((now - maxTsMs) / 86400000).toFixed(1);
-        console.warn(`[ReturnsReport] Гэп ${gapDays} дн. > окна ${fullDays} дн. — беру ${fullDays} дн.`);
-      }
-    }
-    return { dateFrom: new Date(dateFromMs), dateTo: new Date(now) };
+    return {
+      dateFrom: new Date(now - fullDays * 86400000),
+      dateTo: new Date(now),
+    };
   }
 
   static async syncRange(storeId, { dateFrom, dateTo, statusAlias }) {
     const startedAt = Date.now();
-    const alias = statusAlias !== undefined ? statusAlias : config.returnsReport.statusAlias;
+    const alias = statusAlias !== undefined
+      ? statusAlias
+      : config.returnsReport.statusAlias;
 
     const code = await this.createReport(storeId, { dateFrom, dateTo, statusAlias: alias });
     const fileUrl = await this.waitForReport(storeId, code);
@@ -297,28 +309,43 @@ class ReturnsReportService {
     const parsed = this.parseReport(buffer);
     const upsert = await ReturnsCacheService.upsertMany(storeId, parsed.rows);
 
+    // Плоский summary: всё, что нужно фронту, — на верхнем уровне.
+    // Никакого nested parse/stats — фронт-тип стабилен, даже если
+    // внутренняя структура stats поменяется.
     const summary = {
-      storeId, code,
+      storeId: String(storeId),
+      code,
       dateFrom: dateFrom.toISOString(),
       dateTo: dateTo.toISOString(),
       statusAlias: alias,
-      parse: parsed.stats,
-      headerWarnings: parsed.warnings,
-      collisionsSample: parsed.collisions,
+
+      // parse stats
+      totalRows: parsed.stats.totalRows,
+      canceledRows: parsed.stats.canceledRows,
+      skippedEmptyBarcode: parsed.stats.skippedEmptyBarcode,
+      skippedNotCanceled: parsed.stats.skippedNotCanceled,
+      skippedMultipleInCell: parsed.stats.skippedMultipleInCell,
+      skippedNoOffer: parsed.stats.skippedNoOffer,
+      uniqueRows: parsed.stats.uniqueRows,
+      multiProductBarcodes: parsed.stats.multiProductBarcodes,
+      ready: parsed.stats.ready,
+      skip: parsed.stats.skip,
+
+      // upsert
       inserted: upsert.inserted,
       updated: upsert.updated,
-      ready: parsed.rows.filter((r) => r.resolution_status === 'ready').length,
-      skip: parsed.rows.filter((r) => r.resolution_status === 'skip').length,
+
+      // diagnostic
+      headerWarnings: parsed.warnings,
       durationMs: Date.now() - startedAt,
     };
+
     console.log(`[ReturnsReport][store ${storeId}] OK: ${JSON.stringify(summary)}`);
     return summary;
   }
 
   static async syncAuto(storeId) {
-    const db = getReturnsDB(storeId);
-    const row = await db.get('SELECT MAX(updated_at) AS max_ts FROM returns');
-    const { dateFrom, dateTo } = this.computeRange(row?.max_ts);
+    const { dateFrom, dateTo } = this.computeRange();
     return this.syncRange(storeId, { dateFrom, dateTo });
   }
 }

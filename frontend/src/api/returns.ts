@@ -32,7 +32,8 @@ export const returnsStorageApi = {
 
   addManual: (data: {
     boxNumber: string;
-    lozonId: string;
+    offerId?: string;
+    input?: string;
     quantity?: number;
   }) =>
     api

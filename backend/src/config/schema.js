@@ -192,6 +192,21 @@ async function createUsersSchema(db) {
     console.log('✅ stored_returns: добавлена колонка cargo_box_id');
   }
 
+  // Мягкая миграция: barcode и source для прямого хранения по offer_id
+  const srCols3 = await db.all('PRAGMA table_info(stored_returns)');
+  if (!srCols3.some((c) => c.name === 'barcode')) {
+    await db.exec('ALTER TABLE stored_returns ADD COLUMN barcode TEXT');
+    console.log('✅ stored_returns: добавлена колонка barcode');
+  }
+  if (!srCols3.some((c) => c.name === 'source')) {
+    await db.exec("ALTER TABLE stored_returns ADD COLUMN source TEXT NOT NULL DEFAULT 'lozon_id'");
+    await db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_stored_returns_source " +
+      "ON stored_returns(source) WHERE status = 'stored'"
+    );
+    console.log('✅ stored_returns: добавлена колонка source');
+  }
+
   // История списаний: аудит + возможность восстановления при отмене заказа.
   await db.exec(`
     CREATE TABLE IF NOT EXISTS stored_returns_consumptions (

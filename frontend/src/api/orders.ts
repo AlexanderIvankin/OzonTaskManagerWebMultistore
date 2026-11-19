@@ -37,7 +37,9 @@ export async function readApiErrorPayload(
 }
 
 /** Человекочитаемый текст ошибки или null. */
-export async function readApiErrorMessage(err: unknown): Promise<string | null> {
+export async function readApiErrorMessage(
+  err: unknown,
+): Promise<string | null> {
   const payload = await readApiErrorPayload(err);
   return typeof payload?.error === "string" ? payload.error : null;
 }
@@ -185,7 +187,9 @@ export const ordersApi = {
   // Шаг 2: скачать zip по токену (токен гасится при первом обращении)
   downloadModelByToken: (token: string) =>
     api
-      .get(`/models/download/${token}`, { responseType: "blob" })
+      .get(`/models/download/${encodeURIComponent(token)}`, {
+        responseType: "blob",
+        timeout: 0, // 500 МБ на медленном интернете — без таймаута
+      })
       .then((res) => res.data),
 };
-

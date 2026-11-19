@@ -11,56 +11,72 @@ const { getUsersDB } = require('../config/database');
  */
 class StoredReturn {
   /**
-   * UPSERT: если у сотрудника УЖЕ есть запись (user_id, lozon_id, box_number)
-   * со status='stored' — увеличивает quantity. Иначе создаёт новую.
+   * UPSERT с app-level merge по (user_id, offer_id, box_number).
    *
-   * @param {object} db     — usersDb connection (или транзакционный)
-   * @param {number} userId
-   * @param {object} data   — { boxNumber, lozonId, quantity, offerId?, sku?, productName?, sourceStoreId?, sourceOrderId?, resolutionStatus? }
-   * @returns {Promise<{ id:number, created:boolean, quantity:number }>}
+   * Логика:
+   *   1. Ищем существующую строку по (user_id, offer_id, box_number, status='stored').
+   *   2. Если нашли → увеличиваем quantity, добиваем недостающие поля (COALESCE).
+   *   3. Если нет → вставляем новую.
+   *
+   * Placeholder в lozon_id (NOT NULL в схеме) для не-lozon путей:
+   *   • 'MANUAL_BARCODE:<barcode>' — ввод по barcode
+   *   • 'MANUAL_OFFER:<offer_id>'  — ввод по offer_id напрямую
    */
   static async upsert(db, userId, data) {
     const {
       boxNumber,
-      lozonId,
-      quantity = 1,
-      offerId = null,
+      lozonId = null,
+      barcode = null,
+      offerId,
       sku = null,
       productName = null,
       cargoBoxId = null,
+      quantity = 1,
+      source = 'lozon_id',               // 'lozon_id' | 'barcode' | 'offer_id'
       sourceStoreId = null,
       sourceOrderId = null,
-      resolutionStatus = 'pending',
     } = data;
+
+    if (!offerId) throw new Error('StoredReturn.upsert: offer_id обязателен');
+    if (!boxNumber) throw new Error('StoredReturn.upsert: box_number обязателен');
 
     const now = Date.now();
     const qty = Math.max(1, parseInt(quantity, 10) || 1);
 
+    // Нормализация ключа для NOT NULL
+    let lozonKey = lozonId;
+    if (!lozonKey) {
+      lozonKey = source === 'barcode' && barcode
+        ? `MANUAL_BARCODE:${barcode}`
+        : `MANUAL_OFFER:${offerId}`;
+    }
+
+    // App-level merge по (user, offer, box)
     const existing = await db.get(
       `SELECT id, quantity FROM stored_returns
-       WHERE user_id = ? AND lozon_id = ? AND box_number = ? AND status = 'stored'`,
-      userId, lozonId, boxNumber
+       WHERE user_id = ? AND offer_id = ? AND box_number = ? AND status = 'stored'
+       ORDER BY created_at ASC LIMIT 1`,
+      userId, offerId, boxNumber
     );
 
     if (existing) {
       const newQuantity = existing.quantity + qty;
-      // Если у нас была только что зарезолвленная — обновляем и её.
       await db.run(
         `UPDATE stored_returns
          SET quantity = ?, updated_at = ?,
-             offer_id = COALESCE(offer_id, ?),
-             sku = COALESCE(sku, ?),
-             product_name = COALESCE(product_name, ?),
+             lozon_id = CASE
+               WHEN lozon_id LIKE 'MANUAL_%' AND ? IS NOT NULL AND ? NOT LIKE 'MANUAL_%'
+                 THEN ?
+               ELSE lozon_id
+             END,
+             barcode = COALESCE(barcode, ?),
              cargo_box_id = COALESCE(cargo_box_id, ?),
-             resolution_status = CASE
-               WHEN resolution_status = 'pending' AND ? IS NOT NULL THEN 'resolved'
-               WHEN resolution_status = 'pending' AND ? IS NOT NULL THEN 'resolved'
-               ELSE resolution_status
-             END
+             sku = COALESCE(sku, ?),
+             product_name = COALESCE(product_name, ?)
          WHERE id = ?`,
         newQuantity, now,
-        offerId, sku, productName, cargoBoxId,
-        offerId, sku,
+        lozonId, lozonId, lozonId,  // если пришёл настоящий lozonId — перезапишем MANUAL
+        barcode, cargoBoxId, sku, productName,
         existing.id
       );
       return { id: existing.id, created: false, quantity: newQuantity };
@@ -68,15 +84,15 @@ class StoredReturn {
 
     const result = await db.run(
       `INSERT INTO stored_returns
-         (user_id, box_number, lozon_id, offer_id, sku, product_name,
-          cargo_box_id, quantity, resolution_status,
+         (user_id, box_number, lozon_id, offer_id, barcode, cargo_box_id,
+          sku, product_name, quantity, source,
+          resolution_status, resolution_attempts,
           source_store_id, source_order_id, status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stored', ?, ?)`,
-      userId, boxNumber, lozonId, offerId, sku, productName,
-      cargoBoxId, qty, resolutionStatus,
-      sourceStoreId, sourceOrderId,
-      now, now
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'resolved', 0, ?, ?, 'stored', ?, ?)`,
+      userId, boxNumber, lozonKey, offerId, barcode, cargoBoxId,
+      sku, productName, qty, source,
+      sourceStoreId, sourceOrderId, now, now
     );
     return { id: result.lastID, created: true, quantity: qty };
   }
@@ -104,24 +120,26 @@ class StoredReturn {
   /**
    * Список для персонала магазина: только записи сотрудников ЭТОГО магазина.
    */
-  static async listForStaff(db, { storeId, userId = null, status = 'stored', resolutionStatus = null }) {
+  static async listForStaff(db, {
+    storeId,
+    userId = null,
+    status = 'stored',
+    resolutionStatus = null,
+    source = null,
+  }) {
     const conds = ['us.store_id = ?', 'us.is_fired = 0', 'sr.status = ?'];
     const params = [String(storeId), status];
-    if (userId) {
-      conds.push('sr.user_id = ?');
-      params.push(userId);
-    }
-    if (resolutionStatus) {
-      conds.push('sr.resolution_status = ?');
-      params.push(resolutionStatus);
-    }
+    if (userId) { conds.push('sr.user_id = ?'); params.push(userId); }
+    if (resolutionStatus) { conds.push('sr.resolution_status = ?'); params.push(resolutionStatus); }
+    if (source) { conds.push('sr.source = ?'); params.push(source); }
+
     return db.all(
       `SELECT sr.*, u.name AS user_name, u.username AS user_username
-       FROM stored_returns sr
-       INNER JOIN user_stores us ON us.user_id = sr.user_id
-       INNER JOIN users u ON u.id = sr.user_id
-       WHERE ${conds.join(' AND ')}
-       ORDER BY sr.created_at DESC`,
+     FROM stored_returns sr
+     INNER JOIN user_stores us ON us.user_id = sr.user_id
+     INNER JOIN users u ON u.id = sr.user_id
+     WHERE ${conds.join(' AND ')}
+     ORDER BY sr.created_at DESC`,
       params
     );
   }

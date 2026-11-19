@@ -25,12 +25,12 @@ async function createReturnsSchema(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS returns (
       id                TEXT PRIMARY KEY,
-      barcode           TEXT,
+      barcode           TEXT NOT NULL,
       cargo_box_id      TEXT,
       offer_id          TEXT,
       sku               TEXT,
       product_name      TEXT,
-      quantity          INTEGER DEFAULT 1,
+      quantity          INTEGER NOT NULL DEFAULT 1,
       order_id          TEXT,
       order_number      TEXT,
       posting_number    TEXT,
@@ -40,7 +40,8 @@ async function createReturnsSchema(db) {
       status_name       TEXT,
       status_sys_name   TEXT,
       place_name        TEXT,
-      resolution_status TEXT NOT NULL DEFAULT 'pending',
+      resolution_status TEXT NOT NULL DEFAULT 'ready',
+      resolution_reason TEXT,
       raw_json          TEXT,
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL
@@ -52,12 +53,13 @@ async function createReturnsSchema(db) {
   await db.exec('CREATE INDEX IF NOT EXISTS idx_returns_resolution ON returns(resolution_status)');
   await db.exec('CREATE INDEX IF NOT EXISTS idx_returns_return_date ON returns(return_date)');
 
-  // Мягкая миграция для старых БД без cargo_box_id
+  // Мягкая миграция на случай, если у кого-то осталась старая БД
   const cols = await db.all('PRAGMA table_info(returns)');
   if (!cols.some((c) => c.name === 'cargo_box_id')) {
     await db.exec('ALTER TABLE returns ADD COLUMN cargo_box_id TEXT');
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_returns_cargo_box ON returns(cargo_box_id)');
-    console.log('✅ returns: добавлена колонка cargo_box_id');
+  }
+  if (!cols.some((c) => c.name === 'resolution_reason')) {
+    await db.exec('ALTER TABLE returns ADD COLUMN resolution_reason TEXT');
   }
 }
 

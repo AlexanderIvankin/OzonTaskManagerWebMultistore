@@ -17,18 +17,31 @@ export interface StoredReturn {
   sku: string | null;
   product_name: string | null;
   quantity: number;
+  status: StoredReturnStatus;
   resolution_status: StoredReturnResolution;
   resolution_attempts?: number;
   resolution_method?: "api" | "manual" | null;
   resolution_error?: string | null;
   source_store_id: string | null;
   source_order_id: string | null;
-  status: StoredReturnStatus;
+  source?: "lozon_id" | "barcode" | "offer_id";
+  barcode?: string | null;
   created_at: number;
   updated_at: number;
   // Заполняется только в /admin/stored-returns
   user_name?: string;
   user_username?: string;
+}
+
+export interface ReturnOwner {
+  stored_return_id: number;
+  user_id: number;
+  user_name: string;
+  user_username: string;
+  box_number: string;
+  quantity: number;
+  lozon_id: string;
+  source?: "lozon_id" | "barcode" | "offer_id";
 }
 
 export interface AddStoredReturnResult {
@@ -38,8 +51,9 @@ export interface AddStoredReturnResult {
   quantity: number;
   offer_id: string | null;
   sku: string | null;
+  barcode: string | null;
   cargo_box_id: string;
-  barcode: string;
+  source: "lozon_id" | "barcode" | "offer_id";
 }
 
 export interface ImportStoredReturnsResult {
@@ -88,30 +102,32 @@ export interface ReturnsPdfUploadResult {
 
 export interface ReturnsSyncResult {
   message: string;
+
+  // Идентификация прогона
   storeId: string;
-  code: string;
+  code: string; // REPORT_...
   dateFrom: string;
   dateTo: string;
   statusAlias: string[];
-  parse: {
-    totalRows: number;
-    canceledRows: number;
-    skippedEmptyBarcode: number;
-    skippedNotCanceled: number;
-    skippedNoOffer: number;
-    deduplicated: number;
-    collisions: number;
-  };
-  headerWarnings: string[];
-  collisionsSample: Array<{
-    barcode: string;
-    kept: string | null;
-    dropped: string | null;
-  }>;
+
+  // Статистика парсинга CSV
+  totalRows: number; // всего строк данных в файле
+  canceledRows: number; // со статусом cancelled
+  skippedEmptyBarcode: number; // строк без barcode
+  skippedNotCanceled: number; // не-cancelled
+  skippedMultipleInCell: number; // несколько значений в ячейке P/Q
+  skippedNoOffer: number; // нет offer_id/sku — ушли в skip
+  uniqueRows: number; // после дедупликации по composite id
+  multiProductBarcodes: number; // barcode с >1 уникальным offer_id
+  ready: number; // resolution_status='ready'
+  skip: number; // resolution_status='skip'
+
+  // Состояние upsert в returns-N.db
   inserted: number;
   updated: number;
-  ready: number;
-  skip: number;
+
+  // Диагностика
+  headerWarnings: string[];
   durationMs: number;
 }
 
@@ -133,6 +149,7 @@ export interface ReturnsCacheItem {
   status_sys_name: string | null;
   place_name: string | null;
   resolution_status: "pending" | "ready" | "skip";
+  resolution_reason?: string | null; // NEW: 'multiple_products' | 'no_offer_id' | null
   created_at: number;
   updated_at: number;
 }

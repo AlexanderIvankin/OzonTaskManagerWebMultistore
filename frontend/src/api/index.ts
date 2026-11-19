@@ -10,6 +10,7 @@ const api = axios.create({
   baseURL: "/api",
   headers: { "Content-Type": "application/json" },
   withCredentials: true,
+  timeout: 30000,
 });
 
 // Добавляем токен в заголовки

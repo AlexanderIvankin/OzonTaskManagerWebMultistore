@@ -32,6 +32,7 @@ import {
 
 import { returnsStorageApi } from "@/api/returns";
 import type { StoredReturn, ImportStoredReturnsResult } from "@/types/returns";
+import { toast } from "sonner";
 
 function formatDate(ms: number): string {
   try {
@@ -45,6 +46,14 @@ function formatDate(ms: number): string {
   } catch {
     return "—";
   }
+}
+
+function displayLozon(it: StoredReturn): string {
+  // Скрываем технические placeholder'ы (MANUAL_OFFER:..., MANUAL_BARCODE:...)
+  // — они нужны только как NOT NULL в БД, пользователю не показываем.
+  if (!it.lozon_id) return "—";
+  if (it.lozon_id.startsWith("MANUAL_")) return "—";
+  return it.lozon_id;
 }
 
 export default function MyStorage() {
@@ -154,23 +163,36 @@ export default function MyStorage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Коробка</TableHead>
-                <TableHead>Штрихкод</TableHead>
-                <TableHead>Артикул</TableHead>
-                <TableHead>SKU</TableHead>
+                <TableHead className="text-center">Коробка</TableHead>
+                <TableHead className="text-center">Штрихкод</TableHead>
+                <TableHead className="text-center">Артикул</TableHead>
+                <TableHead className="text-center">SKU</TableHead>
                 <TableHead className="text-center">Кол-во</TableHead>
-                <TableHead>Добавлено</TableHead>
-                <TableHead className="text-right">Действие</TableHead>
+                <TableHead className="text-center">Добавлено</TableHead>
+                <TableHead className="text-center">Действие</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {items.map((it) => (
                 <TableRow key={it.id}>
-                  <TableCell className="font-medium">{it.box_number}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {it.lozon_id}
+                  <TableCell className="text-center font-medium">
+                    {it.box_number}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="text-center font-mono text-xs">
+                    <div className="flex justify-center items-center gap-1">
+                      {displayLozon(it)}
+                      {/* {it.source === "offer_id" && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] px-1 py-0"
+                          title="Добавлено вручную по offer_id"
+                        >
+                          🎯
+                        </Badge>
+                      )} */}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-center">
                     {it.offer_id ? (
                       <span className="font-mono text-sm">{it.offer_id}</span>
                     ) : (
@@ -179,14 +201,14 @@ export default function MyStorage() {
                       </Badge>
                     )}
                   </TableCell>
-                  <TableCell className="font-mono text-xs">
+                  <TableCell className="text-center font-mono text-xs">
                     {it.sku || "—"}
                   </TableCell>
                   <TableCell className="text-center">{it.quantity}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
+                  <TableCell className="text-center text-sm text-muted-foreground">
                     {formatDate(it.created_at)}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-center">
                     <Button
                       size="sm"
                       variant="ghost"
@@ -231,6 +253,7 @@ function AddDialog({
   onSuccess: (item: StoredReturn) => void;
 }) {
   const [boxNumber, setBoxNumber] = useState("");
+  const [offerId, setOfferId] = useState("");
   const [lozonId, setLozonId] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [busy, setBusy] = useState(false);
@@ -239,18 +262,15 @@ function AddDialog({
   const reset = () => {
     setBoxNumber("");
     setLozonId("");
+    setOfferId("");
     setQuantity("1");
     setErr(null);
   };
 
   const handleSubmit = async () => {
-    if (!boxNumber.trim()) {
-      setErr("Укажите номер коробки");
-      return;
-    }
-    if (!lozonId.trim()) {
-      setErr("Укажите штрихкод возврата (lozon_id)");
-      return;
+    if (!boxNumber.trim()) return setErr("Укажите номер коробки");
+    if (!offerId.trim() && !lozonId.trim()) {
+      return setErr("Укажите Артикул или Штрихкод Возврата");
     }
     const qty = parseInt(quantity, 10);
     if (!Number.isFinite(qty) || qty < 1) {
@@ -263,9 +283,15 @@ function AddDialog({
     try {
       const result = await returnsStorageApi.addManual({
         boxNumber: boxNumber.trim(),
-        lozonId: lozonId.trim(),
+        offerId: offerId.trim() || undefined,
+        input: lozonId.trim() || undefined,
         quantity: qty,
       });
+      toast.success(
+        result.created
+          ? `Добавлено: ${result.offer_id} → ящик «${boxNumber.trim()}»`
+          : `Обновлено: ${result.offer_id} → ящик «${boxNumber.trim()}» (${result.quantity} шт.)`,
+      );
       // Оптимистично собираем запись из ответа — точное состояние подтянется
       // при следующем list(), но для UX хватит этого.
       const newItem: StoredReturn = {
@@ -306,35 +332,85 @@ function AddDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="text-center">Добавить возврат на хранение</DialogTitle>
+          <DialogTitle className="text-center">
+            Добавить возврат на хранение
+          </DialogTitle>
           <DialogDescription className="text-center">
-            Напишите штрихкод с возвратной этикетки. Артикул и SKU
-            определятся автоматически.
+            Напишите штрихкод с возвратной этикетки. Артикул и SKU определятся
+            автоматически.
           </DialogDescription>
         </DialogHeader>
+
         <div className="space-y-3">
           <div>
-            <Label className="mb-2" htmlFor="boxNumber">Коробка</Label>
+            <Label className="mb-2" htmlFor="boxNumber">
+              Коробка
+            </Label>
             <Input
               id="boxNumber"
-              placeholder="Например, «Ящик 3» или «Красная коробка 8»"
+              placeholder="Например, «Ящик 3»"
               value={boxNumber}
               onChange={(e) => setBoxNumber(e.target.value)}
               disabled={busy}
             />
           </div>
-          <div>
-            <Label className="mb-2" htmlFor="lozonId">Штрихкод возврата (lozon_id)</Label>
-            <Input
-              id="lozonId"
-              value={lozonId}
-              onChange={(e) => setLozonId(e.target.value)}
-              disabled={busy}
-              className="font-mono"
-            />
+
+          <div className="rounded-lg border p-3 space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Заполните одно из двух полей:
+            </p>
+
+            <div>
+              <Label className="text-sm mb-2" htmlFor="offerId">
+                🎯 Артикул offer_id (прямое указание)
+              </Label>
+              <Input
+                id="offerId"
+                placeholder="ARD000001-N"
+                value={offerId}
+                onChange={(e) => setOfferId(e.target.value)}
+                disabled={busy}
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Если точно знаете артикул — используйте этот путь
+              </p>
+            </div>
+
+            <div className="text-center text-xs text-muted-foreground">
+              — или —
+            </div>
+
+            <div>
+              <Label className="text-sm mb-2" htmlFor="lozonId">
+                📦 Штрихкод возврата (lozon_id / barcode)
+              </Label>
+              <Input
+                id="lozonId"
+                placeholder="ii... или %301%... или 25000..."
+                value={lozonId}
+                onChange={(e) => setLozonId(e.target.value)}
+                disabled={busy}
+                className="font-mono"
+              />
+              {lozonId.trim() &&
+                !/^(%|ii|\d{6,})/i.test(lozonId.trim()) &&
+                !offerId.trim() && (
+                  <p className="text-xs text-amber-600 mt-2">
+                    Не похоже на штрихкод возврата. Если у вас offer_id —
+                    используйте поле выше.
+                  </p>
+                )}
+              <p className="text-xs text-muted-foreground mt-1">
+                Артикул определится автоматически, если возврат уже в базе
+              </p>
+            </div>
           </div>
+
           <div>
-            <Label className="mb-2" htmlFor="quantity">Количество</Label>
+            <Label className="mb-2" htmlFor="quantity">
+              Количество
+            </Label>
             <Input
               id="quantity"
               type="number"
@@ -344,6 +420,7 @@ function AddDialog({
               disabled={busy}
             />
           </div>
+
           {err && (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
@@ -351,6 +428,7 @@ function AddDialog({
             </Alert>
           )}
         </div>
+
         <DialogFooter className="text-center sm:justify-center">
           <Button
             variant="outline"
@@ -426,15 +504,44 @@ function ImportDialog({
         }
       }}
     >
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl md:max-w-3xl">
         <DialogHeader className="text-center">
           <DialogTitle>Импорт из Excel</DialogTitle>
-          <DialogDescription>
-            Колонки: <code>box_number</code>, <code>lozon_id</code>,{" "}
-            <code>quantity</code> (регистр не важен, поддерживаются русские
-            алиасы «коробка», «лоzon», «количество»).
-          </DialogDescription>
         </DialogHeader>
+
+        <div className="space-y-2 text-sm text-muted-foreground">
+          <p>
+            <b className="text-foreground">
+              Заголовки в 1-й строке обязательны.
+            </b>{" "}
+            Порядок колонок не важен — парсер читает по именам.
+          </p>
+          <p>
+            Обязательные: <code>box_number</code>, <code>quantity</code>, и одна
+            из <code>lozon_id</code> / <code>offer_id</code>.
+          </p>
+          <p className="text-xs">
+            Алиасы (регистр не важен): коробка·box, штрихкод·barcode·lozon,
+            артикул·offer_id, количество·qty. Если указаны оба — приоритет у{" "}
+            <code>offer_id</code> (без резолва).
+          </p>
+          <p className="text-xs">
+            Ячейки с несколькими значениями через запятую/пробел — строка
+            пропускается.
+          </p>
+
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground">
+              Пример таблицы
+            </summary>
+            <div className="mt-1 w-full max-w-full overflow-x-auto rounded bg-muted">
+              <pre className="m-0 p-2 text-left whitespace-pre">{`box_number | lozon_id       | offer_id   | quantity
+Ящик 1     | ii19949314941  |            | 1
+Ящик 2     |                | ARD000001  | 1
+Красная 3  | %301%25815721  |            | 2`}</pre>
+            </div>
+          </details>
+        </div>
         <div className="space-y-3 justify-center items-center">
           <Input
             ref={inputRef}

@@ -33,6 +33,12 @@ async function loadPdfItems(buffer) {
   const loadingTask = pdfjsLib.getDocument({
     data: new Uint8Array(buffer),
     useSystemFonts: true,
+    // Подавляем warnings о полифиллах рендеринга (DOMMatrix, Path2D):
+    // они нужны только для отрисовки страниц, а нам — только text layer.
+    // verbosity: 0 — errors, 1 — warnings, 5 — infos.
+    verbosity: 0,
+    // disableWorker, isEvalSupported — ускоряют инициализацию в Node
+    isEvalSupported: false,
   });
   const pdf = await loadingTask.promise;
   const items = [];

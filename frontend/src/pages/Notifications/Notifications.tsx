@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSelector } from "react-redux";
 import { RootState } from "../../store";
 import { toast } from "sonner";
@@ -48,12 +48,21 @@ const TYPE_META: Record<string, { icon: string; label: string }> = {
   model_upload_rejected: { icon: "⛔", label: "Модель не загружена" },
   // Напоминания о неотправленных заказах (планировщик, раз в сутки)
   deliver_reminder: { icon: "⏰", label: "Заказ не отправлен" },
-  deliver_reminder_summary: { icon: "📋", label: "Проверка «ожидает отправки»" },
+  deliver_reminder_summary: {
+    icon: "📋",
+    label: "Проверка «ожидает отправки»",
+  },
   // Отмена заработка за завершённый, но не отправленный заказ
-  order_cancelled_earnings_revoked: { icon: "💸", label: "Заказ отменён: заработок списан" },
+  order_cancelled_earnings_revoked: {
+    icon: "💸",
+    label: "Заказ отменён: заработок списан",
+  },
   deliver_earnings_revoked: { icon: "💸", label: "Заработок обнулён" },
   // Итог ежедневной сверки отменённых Ozon заказов (журнал персонала)
-  cancelled_orders_summary: { icon: "📋", label: "Проверка отменённых заказов" },
+  cancelled_orders_summary: {
+    icon: "📋",
+    label: "Проверка отменённых заказов",
+  },
   // Автоматический ежемесячный экспорт заработка (планировщик)
   monthly_export_done: { icon: "📊", label: "Экспорт заработка" },
   // Синхронизация сотрудников из Excel: проблемные данные (некорректные
@@ -165,6 +174,8 @@ const PayloadDetails = ({
 type Tab = "mine" | "staff" | "errors";
 
 export const Notifications = () => {
+  const itemsAbortRef = useRef<AbortController | null>(null);
+  const errorsAbortRef = useRef<AbortController | null>(null);
   const user = useSelector((state: RootState) => state.auth.user);
   // Персонал (журнал действий + ошибки сервера): админ, модератор и Создатель.
   // Легко расширить при добавлении новых ролей: достаточно дополнить условие.
@@ -210,25 +221,34 @@ export const Notifications = () => {
   // --- Загрузка списка оповещений ---
   const loadItems = useCallback(
     async (limit: number) => {
+      itemsAbortRef.current?.abort();
+      const controller = new AbortController();
+      itemsAbortRef.current = controller;
+
       setLoading(true);
       try {
-        const data = await notificationsApi.list({
-          box: tab === "staff" ? "staff" : "mine",
-          unread: unreadOnly || undefined,
-          limit,
-          orderId: appliedOrderQuery || undefined,
-          userName: appliedNameQuery || undefined,
-          offerId: appliedOfferQuery || undefined,
-        });
+        const data = await notificationsApi.list(
+          {
+            box: tab === "staff" ? "staff" : "mine",
+            unread: unreadOnly || undefined,
+            limit,
+            orderId: appliedOrderQuery || undefined,
+            userName: appliedNameQuery || undefined,
+            offerId: appliedOfferQuery || undefined,
+          },
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
         setItems(data.items);
         setItemsTotal(data.total);
         setSelectedIds(new Set());
       } catch (err: any) {
+        if (controller.signal.aborted) return;
         toast.error(
           err.response?.data?.error || "Не удалось загрузить оповещения",
         );
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     },
     [tab, unreadOnly, appliedOrderQuery, appliedNameQuery, appliedOfferQuery],
@@ -237,21 +257,30 @@ export const Notifications = () => {
   // --- Загрузка списка ошибок сервера ---
   const loadErrors = useCallback(
     async (limit: number) => {
+      errorsAbortRef.current?.abort();
+      const controller = new AbortController();
+      errorsAbortRef.current = controller;
+
       setLoading(true);
       try {
-        const data = await notificationsApi.errors({
-          unread: errorsUnreadOnly || undefined,
-          limit,
-        });
+        const data = await notificationsApi.errors(
+          {
+            unread: errorsUnreadOnly || undefined,
+            limit,
+          },
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
         setErrors(data.items);
         setErrorsTotal(data.total);
         setSelectedErrorIds(new Set());
       } catch (err: any) {
+        if (controller.signal.aborted) return;
         toast.error(
           err.response?.data?.error || "Не удалось загрузить журнал ошибок",
         );
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     },
     [errorsUnreadOnly],
@@ -299,6 +328,13 @@ export const Notifications = () => {
     setAppliedOfferQuery("");
     setItemsLimit(PAGE_SIZE);
   };
+
+  useEffect(() => {
+    return () => {
+      itemsAbortRef.current?.abort();
+      errorsAbortRef.current?.abort();
+    };
+  }, []);
 
   // При смене вкладки поиск сбрасывается (у каждой вкладки свой контекст,
   // а личные оповещения не содержат имени сотрудника)

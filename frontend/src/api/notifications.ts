@@ -50,17 +50,20 @@ export interface ServerErrorListResponse {
  */
 export const notificationsApi = {
   // === Список ===
-  list: (params: {
-    box: NotificationBox;
-    unread?: boolean;
-    limit?: number;
-    offset?: number;
-    orderId?: string;
-    userName?: string;
-    offerId?: string;
-  }) =>
+  list: (
+    params: {
+      box: NotificationBox;
+      unread?: boolean;
+      limit?: number;
+      offset?: number;
+      orderId?: string;
+      userName?: string;
+      offerId?: string;
+    },
+    signal?: AbortSignal,
+  ) =>
     api
-      .get<NotificationListResponse>("/notifications", { params })
+      .get<NotificationListResponse>("/notifications", { params, signal })
       .then((res) => res.data),
 
   // === Непрочитанные (для бейджа) ===
@@ -95,14 +98,17 @@ export const notificationsApi = {
       .then((res) => res.data),
 
   // === Ошибки сервера (admin/moderator) ===
-  errors: (params?: {
-    level?: "error" | "warn";
-    unread?: boolean;
-    limit?: number;
-    offset?: number;
-  }) =>
+  errors: (
+    params?: {
+      level?: "error" | "warn";
+      unread?: boolean;
+      limit?: number;
+      offset?: number;
+    },
+    signal?: AbortSignal,
+  ) =>
     api
-      .get<ServerErrorListResponse>("/notifications/errors", { params })
+      .get<ServerErrorListResponse>("/notifications/errors", { params, signal })
       .then((res) => res.data),
 
   errorsCount: (level?: "error" | "warn") =>

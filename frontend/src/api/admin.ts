@@ -459,13 +459,16 @@ export const adminApi = {
     return api
       .post<ReturnsPdfUploadResult>("/admin/returns-pdf/upload", fd, {
         headers: { "Content-Type": "multipart/form-data" },
+        timeout: 60000, // парсинг до 10 PDF — до минуты
       })
       .then((res) => res.data);
   },
 
   // === Возвраты: шаг 1 — ручной запуск синхронизации отчёта ===
   syncReturnsReport: () =>
-    api.post<ReturnsSyncResult>("/admin/returns/sync").then((res) => res.data),
+    api
+      .post<ReturnsSyncResult>("/admin/returns/sync", {}, { timeout: 90000 })
+      .then((r) => r.data),
 
   getReturnsCount: () =>
     api.get<{ count: number }>("/admin/returns/count").then((res) => res.data),
@@ -473,7 +476,7 @@ export const adminApi = {
   listReturns: (params?: {
     limit?: number;
     offset?: number;
-    filter?: "all" | "cargo" | "full";
+    filter?: "all" | "cargo" | "full" | "multi";
   }) =>
     api
       .get<{
@@ -482,7 +485,7 @@ export const adminApi = {
         filter: string | null;
         limit: number;
         offset: number;
-      }>("/admin/returns/list", { params })
+      }>("/admin/returns/list", { params, timeout: 15000 })
       .then((res) => res.data),
 
   // === Возвраты: список записей сотрудников магазина ===
@@ -490,9 +493,12 @@ export const adminApi = {
     userId?: number;
     status?: string;
     resolutionStatus?: string;
+    source?: "lozon_id" | "barcode" | "offer_id";
   }) =>
     api
-      .get<{ items: StoredReturn[] }>("/admin/stored-returns", { params })
+      .get<{
+        items: StoredReturn[];
+      }>("/admin/stored-returns", { params, timeout: 15000 })
       .then((res) => res.data),
 
   // === Этикетка заказа (аналог /admin_send_label) ===

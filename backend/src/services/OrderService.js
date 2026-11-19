@@ -561,11 +561,16 @@ class OrderService {
 
       // ========== ТРАНЗАКЦИЯ БД (store-N.db) ==========
       await db.run('BEGIN TRANSACTION');
+
       try {
         await UserStats.incrementStats(storeId, userId, orderAmount);
 
         if (earningsData && earningsData.total > 0) {
-          const existing = await db.get('SELECT id FROM earnings_history WHERE order_id = ?', orderId);
+          const existing = await db.get(
+            'SELECT id FROM earnings_history WHERE order_id = ?',
+            orderId
+          );
+
           if (!existing) {
             await Earnings.saveHistory(storeId, userId, orderId, earningsData.total);
             await Earnings.saveActive(storeId, userId, orderId, earningsData.total);
@@ -579,48 +584,67 @@ class OrderService {
 
         await db.run('COMMIT');
         transactionCompleted = true;
-        console.log(`[FINISH][store ${storeId}] Транзакция закоммичена для заказа ${orderId}`);
 
-        // === СПИСАНИЕ ИЗ ХРАНИЛИЩА ВОЗВРАТОВ ===
-        // Делаем ПОСЛЕ коммита store-транзакции. Хранилище — users.db,
-        // отдельная транзакция (2-файловую атомарность SQLite не гарантирует).
-        // При ошибке — не роняем заказ (он уже completed), логируем и
-        // уведомляем персонал: разберутся вручную.
-        try {
-          consumedStoredReturns = await StoredReturnsService.consumeForOrder(
-            userId,
-            orderId,
-            storeId,
-            orderDetails?.products || []
-          );
-          if (consumedStoredReturns.length) {
-            console.log(
-              `[FINISH][store ${storeId}] Списано из хранилища возвратов: ` +
-              `${consumedStoredReturns.reduce((s, c) => s + c.quantity, 0)} шт. (${consumedStoredReturns.length} партий)`
-            );
-          }
-        } catch (consumeErr) {
-          console.error(
-            `[FINISH][store ${storeId}] consumeForOrder упал:`, consumeErr
-          );
-          NotificationService.logServerError(
-            'OrderService.finishOrder.storedReturns',
-            consumeErr,
-            { storeId, orderId, userId }
-          );
-          NotificationService.notifyStaff('stored_return_consume_failed', {
-            orderId,
-            userName: user.name,
-            error: consumeErr.message,
-          }, { storeId });
-        }
-        // Прикрепляем к объекту завершения, чтобы потом попало в payload.
-        finishOrder._lastConsumed = consumedStoredReturns; // (передадим ниже через замыкание)
+        console.log(
+          `[FINISH][store ${storeId}] Транзакция закоммичена для заказа ${orderId}`
+        );
 
       } catch (txError) {
-        await db.run('ROLLBACK');
-        console.error(`[FINISH][store ${storeId}] Ошибка в транзакции для заказа ${orderId}:`, txError);
+        // Откатываем только если транзакция ещё не завершена.
+        if (!transactionCompleted) {
+          try {
+            await db.run('ROLLBACK');
+          } catch (rollbackError) {
+            console.error(
+              `[FINISH][store ${storeId}] Ошибка ROLLBACK для заказа ${orderId}:`,
+              rollbackError
+            );
+          }
+        }
+
+        console.error(
+          `[FINISH][store ${storeId}] Ошибка в транзакции для заказа ${orderId}:`,
+          txError
+        );
+
         throw txError;
+      }
+
+      // === СПИСАНИЕ ИЗ ХРАНИЛИЩА ВОЗВРАТОВ ===
+      // Выполняется строго ПОСЛЕ успешного COMMIT.
+      try {
+        consumedStoredReturns = await StoredReturnsService.consumeForOrder(
+          userId,
+          orderId,
+          storeId,
+          orderDetails?.products || []
+        );
+
+        if (consumedStoredReturns.length) {
+          console.log(
+            `[FINISH][store ${storeId}] Списано из хранилища возвратов: ` +
+            `${consumedStoredReturns.reduce((s, c) => s + c.quantity, 0)} шт. ` +
+            `(${consumedStoredReturns.length} партий)`
+          );
+        }
+
+      } catch (consumeErr) {
+        console.error(
+          `[FINISH][store ${storeId}] consumeForOrder упал:`,
+          consumeErr
+        );
+
+        NotificationService.logServerError(
+          'OrderService.finishOrder.storedReturns',
+          consumeErr,
+          { storeId, orderId, userId }
+        );
+
+        NotificationService.notifyStaff('stored_return_consume_failed', {
+          orderId,
+          userName: user.name,
+          error: consumeErr.message,
+        }, { storeId });
       }
 
       // === СИНХРОНИЗАЦИЯ С OZON ПОСЛЕ ЗАВЕРШЕНИЯ ===

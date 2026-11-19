@@ -379,23 +379,30 @@ function startReturnsReportSyncChecker() {
     intervalMs: intervalMinutes * 60 * 1000,
     run: async (storeId) => {
       if (isReturnsReportBlocked(storeId)) {
-        console.log(
-          `[SCHEDULER][returnsReportSync] store ${storeId} пропущен (403 ранее — ждём ручного sync)`
-        );
+        console.log(`[SCHEDULER][returnsReportSync] store ${storeId} пропущен (403 ранее)`);
         return;
       }
       try {
         await ReturnsReportService.syncAuto(storeId);
       } catch (err) {
+        // 429 — Ozon rate limit. Это не «ошибка сервера», а нормальный
+        // отклик API. Просто пропускаем текущий тик — следующий через час.
+        if (err?.response?.status === 429) {
+          console.warn(
+            `[SCHEDULER][returnsReportSync] store ${storeId}: 429 rate limit, пропускаю тик`
+          );
+          return;
+        }
+        // 403 — блокируем магазин до ручного sync (как раньше)
         if (err?.code === 'OZON_PERMISSION_DENIED') {
           blockReturnsReportStore(storeId, err.message);
           NotificationService.logServerError(
             'scheduler.returnsReportSync.permission',
             err,
-            { storeId, level: 'warn' },   // warn — не спамит push'ами
-            'warn'
+            { storeId },
+            'warn'   // ← level='warn' — без push
           );
-          return;  // НЕ пробрасываем: пусть runs продолжает остальные магазины
+          return;
         }
         throw err;
       }
@@ -410,13 +417,18 @@ function startReturnsReportSyncChecker() {
       try {
         await ReturnsReportService.syncAuto(storeId);
       } catch (err) {
+        if (err?.response?.status === 429) {
+          console.warn(`[SCHEDULER][returnsReportSync] initial store ${storeId}: 429, пропускаю`);
+          continue;
+        }
         if (err?.code === 'OZON_PERMISSION_DENIED') {
           blockReturnsReportStore(storeId, err.message);
-          console.warn(`[SCHEDULER][returnsReportSync] store ${storeId}: 403, заблокирован до фикса ключей`);
           continue;
         }
         console.error(`[SCHEDULER][returnsReportSync] initial store ${storeId} упал:`, err.message);
-        NotificationService.logServerError('scheduler.returnsReportSync.initial', err, { storeId });
+        NotificationService.logServerError(
+          'scheduler.returnsReportSync.initial', err, { storeId }, 'warn'
+        );
       }
     }
   }, 10000).unref?.();

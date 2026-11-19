@@ -32,16 +32,16 @@ class ReturnsCacheService {
     await db.run('BEGIN IMMEDIATE');
     try {
       for (const r of rows || []) {
-        if (!r || !r.id) { skipped++; continue; }
+        if (!r || !r.id || !r.barcode) { skipped++; continue; }
         try {
-          const existing = await db.get('SELECT id FROM returns WHERE id = ?', String(r.id));
+          const existing = await db.get('SELECT id FROM returns WHERE id = ?', r.id);
           await db.run(
             `INSERT INTO returns
                (id, barcode, cargo_box_id, offer_id, sku, product_name, quantity,
                 order_id, order_number, posting_number, schema, return_schema,
                 return_date, status_name, status_sys_name, place_name,
-                resolution_status, raw_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resolution_status, resolution_reason, raw_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                barcode = excluded.barcode,
                offer_id = excluded.offer_id,
@@ -58,10 +58,11 @@ class ReturnsCacheService {
                status_sys_name = excluded.status_sys_name,
                place_name = excluded.place_name,
                resolution_status = excluded.resolution_status,
+               resolution_reason = excluded.resolution_reason,
                raw_json = excluded.raw_json,
                updated_at = excluded.updated_at`,
-            String(r.id),
-            r.barcode || null,
+            r.id,
+            r.barcode,
             r.cargo_box_id || null,
             r.offer_id || null,
             r.sku || null,
@@ -76,7 +77,8 @@ class ReturnsCacheService {
             r.status_name || null,
             r.status_sys_name || null,
             r.place_name || null,
-            r.resolution_status || 'pending',
+            r.resolution_status || 'ready',
+            r.resolution_reason || null,
             typeof r.raw_json === 'string' ? r.raw_json : (r.raw_json ? JSON.stringify(r.raw_json) : null),
             now, now
           );
