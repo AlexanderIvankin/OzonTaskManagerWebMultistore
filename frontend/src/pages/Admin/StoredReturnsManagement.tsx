@@ -3,7 +3,7 @@
 // Страница «Хранилище сотрудников»: кто что положил в ящик.
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, Package } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { adminApi } from "@/api/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -30,9 +30,9 @@ import type { StoredReturn } from "@/types/returns";
 type SourceFilter = "all" | "lozon_id" | "barcode" | "offer_id";
 
 const SOURCE_LABEL: Record<string, string> = {
-  lozon_id: "📦 Lozon_id",
-  barcode: "🔖 Barcode",
-  offer_id: "🎯 Offer_id",
+  lozon_id: "📦 lozon_id",
+  barcode: "🔖 barcode",
+  offer_id: "🎯 offer_id",
 };
 
 function formatDate(ms: number): string {
@@ -91,14 +91,14 @@ export const StoredReturnsManagement = () => {
     : items;
 
   // Счётчики по источникам (для header)
-  const counts = items.reduce(
-    (acc, it) => {
-      const k = it.source || "lozon_id";
-      acc[k] = (acc[k] || 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>,
-  );
+  // const counts = items.reduce(
+  //   (acc, it) => {
+  //     const k = it.source || "lozon_id";
+  //     acc[k] = (acc[k] || 0) + 1;
+  //     return acc;
+  //   },
+  //   {} as Record<string, number>,
+  // );
 
   return (
     <div className="space-y-6">
