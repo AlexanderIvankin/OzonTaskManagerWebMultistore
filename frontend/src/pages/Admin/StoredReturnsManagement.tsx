@@ -161,7 +161,7 @@ export const StoredReturnsManagement = () => {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Записи в хранилище</CardTitle>
+          <CardTitle className="text-center text-lg">Записи в хранилище</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {loading ? (
