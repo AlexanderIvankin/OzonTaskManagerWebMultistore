@@ -51,12 +51,33 @@ export interface ProductModel {
   fileSize: number | null;
 }
 
+export interface StoredMatch {
+  offer_id: string | null;
+  sku: string | null;
+  user_id: number;
+  user_name: string;
+  box_number: string;
+  quantity: number;
+  lozon_ids?: string[];
+}
+
+export interface ConsumedStoredReturn {
+  order_id: string;
+  box_number: string;
+  lozon_id: string;
+  offer_id: string | null;
+  sku: string | null;
+  quantity: number;
+  consumed_at: number;
+}
+
 export interface Order {
   orderId: string;
   assignedAt: number;
   statsStatus: "filled" | "missing";
   missingStats: string[];
   products: OrderProduct[];
+  storedMatches?: StoredMatch[];
   // images убраны с верхнего уровня — фото теперь привязаны к каждому товару (products[].images)
 }
 
@@ -69,6 +90,7 @@ export interface CompletedOrder {
   orderId: string;
   completedAt: number;
   products: OrderProduct[];
+  consumedStoredReturns?: ConsumedStoredReturn[];
 }
 
 /** Ответ POST /user/orders/refresh: оба списка после синхронизации с Ozon */

@@ -1,5 +1,6 @@
 // src/controllers/storedReturnsController.js
 const fs = require('fs');
+const XLSX = require('xlsx');
 const { User, UserStore } = require('../models');
 const { getUsersDB } = require('../config/database');
 const StoredReturnsService = require('../services/StoredReturnsService');
@@ -110,7 +111,41 @@ exports.importExcel = async (req, res, next) => {
       buffer,
       { storeId: req.storeId || null }
     );
-    res.json({ ok: true, ...result });
+
+    // Если есть отклонённые — генерируем return_skipped.xlsx (base64),
+    // чтобы пользователь мог скачать, исправить и повторить заливку.
+    // Файл готов к повторной загрузке: те же колонки, что в исходном,
+    // плюс колонка `error` (импортер её игнорирует — лишние колонки разрешены).
+    let skippedFileBase64 = null;
+    let skippedFileName = null;
+    if (result.errors && result.errors.length > 0) {
+      try {
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet(
+          result.errors.map((e) => ({
+            box_number: e.box_number || '',
+            lozon_id: e.lozon_id || '',
+            offer_id: e.offer_id || '',
+            quantity: e.quantity ?? '',
+            error: e.error,
+          })),
+          { header: ['box_number', 'lozon_id', 'offer_id', 'quantity', 'error'] }
+        );
+        XLSX.utils.book_append_sheet(wb, ws, 'Skipped');
+        const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+        skippedFileBase64 = buf.toString('base64');
+        skippedFileName = 'return_skipped.xlsx';
+      } catch (xlsxErr) {
+        console.warn('[importExcel] не удалось сгенерировать return_skipped.xlsx:', xlsxErr.message);
+      }
+    }
+
+    res.json({
+      ok: true,
+      ...result,
+      skippedFileBase64,
+      skippedFileName,
+    });
   } catch (err) {
     if (err.message && (
       err.message.includes('отключено') ||
@@ -135,6 +170,19 @@ exports.removeEntry = async (req, res, next) => {
     }
     res.json({ ok: true });
   } catch (err) { next(err); }
+};
+
+exports.clearAll = async (req, res, next) => {
+  try {
+    const cleared = await StoredReturnsService.clearAllForUser(req.user.id);
+    console.log(
+      `[storedReturns.clearAll] user=${req.user.id}: обнулено ${cleared} записей`
+    );
+    res.json({ ok: true, cleared });
+  } catch (err) {
+    console.error('[storedReturns.clearAll] Ошибка:', err);
+    next(err);
+  }
 };
 
 // ── Админский view ─────────────────────────────────────────────────────────

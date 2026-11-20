@@ -134,44 +134,84 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
   // 3D-модель» (если для артикула есть zip). Разметка состава и фото — в
   // OrderProductsList, она общая с карточками «Завершённых заказов».
   const renderProductExtra = (p: OrderProduct) => {
-    if (disableModels) return null;
+    // Совпадения именно по этому товару (только свои ящики — фильтр на бэке)
+    const productMatches = (order.storedMatches || []).filter(
+      (m) =>
+        (m.offer_id && p.offer_id && m.offer_id === p.offer_id) ||
+        (m.sku && p.sku && m.sku === p.sku),
+    );
 
-    const offerId = p.offer_id;
-    const model = p.model;
-    if (!offerId || !model) return null;
-    return (
-      <div className="flex flex-col items-center mt-5 w-full min-w-0 px-2 gap-1">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!!modelLoading[offerId]}
-          onClick={() => handleDownloadModel(offerId, model.fileName)}
-          title={`Скачать 3D-модель: ${model.fileName}${formatSize(model.fileSize)}`}
-          className="
+    const matchBlock =
+      productMatches.length > 0 ? (
+        <div className="my-2 w-full rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-900 p-2">
+          <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-300 mb-1">
+            🎁 У вас в хранилище:
+          </div>
+          <div className="flex flex-wrap justify-center sm:justify-start gap-1">
+            {productMatches.map((m, i) => (
+              <Badge
+                key={`${m.box_number}-${i}`}
+                variant="secondary"
+                className="h-auto max-w-full whitespace-normal break-words [overflow-wrap:anywhere] py-1 px-2 text-center text-xs"
+              >
+                ящик «{m.box_number}» × {m.quantity}
+                <span className="hidden sm:inline">
+                  {" "}
+                  — будет списано при завершении
+                </span>
+              </Badge>
+            ))}
+          </div>
+        </div>
+      ) : null;
+
+    const modelBlock = (() => {
+      if (disableModels) return null;
+      const offerId = p.offer_id;
+      const model = p.model;
+      if (!offerId || !model) return null;
+      return (
+        <div className="flex flex-col items-center mt-5 w-full min-w-0 px-2 gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!!modelLoading[offerId]}
+            onClick={() => handleDownloadModel(offerId, model.fileName)}
+            title={`Скачать 3D-модель: ${model.fileName}${formatSize(model.fileSize)}`}
+            className="
         h-auto min-w-0 max-w-full
         whitespace-normal
         flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5
         text-center leading-tight
         py-1.5 px-3
       "
-        >
-          <span className="shrink-0">
-            {modelLoading[offerId] ? "⏳ Скачивание…" : "⬇️ Скачать модель"}
-          </span>
-          <span className="text-muted-foreground break-all [overflow-wrap:anywhere] min-w-0">
-            ({model.fileName}
-            {formatSize(model.fileSize)})
-          </span>
-        </Button>
+          >
+            <span className="shrink-0">
+              {modelLoading[offerId] ? "⏳ Скачивание…" : "⬇️ Скачать модель"}
+            </span>
+            <span className="text-muted-foreground break-all [overflow-wrap:anywhere] min-w-0">
+              ({model.fileName}
+              {formatSize(model.fileSize)})
+            </span>
+          </Button>
 
-        {/* Модель взята у родительского артикула */}
-        {model.offerId !== offerId && (
-          <p className="text-xs text-muted-foreground text-center break-all [overflow-wrap:anywhere] min-w-0 max-w-full">
-            🧩 Модель родительского артикула{" "}
-            <code className="break-all">{model.offerId}</code>
-          </p>
-        )}
-      </div>
+          {/* Модель взята у родительского артикула */}
+          {model.offerId !== offerId && (
+            <p className="text-xs text-muted-foreground text-center break-all [overflow-wrap:anywhere] min-w-0 max-w-full">
+              🧩 Модель родительского артикула{" "}
+              <code className="break-all">{model.offerId}</code>
+            </p>
+          )}
+        </div>
+      );
+    })();
+
+    if (!matchBlock && !modelBlock) return null;
+    return (
+      <>
+        {matchBlock}
+        {modelBlock}
+      </>
     );
   };
 

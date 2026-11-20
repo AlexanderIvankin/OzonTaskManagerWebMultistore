@@ -1755,24 +1755,30 @@ exports.listReturns = async (req, res, next) => {
       String(storeId)
     );
 
-    // 3. Индексы для матчинга: по cargo_box_id (приоритет) и по offer_id (fallback)
+    // 3. Индексы для матчинга: по cargo_box_id
+    // Связываем stored_returns с returns-N.db ТОЛЬКО по штрихкодам:
+    //   • cargo_box_id (приоритет) — после загрузки PDF;
+    //   • barcode (fallback) — если добавили по barcode/lozon, а PDF ещё нет.
+    // По offer_id НЕ связываем: прямое добавление по offer_id — «чёрный ящик»,
+    // оно физически есть у сотрудника, но в кэше возвратов не подсвечивается.
     const byCargo = new Map();
-    const byOffer = new Map();
+    const byBarcode = new Map();
     for (const sr of storedRows) {
       if (sr.cargo_box_id) {
         if (!byCargo.has(sr.cargo_box_id)) byCargo.set(sr.cargo_box_id, []);
         byCargo.get(sr.cargo_box_id).push(sr);
-      } else if (sr.offer_id) {
-        if (!byOffer.has(sr.offer_id)) byOffer.set(sr.offer_id, []);
-        byOffer.get(sr.offer_id).push(sr);
+      } else if (sr.barcode) {
+        if (!byBarcode.has(sr.barcode)) byBarcode.set(sr.barcode, []);
+        byBarcode.get(sr.barcode).push(sr);
       }
+      // offer_id-only строки — НЕ индексируем (см. комментарий выше).
     }
 
     // 4. Обогащение
     const items = returnsRows.map((r) => {
       const owners =
         (r.cargo_box_id && byCargo.get(r.cargo_box_id)) ||
-        (r.offer_id && byOffer.get(r.offer_id)) ||
+        (r.barcode && byBarcode.get(r.barcode)) ||
         [];
       return {
         ...r,

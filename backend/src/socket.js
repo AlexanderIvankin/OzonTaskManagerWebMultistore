@@ -138,10 +138,10 @@ function initSocket(server) {
 
   io.on('connection', (socket) => {
     const ctx = socket.storeId ? `store ${socket.storeId}` : 'root';
-    console.log(
-      `[Socket][${ctx}] Пользователь ${socket.userId} (${socket.role}` +
-      `${socket.chatIdentity?.isStaff ? `, chat-staff=${socket.chatIdentity.staffRole}` : ''}) подключился`
-    );
+    // console.log(
+    //   `[Socket][${ctx}] Пользователь ${socket.userId} (${socket.role}` +
+    //   `${socket.chatIdentity?.isStaff ? `, chat-staff=${socket.chatIdentity.staffRole}` : ''}) подключился`
+    // );
 
     // --- Per-store комнаты (только для магазинного контекста) ---
     if (socket.storeId) {
@@ -192,7 +192,7 @@ function initSocket(server) {
     });
 
     socket.on('disconnect', () => {
-      console.log(`[Socket][${ctx}] Пользователь ${socket.userId} отключился`);
+//      console.log(`[Socket][${ctx}] Пользователь ${socket.userId} отключился`);
     });
   });
 

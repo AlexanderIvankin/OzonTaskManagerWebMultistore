@@ -380,6 +380,23 @@ class StoredReturn {
   }
 
   /**
+ * Soft-delete всех активных записей пользователя (только status='stored').
+ * Не трогает status='used' — это история ранее списанных товаров,
+ * на неё ссылаются stored_returns_consumptions (FK).
+ *
+ * @returns {Promise<number>} — сколько записей помечено как removed
+ */
+  static async clearAllForUser(db, userId) {
+    const result = await db.run(
+      `UPDATE stored_returns
+     SET status = 'removed', updated_at = ?
+     WHERE user_id = ? AND status = 'stored'`,
+      Date.now(), userId
+    );
+    return result.changes || 0;
+  }
+
+  /**
    * Ручной резолв: сотрудник указал offer_id/sku вручную.
    */
   static async manualResolve(db, id, userId, { offerId = null, sku = null, productName = null }) {

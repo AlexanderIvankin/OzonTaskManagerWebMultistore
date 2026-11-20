@@ -54,4 +54,9 @@ export const returnsStorageApi = {
     api
       .delete<{ ok: boolean }>(`/user/stored-returns/${id}`)
       .then((r) => r.data),
+
+  clearAll: () =>
+    api
+      .post<{ ok: boolean; cleared: number }>("/user/stored-returns/clear-all")
+      .then((r) => r.data),
 };

@@ -65,10 +65,15 @@ export interface ImportStoredReturnsResult {
   rejected: number;
   errors: Array<{
     row: number;
+    box_number?: string | null;
     lozon_id?: string | null;
-    box?: string;
+    offer_id?: string | null;
+    quantity?: number | null;
     error: string;
   }>;
+  // NEW: если были отклонённые — файл для скачивания (base64)
+  skippedFileBase64?: string | null;
+  skippedFileName?: string | null;
 }
 
 // --- Админка ---

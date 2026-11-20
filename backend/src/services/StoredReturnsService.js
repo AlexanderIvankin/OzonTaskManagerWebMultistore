@@ -46,30 +46,31 @@ class StoredReturnsService {
   // ── Ввод ─────────────────────────────────────────────────────────────────
 
   /**
- * Универсальный резолвер одного значения: пробует интерпретировать как
- * offer_id, затем как barcode (из returns-N.db), затем как lozon_id (Ozon API).
- *
- * @returns {Promise<{
- *   ok: boolean,
- *   reason?: string,
- *   source?: 'offer_id'|'barcode'|'lozon_id',
- *   offer_id?: string|null,
- *   sku?: string|null,
- *   barcode?: string|null,
- *   cargo_box_id?: string|null,
- *   product_name?: string|null,
- * }>}
- */
-  static async _resolveInput(storeId, input) {
+   * Универсальный резолвер одного значения.
+   *
+   * @param {boolean} [opts.allowOzonApi=false]
+   *   true — разрешено обращаться к Ozon API для lozon_id → cargo_box_id
+   *          (используется в одиночном addManual)
+   *   false — только локальный кэш returns-N.db
+   *          (используется в bulk importFromExcel)
+   */
+  static async _resolveInput(storeId, input, { allowOzonApi = false } = {}) {
     const raw = String(input || '').trim();
     if (!raw) return { ok: false, reason: 'empty' };
 
     const returnsDb = getReturnsDB(storeId);
 
-    // 0. В поле «Штрихкод» пользователь ввёл offer_id? Отклоняем с явной
-    //    подсказкой «используйте поле Артикул». Проверяем только по кэшу:
-    //    если совпало с известным offer_id — это 100% ошибка ввода.
-    if (/^[A-Za-z0-9_.\-]+$/.test(raw) && raw.length <= 200) {
+    // Определяем тип ввода по маске:
+    //   barcode  — начинается с 'ii' (регистронезависимо) или '%'
+    //              (в т.ч. %301%25815721288 — кодированный штрихкод)
+    //   lozon_id — чисто цифры длиной >= 10 (label_barcode с этикетки,
+    //              например 1019626026726190, 25000000000)
+    //   offer_id — всё остальное (ARD000001, 24G-..., 921402D000-24G)
+    const isBarcode = /^(ii|%)/i.test(raw);
+    const isLozon = /^\d{10,}$/.test(raw);
+
+    // 1. offer_id в поле «Штрихкод» — отклоняем с подсказкой
+    if (!isBarcode && !isLozon) {
       const byOffer = await returnsDb.get(
         'SELECT id FROM returns WHERE offer_id = ? LIMIT 1', raw
       );
@@ -78,68 +79,80 @@ class StoredReturnsService {
       }
     }
 
-    // 1. barcode в returns-N.db (единственный источник истины)
-    const byBarcode = await returnsDb.all(
-      'SELECT * FROM returns WHERE barcode = ?', raw
-    );
-    if (byBarcode.length > 1) {
-      const offerIds = Array.from(new Set(
-        byBarcode.map((r) => r.offer_id).filter(Boolean)
-      ));
-      return {
-        ok: false,
-        reason: 'multiple_products_in_return',
-        barcode: raw,
-        offer_ids: offerIds,
-      };
-    }
-    if (byBarcode.length === 1) {
-      const row = byBarcode[0];
-      if (row.resolution_status === 'skip') {
-        return { ok: false, reason: row.resolution_reason || 'skip', barcode: raw };
-      }
-      return {
-        ok: true, source: 'barcode',
-        offer_id: row.offer_id, sku: row.sku, barcode: row.barcode,
-        cargo_box_id: row.cargo_box_id, product_name: row.product_name,
-      };
-    }
-
-    // 2. lozon_id через Ozon API → cargo_box_id → returns-N.db
-    try {
-      const box = await LozonResolver.resolveCargoBoxId(raw, { storeId });
-      if (box && box.cargo_box_id) {
-        const byCargo = await returnsDb.all(
-          'SELECT * FROM returns WHERE cargo_box_id = ?', box.cargo_box_id
-        );
-        if (byCargo.length === 0) {
-          return { ok: false, reason: 'cargo_box_not_in_cache', cargo_box_id: box.cargo_box_id };
-        }
-        if (byCargo.length > 1) {
-          const offerIds = Array.from(new Set(
-            byCargo.map((r) => r.offer_id).filter(Boolean)
-          ));
-          return {
-            ok: false,
-            reason: 'multiple_products_in_return',
-            cargo_box_id: box.cargo_box_id,
-            offer_ids: offerIds,
-          };
-        }
-        const row = byCargo[0];
-        if (row.resolution_status === 'skip') {
-          return { ok: false, reason: row.resolution_reason || 'skip' };
-        }
+    // 2. barcode — ВСЕГДА только returns-N.db (единственный источник истины).
+    //    В Ozon API не ходим, запись не создаём.
+    if (isBarcode) {
+      const byBarcode = await returnsDb.all(
+        'SELECT * FROM returns WHERE barcode = ?', raw
+      );
+      if (byBarcode.length > 1) {
+        const offerIds = Array.from(new Set(
+          byBarcode.map((r) => r.offer_id).filter(Boolean)
+        ));
         return {
-          ok: true, source: 'lozon_id',
-          offer_id: row.offer_id, sku: row.sku, barcode: row.barcode,
-          cargo_box_id: box.cargo_box_id, product_name: row.product_name,
+          ok: false, reason: 'multiple_products_in_return',
+          barcode: raw, offer_ids: offerIds,
         };
       }
-    } catch (err) {
-      console.warn(`[StoredReturnsService] LozonResolver (${raw}):`, err.message);
+      if (byBarcode.length === 1) {
+        const row = byBarcode[0];
+        if (row.resolution_status === 'skip') {
+          return { ok: false, reason: row.resolution_reason || 'skip', barcode: raw };
+        }
+        return {
+          ok: true, source: 'barcode',
+          offer_id: row.offer_id, sku: row.sku, barcode: row.barcode,
+          cargo_box_id: row.cargo_box_id, product_name: row.product_name,
+        };
+      }
+      // barcode не найден в кэше — не создаём запись, не ходим в API
+      return { ok: false, reason: 'barcode_not_in_cache', barcode: raw };
     }
 
+    // 3. lozon_id — только для одиночного addManual
+    if (isLozon) {
+      if (!allowOzonApi) {
+        return { ok: false, reason: 'lozon_not_supported_in_bulk', lozon: raw };
+      }
+      try {
+        const box = await LozonResolver.resolveCargoBoxId(raw, { storeId });
+        if (box && box.cargo_box_id) {
+          const byCargo = await returnsDb.all(
+            'SELECT * FROM returns WHERE cargo_box_id = ?', box.cargo_box_id
+          );
+          if (byCargo.length === 0) {
+            return { ok: false, reason: 'cargo_box_not_in_cache', cargo_box_id: box.cargo_box_id };
+          }
+          if (byCargo.length > 1) {
+            const offerIds = Array.from(new Set(
+              byCargo.map((r) => r.offer_id).filter(Boolean)
+            ));
+            return {
+              ok: false, reason: 'multiple_products_in_return',
+              cargo_box_id: box.cargo_box_id, offer_ids: offerIds,
+            };
+          }
+          const row = byCargo[0];
+          if (row.resolution_status === 'skip') {
+            return { ok: false, reason: row.resolution_reason || 'skip' };
+          }
+          return {
+            ok: true, source: 'lozon_id',
+            offer_id: row.offer_id, sku: row.sku, barcode: row.barcode,
+            cargo_box_id: box.cargo_box_id, product_name: row.product_name,
+          };
+        }
+        return { ok: false, reason: 'lozon_not_found_in_ozon', lozon: raw };
+      } catch (err) {
+        if (err.response?.status === 403) {
+          return { ok: false, reason: 'lozon_not_found_in_ozon', lozon: raw };
+        }
+        console.warn(`[StoredReturnsService] LozonResolver (${raw}):`, err.message);
+        return { ok: false, reason: 'lozon_not_found_in_ozon', lozon: raw };
+      }
+    }
+
+    // 4. Не распознано как barcode/lozon/offer_id
     return { ok: false, reason: 'not_found' };
   }
 
@@ -165,27 +178,20 @@ class StoredReturnsService {
 
     let resolved;
     if (directOffer) {
-      // Приоритет: если пользователь явно ввёл offer_id — идём «прямым» путём,
-      // даже не пытаясь резолвить genericInput (он может быть необязательным).
-      // Но если offer_id есть в returns-N.db — обогатим данными.
-      const returnsDb = getReturnsDB(storeId);
-      const byOffer = await returnsDb.get(
-        'SELECT * FROM returns WHERE offer_id = ? LIMIT 1', directOffer
-      );
-      resolved = byOffer
-        ? {
-          ok: true, source: 'offer_id',
-          offer_id: byOffer.offer_id, sku: byOffer.sku,
-          barcode: byOffer.barcode, cargo_box_id: byOffer.cargo_box_id,
-          product_name: byOffer.product_name,
-        }
-        : {
-          ok: true, source: 'offer_id',
-          offer_id: directOffer, sku: null, barcode: null,
-          cargo_box_id: null, product_name: null,
-        };
+      // Прямое добавление по offer_id: НЕ смотрим в returns-N.db,
+      // не заполняем barcode/cargo_box_id/product_name. Связывание с
+      // кэшем возвратов — только через штрихкоды (barcode/lozon_id).
+      resolved = {
+        ok: true,
+        source: 'offer_id',
+        offer_id: directOffer,
+        sku: null,
+        barcode: null,
+        cargo_box_id: null,
+        product_name: null,
+      };
     } else {
-      resolved = await this._resolveInput(storeId, genericInput);
+      resolved = await this._resolveInput(storeId, genericInput, { allowOzonApi: true });
     }
 
     if (!resolved.ok) {
@@ -194,14 +200,15 @@ class StoredReturnsService {
         : '';
       const msg = {
         empty: 'Укажите штрихкод возврата или offer_id.',
-        looks_like_offer_id: `«${genericInput}» — это offer_id, а не штрихкод. Используйте поле «Артикул» для прямого указания товара.`,
-        not_found: `Не удалось опознать «${genericInput}» как штрихкод возврата. Если это offer_id — используйте поле «Артикул».`,
-        cargo_box_not_in_cache: `Штрихкод «${genericInput}» есть в Ozon, но возврат ещё не синхронизирован в БД магазина. Попробуйте через 1–2 часа или укажите offer_id.`,
-        no_offer_id: `Штрихкод «${genericInput}» найден, но артикул не сопоставлен. Укажите offer_id напрямую или загрузите PDF-акт.`,
-        no_offer_id_in_returns: `Штрихкод «${genericInput}» найден, но артикул не сопоставлен. Укажите offer_id напрямую или загрузите PDF-акт.`,
-        multiple_products: `По штрихкоду «${genericInput}»${offerIdsHint} найдено несколько товаров. Автоматический резолв невозможен — добавьте каждый товар отдельно через offer_id.`,
-        multiple_products_in_return: `По штрихкоду «${genericInput}»${offerIdsHint} найдено несколько товаров в возврате. Добавьте каждый товар отдельно через offer_id.`,
-        skip: `Штрихкод «${genericInput}» не может быть использован для авто-резолва. Укажите offer_id напрямую.`,
+        looks_like_offer_id: `«${genericInput}» — это артикул (offer_id), а не штрихкод. Используйте поле «Артикул» или введите barcode (ii.../%301...).`,
+        not_found: `Не удалось опознать «${genericInput}». Проверьте barcode (ii.../%301...) или используйте offer_id.`,
+        cargo_box_not_in_cache: `Штрихкод «${genericInput}» есть в Ozon, но возврат ещё не синхронизирован в базе магазина (или PDF-акт не загружен). Попробуйте через 1–2 часа или используйте offer_id.`,
+        multiple_products_in_return: `По штрихкоду «${genericInput}» найдено несколько товаров${offerIdsHint}. Добавьте каждый отдельно через offer_id.`,
+        no_offer_id: `Штрихкод «${genericInput}» найден, но артикул не сопоставлен. Загрузите PDF-акт или используйте offer_id.`,
+        no_offer_id_in_returns: `Штрихкод «${genericInput}» найден, но артикул не сопоставлен. Загрузите PDF-акт или используйте offer_id.`,
+        skip: `Штрихкод «${genericInput}» не может быть использован для авто-резолва. Используйте offer_id.`,
+        lozon_api_required: `lozon_id не поддерживается в массовом импорте. Используйте barcode (ii.../%301...) или offer_id. Для добавления по lozon_id — через форму «Добавить возврат».`,
+        lozon_not_found_in_ozon: `Ozon не знает lozon_id «${genericInput}». Возможно, значение искажено Excel (например, 2,58E+13 → 25820800000000) или возврат ещё не создан в Ozon.`,
       }[resolved.reason] || `Не удалось опознать «${genericInput}».`;
       throw new Error(msg);
     }
@@ -282,28 +289,42 @@ class StoredReturnsService {
       const offer = colOffer ? String(rawRow[colOffer] || '').trim() : '';
       const loz = colLoz ? String(rawRow[colLoz] || '').trim() : '';
       const qtyRaw = String(rawRow[colQty] || '').trim();
+      const qtyParsed = /^\d+$/.test(qtyRaw) ? parseInt(qtyRaw, 10) : null;
 
-      if (!box) { errors.push({ row: rowNum, error: 'пустой box_number' }); return; }
-      if (!offer && !loz) {
-        errors.push({ row: rowNum, error: 'нужен offer_id или lozon_id' });
+      // Базовые поля — есть во ВСЕХ ошибках, чтобы файл можно было перезалить
+      const base = {
+        row: rowNum,
+        box_number: box || null,
+        lozon_id: loz || null,
+        offer_id: offer || null,
+        quantity: qtyParsed,
+      };
+
+      if (!box) {
+        errors.push({ ...base, error: 'пустой box_number' });
         return;
       }
-      // Мульти в ячейке → пропускаем
+      if (!offer && !loz) {
+        errors.push({ ...base, error: 'нужен offer_id или lozon_id' });
+        return;
+      }
       if (offer && (/\s/.test(offer) || /[,;\n]/.test(offer))) {
-        errors.push({ row: rowNum, offer_id: offer, error: 'в ячейке offer_id несколько значений' });
+        errors.push({ ...base, error: 'в ячейке offer_id несколько значений' });
         return;
       }
       if (loz && (/\s/.test(loz) || /[,;\n]/.test(loz))) {
-        errors.push({ row: rowNum, lozon_id: loz, error: 'в ячейке lozon_id несколько значений' });
+        errors.push({ ...base, error: 'в ячейке lozon_id несколько значений' });
         return;
       }
-      if (!/^\d+$/.test(qtyRaw)) {
-        errors.push({ row: rowNum, error: 'quantity не целое', raw: qtyRaw });
+      if (qtyParsed === null) {
+        errors.push({ ...base, error: `quantity не целое: «${qtyRaw}»` });
         return;
       }
-      const qty = parseInt(qtyRaw, 10);
-      if (qty < 1) { errors.push({ row: rowNum, error: 'quantity < 1' }); return; }
-      valid.push({ row: rowNum, box, offer, loz, qty });
+      if (qtyParsed < 1) {
+        errors.push({ ...base, error: 'quantity < 1' });
+        return;
+      }
+      valid.push({ row: rowNum, box, offer, loz, qty: qtyParsed });
     });
 
     const db = getUsersDB();
@@ -313,42 +334,50 @@ class StoredReturnsService {
     for (const v of valid) {
       let resolved;
       if (v.offer) {
-        const returnsDb = getReturnsDB(storeId);
-        const byOffer = await returnsDb.get(
-          'SELECT * FROM returns WHERE offer_id = ? LIMIT 1', v.offer
-        );
-        resolved = byOffer
-          ? {
-            ok: true, source: 'offer_id',
-            offer_id: byOffer.offer_id, sku: byOffer.sku,
-            barcode: byOffer.barcode, cargo_box_id: byOffer.cargo_box_id,
-            product_name: byOffer.product_name,
-          }
-          : {
-            ok: true, source: 'offer_id',
-            offer_id: v.offer, sku: null, barcode: null,
-            cargo_box_id: null, product_name: null,
-          };
+        // См. addManual: offer_id — прямой путь, без резолва.
+        resolved = {
+          ok: true,
+          source: 'offer_id',
+          offer_id: v.offer,
+          sku: null,
+          barcode: null,
+          cargo_box_id: null,
+          product_name: null,
+        };
       } else {
         try {
-          resolved = await this._resolveInput(storeId, v.loz);
+          resolved = await this._resolveInput(storeId, v.loz, { allowOzonApi: false });
         } catch (err) {
-          errors.push({ row: v.row, lozon_id: v.loz, error: `Ozon API: ${err.message}` });
+          errors.push({
+            row: v.row, box_number: v.box, offer_id: v.offer || null,
+            lozon_id: v.loz, quantity: v.qty,
+            error: `Ozon API: ${err.message}`,
+          });
           continue;
         }
       }
       if (!resolved.ok) {
         const reasonMap = {
-          not_found: 'не найдено в Ozon',
-          cargo_box_not_in_cache: 'возврат не синхронизирован в БД',
-          no_offer_id: 'артикул не сопоставлен (нужен PDF-акт)',
-          no_offer_id_in_returns: 'артикул не сопоставлен (нужен PDF-акт)',
-          multiple_products: 'несколько товаров в возврате — добавьте через offer_id',
-          multiple_products_in_return: 'несколько товаров в возврате — добавьте через offer_id',
+          looks_like_offer_id: 'это артикул (offer_id) — используйте колонку offer_id',
+          barcode_not_in_cache:
+            'barcode не найден в кэше возвратов — сначала синхронизируйте отчёт Ozon (или загрузите PDF-акт)',
+          multiple_products_in_return:
+            'несколько товаров в возврате — добавьте каждый через offer_id',
+          no_offer_id_in_returns:
+            'артикул не сопоставлен — нужен PDF-акт с этим возвратом',
           skip: 'авто-резолв невозможен, добавьте через offer_id',
+          lozon_not_supported_in_bulk:
+            'lozon_id не принимается в импорте — используйте barcode (ii.../%...) или offer_id',
+          lozon_not_found_in_ozon: 'lozon_id не найден в Ozon',
+          not_found:
+            'не удалось опознать — используйте barcode (ii.../%...) или offer_id',
         };
         errors.push({
-          row: v.row, offer_id: v.offer || null, lozon_id: v.loz || null,
+          row: v.row,
+          box_number: v.box,
+          lozon_id: v.loz || null,
+          offer_id: v.offer || null,
+          quantity: v.qty,
           error: reasonMap[resolved.reason] || 'не удалось опознать',
         });
         continue;
@@ -368,7 +397,14 @@ class StoredReturnsService {
         });
         if (r.created) inserted++; else updated++;
       } catch (err) {
-        errors.push({ row: v.row, error: err.message });
+        errors.push({
+          row: v.row,
+          box_number: v.box,
+          lozon_id: v.loz || null,
+          offer_id: v.offer || null,
+          quantity: v.qty,
+          error: err.message,
+        });
       }
     }
 
@@ -396,6 +432,15 @@ class StoredReturnsService {
   static async removeEntry(userId, id) {
     const db = getUsersDB();
     return StoredReturn.softDelete(db, id, userId);
+  }
+
+  /**
+ * «Обнулить мой склад»: soft-delete всех активных записей пользователя.
+ * @returns {Promise<number>} — сколько записей обнулено
+ */
+  static async clearAllForUser(userId) {
+    const db = getUsersDB();
+    return StoredReturn.clearAllForUser(db, userId);
   }
 
   // ── Матчинг и списание ──────────────────────────────────────────────────
@@ -635,15 +680,17 @@ class StoredReturnsService {
         : '';
       const msg = {
         empty: 'Укажите штрихкод возврата или offer_id.',
-        not_found: `Не удалось опознать «${genericInput}». Попробуйте offer_id напрямую.`,
-        cargo_box_not_in_cache: `Штрихкод «${genericInput}» есть в Ozon, но возврат ещё не синхронизирован в БД магазина. Попробуйте через 1–2 часа или укажите offer_id.`,
-        no_offer_id: `Штрихкод «${genericInput}» найден, но артикул не сопоставлен. Укажите offer_id напрямую или загрузите PDF-акт.`,
-        no_offer_id_in_returns: `Штрихкод «${genericInput}» найден, но артикул не сопоставлен. Укажите offer_id напрямую или загрузите PDF-акт.`,
-        multiple_products: `По штрихкоду «${genericInput}»${offerIdsHint} найдено несколько товаров. Автоматический резолв невозможен — добавьте каждый товар отдельно через offer_id.`,
-        multiple_products_in_return: `По штрихкоду «${genericInput}»${offerIdsHint} найдено несколько товаров в возврате. Добавьте каждый товар отдельно через offer_id.`,
-        skip: `Штрихкод «${genericInput}» не может быть использован для авто-резолва. Укажите offer_id напрямую.`,
+        looks_like_offer_id: `«${genericInput}» — это артикул (offer_id), а не штрихкод. Используйте поле «Артикул» или введите barcode (ii.../%301...).`,
+        barcode_not_in_cache: `Barcode «${genericInput}» не найден в кэше возвратов магазина. Проверьте, что отчёт синхронизирован, или используйте offer_id.`,
+        not_found: `Не удалось опознать «${genericInput}». Проверьте barcode (ii.../%301...) или используйте offer_id.`,
+        cargo_box_not_in_cache: `lozon_id «${genericInput}» есть в Ozon, но возврат ещё не синхронизирован в базе магазина. Попробуйте через 1–2 часа или используйте offer_id.`,
+        multiple_products_in_return: `По «${genericInput}»${offerIdsHint} найдено несколько товаров. Добавьте каждый отдельно через offer_id.`,
+        no_offer_id: `Возврат найден, но артикул не сопоставлен. Загрузите PDF-акт или используйте offer_id.`,
+        no_offer_id_in_returns: `Возврат найден, но артикул не сопоставлен. Загрузите PDF-акт или используйте offer_id.`,
+        skip: `Возврат не может быть использован для авто-резолва. Используйте offer_id.`,
+        lozon_not_supported_in_bulk: `lozon_id не принимается в этой форме. Введите barcode (ii.../%...) или offer_id.`,
+        lozon_not_found_in_ozon: `Ozon не знает lozon_id «${genericInput}». Проверьте, что возврат создан в Ozon, или используйте offer_id.`,
       }[resolved.reason] || `Не удалось опознать «${genericInput}».`;
-      throw new Error(msg);
     }
 
     const db = getUsersDB();

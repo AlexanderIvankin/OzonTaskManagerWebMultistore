@@ -91,6 +91,9 @@ router.post(
   storedReturnsController.importExcel
 );
 router.delete('/stored-returns/:id', storedReturnsController.removeEntry);
+// «Обнулить мой склад» (массовое soft-delete активных записей).
+// POST (не DELETE) — это bulk-action, а не удаление ресурса по id.
+router.post('/stored-returns/clear-all', storedReturnsController.clearAll);
 
 // Для всех остальных маршрутов требуется роль сотрудника (employee, moderator, admin)
 router.use(requireEmployee);

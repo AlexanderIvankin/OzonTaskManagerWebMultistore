@@ -56,6 +56,23 @@ function displayLozon(it: StoredReturn): string {
   return it.lozon_id;
 }
 
+function downloadSkippedFile(base64: string, fileName: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const blob = new Blob([bytes], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export default function MyStorage() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [items, setItems] = useState<StoredReturn[]>([]);
@@ -65,8 +82,11 @@ export default function MyStorage() {
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const [clearing, setClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     setError(null);
     try {
       const [{ enabled }, list] = await Promise.all([
@@ -78,7 +98,7 @@ export default function MyStorage() {
     } catch (err: any) {
       setError(err?.response?.data?.error || err?.message || "Ошибка загрузки");
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, []);
 
@@ -93,6 +113,25 @@ export default function MyStorage() {
       setItems((prev) => prev.filter((x) => x.id !== id));
     } catch (err: any) {
       setError(err?.response?.data?.error || "Не удалось удалить");
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (items.length === 0) return;
+
+    setClearing(true);
+    try {
+      const res = await returnsStorageApi.clearAll();
+      setItems([]);
+      toast.success(`Склад обнулён: удалено ${res.cleared} записей`);
+    } catch (err: any) {
+      toast.error(
+        err?.response?.data?.error ||
+          err.message ||
+          "Не удалось обнулить склад",
+      );
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -225,17 +264,64 @@ export default function MyStorage() {
         )}
       </Card>
 
+      {items.length > 0 && (
+        <div className="flex flex-col items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowClearConfirm(true)}
+            disabled={clearing}
+            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+          >
+            {clearing
+              ? "⏳ Обнуление…"
+              : `🗑 Обнулить мой склад (${items.length})`}
+          </Button>
+
+          <Dialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle className="text-center">Обнулить склад?</DialogTitle>
+                <DialogDescription>
+                  Будет удалено <b>{items.length}</b> записей из вашего
+                  хранилища. Ранее списанные товары по завершённым заказам
+                  останутся в истории.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="sm:justify-center">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowClearConfirm(false)}
+                >
+                  Отмена
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setShowClearConfirm(false);
+                    handleClearAll();
+                  }}
+                >
+                  Обнулить всё
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+      )}
+
       <AddDialog
         open={showAdd}
         onOpenChange={setShowAdd}
         onSuccess={(created) => {
           setItems((prev) => [created, ...prev]);
+          load({ silent: true });
         }}
       />
       <ImportDialog
         open={showImport}
         onOpenChange={setShowImport}
-        onSuccess={load}
+        onSuccess={() => load({ silent: true })}
       />
     </div>
   );
@@ -518,10 +604,22 @@ function ImportDialog({
           </p>
           <p>
             Обязательные: <code>box_number</code>, <code>quantity</code>, и одна
-            из <code>lozon_id</code> / <code>offer_id</code>.
+            из <code>barcode</code> / <code>offer_id</code>.
           </p>
+          <div className="text-xs space-y-1.5 rounded border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-2">
+            <p>
+              <b>В колонке штрихкода — только barcode:</b> <code>ii...</code>{" "}
+              или <code>%...</code> (например, <code>ii17701861005</code>,{" "}
+              <code>%301%25815721288</code>).
+            </p>
+            <p>
+              <b>❌ lozon_id не принимается</b> — номера вида{" "}
+              <code>25000000000</code> (длинные цифры с этикетки) отклоняются.
+              Добавляйте их по одному через форму «Добавить возврат».
+            </p>
+          </div>
           <p className="text-xs">
-            Алиасы (регистр не важен): коробка·box, штрихкод·barcode·lozon,
+            Алиасы колонок (регистр не важен): коробка·box, штрихкод·barcode,
             артикул·offer_id, количество·qty. Если указаны оба — приоритет у{" "}
             <code>offer_id</code> (без резолва).
           </p>
@@ -535,10 +633,12 @@ function ImportDialog({
               Пример таблицы
             </summary>
             <div className="mt-1 w-full max-w-full overflow-x-auto rounded bg-muted">
-              <pre className="m-0 p-2 text-left whitespace-pre">{`box_number | lozon_id       | offer_id   | quantity
-Ящик 1     | ii19949314941  |            | 1
+              <pre className="m-0 p-2 text-left whitespace-pre">
+                {`box_number | barcode        | offer_id   | quantity
+Ящик 1     | ii17701861005  |            | 1
 Ящик 2     |                | ARD000001  | 1
-Красная 3  | %301%25815721  |            | 2`}</pre>
+Красная 3  | %301%25815721  |            | 2`}
+              </pre>
             </div>
           </details>
         </div>
@@ -550,26 +650,7 @@ function ImportDialog({
             onChange={(e) => handleFile(e.target.files?.[0] || null)}
             disabled={busy}
           />
-          {result && (
-            <div className="space-y-2">
-              <Alert>
-                <AlertDescription>
-                  Всего: {result.total}, добавлено: {result.inserted},
-                  обновлено: {result.updated}, отклонено: {result.rejected}
-                </AlertDescription>
-              </Alert>
-              {result.errors.length > 0 && (
-                <div className="max-h-48 overflow-auto rounded border p-2 text-xs">
-                  {result.errors.slice(0, 50).map((e, i) => (
-                    <div key={i}>
-                      строка {e.row}: {e.lozon_id ? `${e.lozon_id} — ` : ""}
-                      {e.error}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+
           {err && (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
@@ -577,6 +658,56 @@ function ImportDialog({
             </Alert>
           )}
         </div>
+
+        {result && (
+          <div className="space-y-2">
+            <Alert>
+              <AlertDescription>
+                Всего: {result.total}, добавлено: {result.inserted}, обновлено:{" "}
+                {result.updated}, отклонено: {result.rejected}
+              </AlertDescription>
+            </Alert>
+
+            {result.skippedFileBase64 && result.skippedFileName && (
+              <div className="flex flex-col gap-2 rounded border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-3">
+                <p className="text-sm">
+                  <b>⚠️ Есть отклонённые строки ({result.rejected}).</b>{" "}
+                  Скачайте файл, исправьте и загрузите повторно.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    downloadSkippedFile(
+                      result.skippedFileBase64!,
+                      result.skippedFileName!,
+                    )
+                  }
+                >
+                  ⬇️ Скачать {result.skippedFileName}
+                </Button>
+              </div>
+            )}
+
+            {result.errors.length > 0 && (
+              <div className="max-h-48 overflow-auto rounded border p-2 text-xs">
+                {result.errors.slice(0, 50).map((e, i) => (
+                  <div key={i}>
+                    строка {e.row}:{e.offer_id ? ` ${e.offer_id}` : ""}
+                    {e.lozon_id ? ` ${e.lozon_id}` : ""}
+                    {" — "}
+                    {e.error}
+                  </div>
+                ))}
+                {result.errors.length > 50 && (
+                  <div className="mt-1 text-muted-foreground">
+                    … и ещё {result.errors.length - 50} (все в файле выше)
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <DialogFooter className="text-center sm:justify-center">
           <Button
             variant="outline"

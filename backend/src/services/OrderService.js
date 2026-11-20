@@ -220,11 +220,15 @@ class OrderService {
       }
 
       const db = getStoreDB(storeId);
-      const assignedOrderIds = (await db.all('SELECT order_id FROM assignments WHERE status = "assigned"'))
-        .map(r => r.order_id);
-      const assignedSet = new Set(assignedOrderIds);
-
-      const newOrders = allOrders.filter(order => !assignedSet.has(order.posting_number));
+      // ВАЖНО: completed тоже исключаем. Ozon после ship-подтверждения не сразу
+      // переводит заказ в awaiting_deliver (propagation delay 30с–5мин). В этот
+      // промежуток /v4/posting/fbs/list всё ещё возвращает awaiting_packaging, и
+      // без completed в фильтре заказ «возвращается» в очередь как новый.
+      const knownOrderIds = (await db.all(
+        `SELECT order_id FROM assignments WHERE status IN ('assigned', 'completed')`
+      )).map(r => r.order_id);
+      const knownSet = new Set(knownOrderIds);
+      const newOrders = allOrders.filter(order => !knownSet.has(order.posting_number));
       if (!newOrders.length) return;
 
       // Текущий обрабатываемый заказ: если он больше не в списке — сбрасываем
@@ -497,6 +501,15 @@ class OrderService {
     let consumedStoredReturns = [];
     const compositeKey = stateKey(storeId, orderId);
 
+    // Блокировка от параллельных завершений (двойной клик, оба девайса).
+    // assignOrder уже использует processingOrders — расширяем на finishOrder.
+    // Это гарантирует: пока идёт ship-запрос к Ozon, второй finishOrder
+    // получит понятную ошибку «уже обрабатывается», а не 400 от Ozon.
+    if (processingOrders.has(compositeKey)) {
+      throw new Error(`Заказ ${orderId} уже обрабатывается (завершается)`);
+    }
+    processingOrders.add(compositeKey);
+
     try {
       const db = getStoreDB(storeId);
       const assignment = await db.get(
@@ -504,6 +517,17 @@ class OrderService {
         orderId, userId
       );
       if (!assignment) {
+        // Идемпотентность: если заказ УЖЕ завершён этим же сотрудником —
+        // возвращаем успех вместо ошибки. Пользователь мог кликнуть повторно,
+        // не увидев обновления UI (или это retry после сетевого сбоя).
+        const completed = await db.get(
+          'SELECT status FROM assignments WHERE order_id = ? AND user_id = ?',
+          orderId, userId
+        );
+        if (completed?.status === 'completed') {
+          console.log(`[FINISH][store ${storeId}] Заказ ${orderId} уже завершён — возвращаю успех`);
+          return { success: true, alreadyCompleted: true, earnings: 0, labelAvailable: false };
+        }
         throw new Error(`Заказ ${orderId} уже завершён или не найден.`);
       }
 
@@ -515,11 +539,15 @@ class OrderService {
       const earningsFactor = storeRecord?.earnings_factor ?? 1.0;
 
       // 1. Сумма заказа
+      console.log(`[FINISH][store ${storeId}] Запрашиваем сумму заказа ${orderId}`);
       const orderAmount = await OzonService.getOrderTotalAmount(storeId, orderId);
       console.log(`[FINISH][store ${storeId}] Сумма заказа: ${orderAmount}`);
 
       // 2. Расчёт заработка
+      console.log(`[FINISH][store ${storeId}] Запрашиваем детали заказа ${orderId}`);
       const orderDetails = await OzonService.getOrderDetails(storeId, orderId);
+      console.log(`[FINISH][store ${storeId}] Детали заказа получены`);
+
       let earningsData = null;
       if (orderDetails && orderDetails.products) {
         earningsData = await EarningsService.calculateOrderEarnings(
@@ -529,21 +557,35 @@ class OrderService {
           console.warn(`[FINISH][store ${storeId}] Не все товары имеют статистику для заказа ${orderId}`);
         }
       }
+      console.log(`[FINISH][store ${storeId}] Заработок рассчитан`);
 
       // 3. Подтверждение сборки
       try {
         const shipResult = await OzonService.confirmPostingShip(storeId, orderId);
-        // Явный лог — что вернул Ozon. Даже при ПОДТВЕРЖДЁН полезно видеть,
-        // вернул ли Ozon предупреждения (например, mandatory_mark missing).
-        console.log(
-          `[FINISH][store ${storeId}] ship для ${orderId} — OK, ` +
-          `result=${JSON.stringify(shipResult?.result || [])}`
-        );
+        console.log(`[SHIP][store ${storeId}] ${orderId} — OK, result=${JSON.stringify(shipResult?.result || [])}`);
       } catch (shipError) {
         if (shipError.message && shipError.message.includes('не в статусе awaiting_packaging')) {
           console.warn(`[FINISH][store ${storeId}] Заказ ${orderId} уже подтверждён (статус не awaiting_packaging)`);
+        } else if (shipError.response?.status === 400 && shipError.response?.data?.code === 3) {
+          // Ozon вернул HAS_INCORRECT_STATUS. Перепроверяем реальный статус:
+          // — awaiting_deliver → заказ уже отправлен (параллельно или ранее) → ОК
+          // — cancelled       → заказ отменён → ошибка с понятным текстом
+          // — awaiting_packaging → странно, Ozon непоследователен → ошибка
+          const fresh = await OzonService.getOrderDetails(storeId, orderId);
+          const s = fresh?.status;
+          console.warn(
+            `[FINISH][store ${storeId}] Заказ ${orderId}: Ozon вернул HAS_INCORRECT_STATUS, ` +
+            `фактический статус: ${s || '—'}`
+          );
+          if (s === 'awaiting_deliver' || s === 'delivering' || s === 'delivered') {
+            // Уже отправлен — считаем подтверждённым, продолжаем к COMMIT
+            console.log(`[FINISH][store ${storeId}] Заказ ${orderId}: уже отправлен, фиксируем как завершённый`);
+          } else if (s === 'cancelled') {
+            throw new Error(`Заказ ${orderId} отменён Ozon — завершение невозможно`);
+          } else {
+            throw shipError;
+          }
         } else {
-          // Явно логируем body ошибки, если axios её приложил
           if (shipError.response?.data) {
             console.error(
               `[FINISH][store ${storeId}] ship ${orderId} упал: HTTP ${shipError.response.status}, ` +
@@ -726,6 +768,7 @@ class OrderService {
       console.error(`[FINISH][store ${storeId}] Ошибка при завершении заказа ${orderId}:`, err);
       throw err;
     } finally {
+      processingOrders.delete(compositeKey);
       if (!transactionCompleted) {
         console.log(`[FINISH][store ${storeId}] Принудительно удаляем флаги для ${orderId}`);
         finishingOrders.delete(compositeKey);
@@ -1142,6 +1185,23 @@ class OrderService {
         products,
       });
     }
+
+    // Batch: готовые возвраты для активных заказов сотрудника.
+    // Показываем ТОЛЬКО его собственные ящики — чужие ему не интересны.
+    try {
+      const matchesMap = await StoredReturnsService.findMatchesForOrders(
+        storeId,
+        result.map((r) => ({ orderId: r.orderId, products: r.products || [] })),
+      );
+      for (const r of result) {
+        const ms = matchesMap.get(r.orderId) || [];
+        r.storedMatches = ms.filter((m) => Number(m.user_id) === Number(userId));
+      }
+    } catch (storedErr) {
+      console.error(`[buildActiveOrders][store ${storeId}] storedMatches:`, storedErr.message);
+      for (const r of result) r.storedMatches = [];
+    }
+
     return result;
   }
 
@@ -1199,6 +1259,34 @@ class OrderService {
         products,
       });
     }
+
+    // Что из хранилища сотрудника было списано под эти заказы.
+    // Источник — users.db.stored_returns_consumptions (аудит-история).
+    try {
+      if (result.length > 0) {
+        const dbUsers = require('../config/database').getUsersDB();
+        const orderIds = result.map((r) => r.orderId);
+        const placeholders = orderIds.map(() => '?').join(',');
+        const rows = await dbUsers.all(
+          `SELECT order_id, box_number, lozon_id, offer_id, sku, quantity, consumed_at
+       FROM stored_returns_consumptions
+       WHERE user_id = ? AND order_id IN (${placeholders}) AND restored_at IS NULL`,
+          userId, ...orderIds,
+        );
+        const byOrder = new Map();
+        for (const c of rows) {
+          if (!byOrder.has(c.order_id)) byOrder.set(c.order_id, []);
+          byOrder.get(c.order_id).push(c);
+        }
+        for (const r of result) {
+          r.consumedStoredReturns = byOrder.get(r.orderId) || [];
+        }
+      }
+    } catch (consumErr) {
+      console.error(`[buildCompletedOrdersAwaitingDeliver][store ${storeId}] consumptions:`, consumErr.message);
+      for (const r of result) r.consumedStoredReturns = [];
+    }
+
     return result;
   }
 

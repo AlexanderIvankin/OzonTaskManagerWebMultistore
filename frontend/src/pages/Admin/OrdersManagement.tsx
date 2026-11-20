@@ -447,16 +447,16 @@ export const OrdersManagement = () => {
 
                             {/* 🎁 Бейдж «есть готовый возврат у сотрудника» — именно к этому товару */}
                             {productMatches.length > 0 && (
-                              <div className="my-2 rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-900 p-2">
+                              <div className="text-center lg:text-start my-2 rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-900 p-2">
                                 <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-300 mb-1">
                                   🎁 Готовый товар в хранилище:
                                 </div>
-                                <div className="flex flex-wrap gap-1">
+                                <div className="flex justify-center lg:justify-start flex-wrap gap-1">
                                   {productMatches.map((m, i) => (
                                     <Badge
                                       key={`${m.user_id}-${m.box_number}-${i}`}
                                       variant="secondary"
-                                      className="text-xs"
+                                      className="h-auto max-w-full whitespace-normal break-words [overflow-wrap:anywhere] py-1 px-2 text-center text-xs"
                                     >
                                       {m.user_name} — ящик «{m.box_number}» (
                                       {m.quantity} шт.)

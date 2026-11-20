@@ -60,7 +60,7 @@ export const CompletedOrderCard = ({ order }: CompletedOrderCardProps) => {
   const [labelPending, setLabelPending] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [downloadedLabelIds, setDownloadedLabelIds] = useState<Set<string>>(
-    () => getDownloadedLabelIds()
+    () => getDownloadedLabelIds(),
   );
 
   const isDownloaded = downloadedLabelIds.has(order.orderId);
@@ -129,10 +129,10 @@ export const CompletedOrderCard = ({ order }: CompletedOrderCardProps) => {
     const off = onNotificationNew((n) => {
       if (n.type !== "label_ready") return;
       const notifiedOrderId = String(
-        (n as { payload?: { orderId?: string }; orderId?: string })
-          ?.payload?.orderId ||
+        (n as { payload?: { orderId?: string }; orderId?: string })?.payload
+          ?.orderId ||
           (n as { orderId?: string }).orderId ||
-          ""
+          "",
       );
       if (notifiedOrderId !== order.orderId) return;
       if (isDownloaded || downloading || labelPending) return;
@@ -178,6 +178,25 @@ export const CompletedOrderCard = ({ order }: CompletedOrderCardProps) => {
           products={order.products}
           alignClassName="text-center sm:text-start md:text-center xl:text-start justify-center sm:justify-start md:justify-center xl:justify-start"
         />
+        {order.consumedStoredReturns &&
+          order.consumedStoredReturns.length > 0 && (
+            <div className="my-2 rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-900 p-2 text-center sm:text-start">
+              <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-300 mb-1">
+                📦 Списано из вашего хранилища:
+              </div>
+              <div className="flex flex-wrap justify-center sm:justify-start gap-1">
+                {order.consumedStoredReturns.map((c, i) => (
+                  <Badge
+                    key={i}
+                    variant="secondary"
+                    className="h-auto max-w-full whitespace-normal break-words [overflow-wrap:anywhere] py-1 px-2 text-center text-xs"
+                  >
+                    ящик «{c.box_number}» × {c.quantity}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
       </CardContent>
       {/* mt-auto прижимает футер к низу карточки: в грид-раскладке
           (md:grid-cols-2) карточки растягиваются до высоты самой высокой в
@@ -187,7 +206,7 @@ export const CompletedOrderCard = ({ order }: CompletedOrderCardProps) => {
           variant={isDownloaded ? "default" : "secondary"}
           className={cn(
             "w-full sm:w-auto md:w-full xl:w-auto",
-            isDownloaded && "bg-green-600 text-white hover:bg-green-700"
+            isDownloaded && "bg-green-600 text-white hover:bg-green-700",
           )}
           onClick={handleDownloadLabel}
           disabled={downloading || labelPending}
