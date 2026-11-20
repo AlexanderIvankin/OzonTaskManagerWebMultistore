@@ -15,6 +15,7 @@ const NotificationService = require('../services/NotificationService');
 const ReturnsReportService = require('../services/ReturnsReportService');
 const ReturnsCacheService = require('../services/ReturnsCacheService');
 const ReturnsPdfService = require('../services/ReturnsPdfService');
+const StoredReturnsService = require('../services/StoredReturnsService');
 const scheduler = require('../scheduler');
 const stores = require('../config/stores');
 const { getStoreDB, getUsersDB } = require('../config/database');
@@ -663,7 +664,6 @@ exports.getAwaitingOrders = async (req, res, next) => {
     // Обогащение готовыми возвратами (для бейджа «🎁 у сотрудника X, ящик N»)
     let storedMatchesByOrder = new Map();
     try {
-      const StoredReturnsService = require('../services/StoredReturnsService');
       storedMatchesByOrder = await StoredReturnsService.findMatchesForOrders(
         storeId,
         ordersWithImages.map((o) => ({
@@ -800,6 +800,26 @@ exports.getActiveOrdersAll = async (req, res, next) => {
         products,
       });
     }
+
+    // Готовые возвраты: для каждого заказа — матчи, но ТОЛЬКО у назначенного
+    // сотрудника (остальные нерелевантны — заказ уже у него).
+    try {
+      const matchesMap = await StoredReturnsService.findMatchesForOrders(
+        storeId,
+        result.map((r) => ({ orderId: r.orderId, products: r.products || [] })),
+      );
+      for (const r of result) {
+        const ms = matchesMap.get(r.orderId) || [];
+        r.storedMatches = ms.filter((m) => Number(m.user_id) === Number(r.userId));
+      }
+    } catch (storedErr) {
+      console.error(
+        `[getActiveOrdersAll][store ${storeId}] storedMatches:`,
+        storedErr.message
+      );
+      for (const r of result) r.storedMatches = [];
+    }
+
     res.json(result);
   } catch (err) {
     console.error(`[getActiveOrdersAll][store ${req.storeId}] Ошибка:`, err);

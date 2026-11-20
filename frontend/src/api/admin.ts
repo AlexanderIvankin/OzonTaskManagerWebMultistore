@@ -143,6 +143,15 @@ export interface AdminActiveOrder {
     // Статистика товара (материал, цвет, вес); null — статистика не заполнена
     stats?: ProductStats | null;
   }>;
+  storedMatches?: Array<{
+    offer_id: string | null;
+    sku: string | null;
+    user_id: number;
+    user_name: string;
+    box_number: string;
+    quantity: number;
+    lozon_ids?: string[];
+  }>;
 }
 
 /** Товар в «слепке» завершённого заказа (сохраняется при завершении) */

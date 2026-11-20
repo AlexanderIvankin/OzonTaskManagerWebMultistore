@@ -260,34 +260,69 @@ export const ActiveOrders = () => {
                       Состав:
                     </div>
                     <ul className="text-sm space-y-3">
-                      {order.products.map((p, idx) => (
-                        <li key={idx}>
-                          <div className="mb-1 text-center lg:text-start">
-                            <span className="font-bold">
-                              {idx + 1}
-                              {". "}
-                            </span>
-                            {p.name} — {p.quantity} шт.
-                            {p.offer_id && (
-                              <span className="text-l text-muted-foreground">
-                                {" "}
-                                <br></br>(offer_id:{" "}
-                                <span className="font-bold">
-                                  <code>{p.offer_id}</code>
-                                </span>
-                                )
+                      {order.products.map((p, idx) => {
+                        // Матчи именно по этому товару (на бэке уже отфильтровано по сотруднику)
+                        const productMatches = (
+                          order.storedMatches || []
+                        ).filter(
+                          (m) =>
+                            (m.offer_id &&
+                              p.offer_id &&
+                              m.offer_id === p.offer_id) ||
+                            (m.sku && p.sku && m.sku === p.sku),
+                        );
+
+                        return (
+                          <li key={idx}>
+                            <div className="mb-1 text-center lg:text-start">
+                              <span className="font-bold">
+                                {idx + 1}
+                                {". "}
                               </span>
+                              {p.name} — {p.quantity} шт.
+                              {p.offer_id && (
+                                <span className="text-l text-muted-foreground">
+                                  {" "}
+                                  <br></br>(offer_id:{" "}
+                                  <span className="font-bold">
+                                    <code>{p.offer_id}</code>
+                                  </span>
+                                  )
+                                </span>
+                              )}
+                            </div>
+
+                            {/* 🎁 У назначенного сотрудника товар уже в хранилище */}
+                            {productMatches.length > 0 && (
+                              <div className="my-2 rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-900 p-2 text-center lg:text-start">
+                                <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-300 mb-1">
+                                  🎁 У сотрудника {order.userName} уже есть в
+                                  хранилище:
+                                </div>
+                                <div className="flex flex-wrap justify-center lg:justify-start gap-1">
+                                  {productMatches.map((m, i) => (
+                                    <Badge
+                                      key={`${m.box_number}-${i}`}
+                                      variant="secondary"
+                                      className="h-auto max-w-full whitespace-normal break-words [overflow-wrap:anywhere] py-1 px-2 text-center text-xs"
+                                    >
+                                      ящик «{m.box_number}» × {m.quantity}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              </div>
                             )}
-                          </div>
-                          <ProductStatsBlock stats={p.stats} />
-                          {p.images && p.images.length > 0 && (
-                            <ProductImages
-                              productName={p.name}
-                              images={p.images}
-                            />
-                          )}
-                        </li>
-                      ))}
+
+                            <ProductStatsBlock stats={p.stats} />
+                            {p.images && p.images.length > 0 && (
+                              <ProductImages
+                                productName={p.name}
+                                images={p.images}
+                              />
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                     <OrderTotalAmount products={order.products} />
                   </div>
