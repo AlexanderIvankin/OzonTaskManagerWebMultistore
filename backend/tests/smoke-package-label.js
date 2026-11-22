@@ -199,6 +199,31 @@ async function withStub(client, fn) {
   assert.strictEqual(downloadCalled, false, 'При полном отказе скачивание не вызывается');
   console.log('9. Все номера в unprinted_postings -> null, скачивания нет');
 
+  // --- 10. ZIP из file_url принимается (batch: Ozon реально отдаёт ZIP) ---
+  const AdmZip = require('adm-zip');
+  const zip = new AdmZip();
+  zip.addFile('label-P-1.pdf', Buffer.from('%PDF-1.4 first\n%EOF'));
+  zip.addFile('label-P-2.pdf', Buffer.from('%PDF-1.4 second\n%EOF'));
+  const ZIP_BYTES = zip.toBuffer();
+
+  const zipStub = makeApiStub({
+    createPayload: { result: { tasks: [{ task_id: TASK_ID }] } },
+    getPayloads: [{ result: { file_url: FILE_URL, status: { code: 'ready' } } }],
+  });
+  const zipResult = await withStub(zipStub.client, () =>
+    OzonService.getPackageLabel(STORE_ID, ['P-1', 'P-2'], {
+      pollDelays: [],
+      downloader: async () => ({ data: ZIP_BYTES }),
+    })
+  );
+  assert(Buffer.isBuffer(zipResult), 'ZIP должен вернуться как Buffer');
+  assert.strictEqual(
+    zipResult.slice(0, 2).toString(),
+    'PK',
+    'ZIP должен сохранить магические байты PK (распаковка — в OrderService)',
+  );
+  console.log('10. ZIP из file_url принимается (магические байты PK) ✅');
+
   console.log('✅ Все проверки пройдены');
   cleanup();
 })().catch((err) => {

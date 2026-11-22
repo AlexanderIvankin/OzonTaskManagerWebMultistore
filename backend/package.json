@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1131.0",
+    "adm-zip": "^0.6.1",
     "archiver": "^8.0.0",
     "axios": "^1.20.0",
     "bcrypt": "^5.1.1",

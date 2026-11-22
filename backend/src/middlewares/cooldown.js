@@ -21,7 +21,12 @@ function cooldown(kind, commandLabel) {
   return (req, res, next) => {
     try {
       const storeId = req.storeId;
-      const result = CooldownService.check(kind, storeId, req.user?.id);
+      // orderId есть только у /orders/:orderId/label — для остальных kind
+      // opts = {} и key() даст defaultKey.
+      const orderId = req.params && req.params.orderId ? String(req.params.orderId) : null;
+      const opts = orderId ? { orderId } : {};
+
+      const result = CooldownService.check(kind, storeId, req.user?.id, opts);
       if (!result.blocked) return next();
 
       // Live-оповещение: WebSocket -> тост в Layout (не блокируем ответ).

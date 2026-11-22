@@ -45,10 +45,13 @@ const PDF_BYTES = Buffer.from('%PDF-1.4 combined-labels\n%EOF');
       { posting_number: FOREIGN_ORDER },
     ];
   };
+  // В стабе getPackageLabel возвращаем PDF для первого случая и ZIP для второго.
+  // Проще всего — сделать стаб, который отдаёт то, что выставлено снаружи.
+  let nextLabelPayload = PDF_BYTES;
   OzonService.getPackageLabel = async (storeId, postingNumbers) => {
     assert.strictEqual(storeId, STORE_ID, 'getPackageLabel: storeId проброшен');
     labelCalls.push(postingNumbers);
-    return PDF_BYTES;
+    return nextLabelPayload;
   };
 
   try {
@@ -119,6 +122,28 @@ const PDF_BYTES = Buffer.from('%PDF-1.4 combined-labels\n%EOF');
     assert.strictEqual(empty, null, 'Без завершённых заказов должен вернуться null');
     assert.strictEqual(fetchCalls, 0, 'fetchAwaitingDeliverOrders не должен вызываться');
     console.log('3. Нет завершённых заказов -> null без запроса к Ozon ✅');
+
+    // 4. ZIP из Ozon распаковывается и склеивается в единый PDF.
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip();
+    zip.addFile('1.pdf', Buffer.from('%PDF-1.4 first\n%EOF'));
+    zip.addFile('2.pdf', Buffer.from('%PDF-1.4 second\n%EOF'));
+    nextLabelPayload = zip.toBuffer();
+
+    labelCalls.length = 0;
+    const merged = await OrderService.getAllLabels(STORE_ID, emp.id);
+    assert(Buffer.isBuffer(merged), 'ZIP: должен вернуться Buffer');
+    assert.strictEqual(
+      merged.slice(0, 4).toString(),
+      '%PDF',
+      'ZIP: результат должен быть PDF (склейка через mergePdfs)',
+    );
+    // 2 исходных PDF -> внутри объединённого документа 2 страницы
+    const { PDFDocument } = require('pdf-lib');
+    const doc = await PDFDocument.load(merged);
+    assert.strictEqual(doc.getPageCount(), 2, 'ZIP: обе страницы сохранены после склейки');
+    assert.strictEqual(labelCalls.length, 1, 'ZIP: getPackageLabel вызван ровно один раз');
+    console.log('4. ZIP из Ozon -> склейка в единый PDF ✅');
 
     console.log('✅ Все проверки пройдены');
   } catch (err) {

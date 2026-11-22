@@ -18,6 +18,15 @@ const productImagesCache = new Map();
 // фотографиями (OrderService.syncOrderStatuses).
 const orderStateCache = new Map();
 
+// Какие этикетки сотрудник уже скачал.
+// Ключ: `${storeId}:${userId}:${orderId}` -> timestamp первого скачивания.
+// Нужно, чтобы карточки «Активные» (OrderCard) и «Завершённые»
+// (CompletedOrderCard) показывали одинаковый статус «скачано» независимо
+// от того, какая страница открыта. Живёт в памяти; при рестарте процесса
+// теряется — для полной устойчивости продублировать в
+// assignments.label_downloaded_at (см. комментарий в OrderService.markLabelDownloaded).
+const downloadedLabels = new Map();
+
 module.exports = {
   finishingOrders,
   pendingFinishConfirmations,
@@ -25,4 +34,5 @@ module.exports = {
   processingOrders,
   productImagesCache,
   orderStateCache,
+  downloadedLabels,
 };

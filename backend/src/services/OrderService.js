@@ -11,10 +11,12 @@ const {
   processingOrders,
   productImagesCache,
   orderStateCache,
+  downloadedLabels,
 } = require('../state');
 const EarningsService = require('./EarningsService');
 const ModelService = require('./ModelService');
 const StoredReturnsService = require('./StoredReturnsService');
+const { mergeLabelBuffersIfNeeded } = require('../utils');
 
 // Статусы Ozon, в которых заказ считается «живым» для сотрудника:
 //   awaiting_packaging — активный заказ (в работе);
@@ -56,6 +58,9 @@ function getRetries(storeId) {
 function stateKey(storeId, id) {
   return `${storeId}:${id}`;
 }
+
+const LABEL_DOWNLOADED_KEY = (storeId, userId, orderId) =>
+  `${storeId}:${userId}:${orderId}`;
 
 /**
  * Формирует компактный JSON-слепок деталей заказа для payload оповещения.
@@ -869,10 +874,49 @@ class OrderService {
         `Этикетка ещё не доступна: заказ в статусе "${details.status}". Повторите через минуту.`
       );
     }
-    return await OzonService.getPackageLabel(storeId, orderId, {
-      pollDelays: [2000, 3000, 3000, 3000, 5000],  // ~16 сек макс вместо 105
-      taskRetries: 1,                               // 1 попытка вместо 3×30 сек
+
+    const labelBuffer = await OzonService.getPackageLabel(storeId, orderId, {
+      pollDelays: [2000, 3000, 3000, 3000, 5000],
+      taskRetries: 1,
     });
+
+    // пометить как скачано (и в памяти, и в orderStateCache)
+    this.markLabelDownloaded(storeId, userId, orderId);
+
+    return labelBuffer;
+  }
+
+  // =================================================================
+  //  Пометка «этикетка скачана». Вызывается из getLabel / getAllLabels
+  //  после успешной выдачи файла клиенту.
+  //
+  //  Для полной устойчивости к рестарту — добавить параллельно:
+  //    await db.run(
+  //      'UPDATE assignments SET label_downloaded_at = CURRENT_TIMESTAMP ' +
+  //      'WHERE order_id = ? AND user_id = ?',
+  //      orderId, userId
+  //    );
+  //  и при сборке списков читать это поле как fallback.
+  // =================================================================
+  static markLabelDownloaded(storeId, userId, orderId) {
+    if (!orderId) return;
+    const key = LABEL_DOWNLOADED_KEY(storeId, userId, orderId);
+    if (!downloadedLabels.has(key)) {
+      downloadedLabels.set(key, Date.now());
+    }
+    // зеркалим в orderStateCache — чтобы попало в buildActiveOrders /
+    // buildCompletedOrdersAwaitingDeliver без отдельных запросов
+    this.cacheOrderState(storeId, orderId, { labelDownloadedAt: Date.now() });
+  }
+
+  static isLabelDownloaded(storeId, userId, orderId) {
+    return downloadedLabels.has(LABEL_DOWNLOADED_KEY(storeId, userId, orderId));
+  }
+
+  static getLabelDownloadedAt(storeId, userId, orderId) {
+    const state = this.getOrderState(storeId, orderId);
+    if (state && state.labelDownloadedAt) return state.labelDownloadedAt;
+    return downloadedLabels.get(LABEL_DOWNLOADED_KEY(storeId, userId, orderId)) || null;
   }
 
   /**
@@ -932,7 +976,16 @@ class OrderService {
       return null;
     }
     console.log(`[getAllLabels][store ${storeId}] Запрос склейки этикеток для ${postingNumbers.length} отправлений`);
-    return await OzonService.getPackageLabel(storeId, postingNumbers);
+
+    const raw = await OzonService.getPackageLabel(storeId, postingNumbers);
+
+    // пометить все отправления как скачанные
+    for (const pn of postingNumbers) {
+      this.markLabelDownloaded(storeId, userId, pn);
+    }
+
+    // возможно, Ozon вернул ZIP с отдельными PDF — склеиваем
+    return await mergeLabelBuffersIfNeeded(raw);
   }
 
   // =================================================================
@@ -1183,6 +1236,7 @@ class OrderService {
         statsStatus,
         missingStats,
         products,
+        labelDownloadedAt: this.getLabelDownloadedAt(storeId, userId, order.order_id),
       });
     }
 
@@ -1257,6 +1311,8 @@ class OrderService {
         orderId: row.order_id,
         completedAt: row.completed_at,
         products,
+        labelDownloadedAt: this.getLabelDownloadedAt(storeId, userId, row.order_id),
+        consumedStoredReturns: [],
       });
     }
 

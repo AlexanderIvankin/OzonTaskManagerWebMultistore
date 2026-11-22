@@ -43,34 +43,66 @@ const { cooldown } = require('../src/middlewares/cooldown');
   }
   console.log('1. До touch() кулдауны не блокируют ✅');
 
-  // --- 2. touch() -> блокировка с корректным retryAfterSec ---
-  CooldownService.touch('label', STORE_A, USER, 0, now);
-  const labelBlocked = CooldownService.check('label', STORE_A, USER, now + 1000);
+  // --- 2. label: per-order 60 сек ---
+  const TEST_ORDER = `ORDER-X-${now}`;
+
+  CooldownService.touch('label', STORE_A, USER, { orderId: TEST_ORDER }, now);
+  const labelBlocked = CooldownService.check(
+    'label', STORE_A, USER, { orderId: TEST_ORDER }, now + 1000,
+  );
   assert.strictEqual(labelBlocked.blocked, true, 'label: после touch() блокирует');
   assert.ok(
     labelBlocked.retryAfterSec >= 59 && labelBlocked.retryAfterSec <= 60,
-    `label: retryAfterSec ≈ 60, получено ${labelBlocked.retryAfterSec}`
+    `label: retryAfterSec ≈ 60, получено ${labelBlocked.retryAfterSec}`,
   );
   assert.ok(
     labelBlocked.message.includes('этикетки'),
-    'label: текст как в боте (упоминает этикетку)'
+    'label: текст про повторный запрос этой этикетки',
   );
-  // Через 60 секунд — снова можно
   assert.strictEqual(
-    CooldownService.check('label', STORE_A, USER, now + 60 * 1000).blocked, false,
-    'label: по истечении 60 сек разрешает'
+    CooldownService.check('label', STORE_A, USER, { orderId: TEST_ORDER }, now + 60 * 1000).blocked,
+    false,
+    'label: по истечении 60 сек разрешает',
   );
-  // Другой пользователь не затронут
   assert.strictEqual(
-    CooldownService.check('label', STORE_A, OTHER, now).blocked, false,
-    'label: кулдаун персональный'
+    CooldownService.check('label', STORE_A, OTHER, { orderId: TEST_ORDER }, now).blocked,
+    false,
+    'label: кулдаун персональный',
   );
-  // ДРУГОЙ МАГАЗИН того же пользователя — независимая корзина
   assert.strictEqual(
-    CooldownService.check('label', STORE_B, USER, now).blocked, false,
-    'label: кулдаун магазина A не действует в магазине B'
+    CooldownService.check('label', STORE_B, USER, { orderId: TEST_ORDER }, now).blocked,
+    false,
+    'label: кулдаун магазина A не действует в магазине B',
   );
-  console.log('2. label: 60-секундный персональный кулдаун + изоляция магазинов ✅');
+  console.log('2. label: 60-секундный per-order кулдаун + изоляция магазинов ✅');
+
+  // --- 2b. label: 15 сек между РАЗНЫМИ этикетками ---
+  const nowDiff = now + 200 * 1000;
+  CooldownService.touch('label', STORE_A, USER, { orderId: 'ORDER-A' }, nowDiff);
+  const diffBlocked = CooldownService.check(
+    'label', STORE_A, USER, { orderId: 'ORDER-B' }, nowDiff + 5000,
+  );
+  assert.strictEqual(diffBlocked.blocked, true, 'label: разные этикетки — блок 15 сек');
+  assert.ok(
+    diffBlocked.retryAfterSec >= 9 && diffBlocked.retryAfterSec <= 10,
+    `label: retryAfterSec ≈ 10, получено ${diffBlocked.retryAfterSec}`,
+  );
+  assert.ok(
+    diffBlocked.message.includes('следующей этикетки'),
+    'label: текст про следующую этикетку',
+  );
+  assert.strictEqual(
+    CooldownService.check('label', STORE_A, USER, { orderId: 'ORDER-B' }, nowDiff + 16000).blocked,
+    false,
+    'label: через 16 сек разные этикетки можно',
+  );
+  // та же этикетка ORDER-A всё ещё заблокирована
+  assert.strictEqual(
+    CooldownService.check('label', STORE_A, USER, { orderId: 'ORDER-A' }, nowDiff + 16000).blocked,
+    true,
+    'label: эта же этикетка (ORDER-A) заблокирована 60 сек',
+  );
+  console.log('2b. label: 15-секундный global кулдаун между разными этикетками ✅');
 
   // allLabels: длинный (успех) и короткий (пусто)
   CooldownService.touch('allLabels', STORE_A, USER, 0, now);
@@ -136,38 +168,41 @@ const { cooldown } = require('../src/middlewares/cooldown');
   });
 
   try {
-    // 5a. Кулдаун сработал -> 429 + live-тост
+    // 5a. Middleware: orderId пробрасывается — сработает per-order 60-сек
     const mwBlocked = cooldown('label', 'Скачивание этикетки');
     const resBlocked = makeRes();
     let nextCalledBlocked = false;
     mwBlocked(
-      { user: { id: USER }, storeId: STORE_A },
+      { user: { id: USER }, storeId: STORE_A, params: { orderId: TEST_ORDER } },
       resBlocked,
-      () => { nextCalledBlocked = true; }
+      () => { nextCalledBlocked = true; },
     );
 
     assert.strictEqual(resBlocked.statusCode, 429, 'middleware: статус 429');
     assert.strictEqual(resBlocked.body.cooldown, true, 'middleware: флаг cooldown');
-    assert.ok(resBlocked.body.retryAfterSec > 0, 'middleware: retryAfterSec > 0');
+    assert.ok(
+      resBlocked.body.retryAfterSec >= 55 && resBlocked.body.retryAfterSec <= 60,
+      `middleware: retryAfterSec ≈ 60 (per-order), получено ${resBlocked.body.retryAfterSec}`,
+    );
     assert.strictEqual(nextCalledBlocked, false, 'middleware: next() не вызывается при блоке');
     assert.strictEqual(notifications.length, 1, 'middleware: отправлено одно оповещение');
     assert.strictEqual(notifications[0].type, 'command_cooldown', 'middleware: тип command_cooldown');
-    assert.strictEqual(notifications[0].userId, USER, 'middleware: получатель — текущий пользователь');
+    assert.strictEqual(notifications[0].userId, USER, 'middleware: получатель');
     assert.strictEqual(notifications[0].opts.persist, false, 'middleware: persist=false');
-    assert.strictEqual(notifications[0].payload.storeId, STORE_A, 'middleware: storeId в payload');
-    assert.strictEqual(notifications[0].payload.command, 'Скачивание этикетки', 'middleware: имя команды');
-    console.log('5. Middleware: 429 + live-оповещение command_cooldown (storeId проброшен) ✅');
+    assert.strictEqual(notifications[0].payload.storeId, STORE_A, 'middleware: storeId');
+    assert.strictEqual(notifications[0].payload.command, 'Скачивание этикетки', 'middleware: команда');
+    console.log('5. Middleware: 429 + live-оповещение (per-order), orderId проброшен ✅');
 
-    // 5b. Кулдаун не сработал -> next()
+    // 5b. Пользователь без активного кулдауна -> next()
     const mwPass = cooldown('label', 'Скачивание этикетки');
     const resPass = makeRes();
     let nextCalledPass = false;
     mwPass(
-      { user: { id: OTHER }, storeId: STORE_A },
+      { user: { id: OTHER }, storeId: STORE_A, params: { orderId: TEST_ORDER } },
       resPass,
-      () => { nextCalledPass = true; }
+      () => { nextCalledPass = true; },
     );
-    assert.strictEqual(nextCalledPass, true, 'middleware: next() вызывается без кулдауна');
+    assert.strictEqual(nextCalledPass, true, 'middleware: next() без кулдауна');
     assert.strictEqual(resPass.statusCode, 200, 'middleware: ответ не тронут');
     assert.strictEqual(notifications.length, 1, 'middleware: без блока оповещений нет');
     console.log('6. Middleware: пропускает без кулдауна ✅');
@@ -180,7 +215,7 @@ const { cooldown } = require('../src/middlewares/cooldown');
   console.log('   sizes до очистки:', JSON.stringify(before));
 
   CooldownService.touch('toggleOrders', STORE_A, 999001, 0, now - 2 * 3600 * 1000);
-  CooldownService.touch('label', STORE_A, 999002, 0, now);
+  CooldownService.touch('label', STORE_A, 999002, { orderId: 'CLEAN-ORDER' }, now);
 
   const deleted = CooldownService.cleanCooldowns(now);
   assert.ok(deleted >= 1, 'cleanCooldowns: удалена хотя бы одна устаревшая запись');
@@ -190,8 +225,9 @@ const { cooldown } = require('../src/middlewares/cooldown');
     'cleanCooldowns: устаревшая запись toggleOrders удалена'
   );
   assert.notStrictEqual(
-    CooldownService.check('label', STORE_A, 999002, now).blocked, false,
-    'cleanCooldowns: свежая запись не удалена'
+    CooldownService.check('label', STORE_A, 999002, { orderId: 'CLEAN-ORDER' }, now).blocked,
+    false,
+    'cleanCooldowns: свежая запись не удалена',
   );
   console.log(`7. cleanCooldowns: удалено ${deleted}, свежие записи целы ✅`);
 

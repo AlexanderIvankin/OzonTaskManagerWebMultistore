@@ -12,7 +12,11 @@
 // parseEarningsFactor) применяются и в AuthService, и в SyncService, и в
 // adminController — единый формат полей во всех слоях.
 const { PDFDocument } = require('pdf-lib');
+const AdmZip = require('adm-zip');
 require('dotenv').config();
+
+const PDF_MAGIC = Buffer.from([0x25, 0x50, 0x44, 0x46]); // "%PDF"
+const ZIP_MAGIC = Buffer.from([0x50, 0x4B]);            // "PK"
 
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow';
 
@@ -35,6 +39,60 @@ function normalizeRootDomain(value) {
     .replace(/\/.*$/, '')          // снять путь
     .replace(/:\d+$/, '')          // снять порт
     .replace(/^www\./, '');        // снять www
+}
+
+/**
+ * Ozon для массива posting_numbers отдаёт ZIP с отдельными PDF, для одного —
+ * готовый PDF. Функция склеивает ZIP в единый PDF через mergePdfs.
+ * - Если пришёл PDF — вернуть как есть.
+ * - Если ZIP — распаковать, отсортировать по имени, склеить.
+ * - На любой ошибке — вернуть исходный buffer (лучше отдать «как есть»,
+ *   чем упасть 500).
+ *
+ * @param {Buffer|null} buffer
+ * @returns {Promise<Buffer|null>}
+ */
+async function mergeLabelBuffersIfNeeded(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return buffer;
+
+  if (buffer.slice(0, 4).equals(PDF_MAGIC)) return buffer;
+
+  if (!buffer.slice(0, 2).equals(ZIP_MAGIC)) {
+    console.warn('[LABELS] getPackageLabel вернул не PDF и не ZIP — отдаём как есть');
+    return buffer;
+  }
+
+  try {
+    const zip = new AdmZip(buffer);
+    const entries = zip.getEntries()
+      .filter((e) => !e.isDirectory && /\.pdf$/i.test(e.entryName))
+      .sort((a, b) =>
+        a.entryName.localeCompare(b.entryName, undefined, { numeric: true }),
+      );
+
+    if (entries.length === 0) {
+      console.warn('[LABELS] ZIP не содержит PDF — отдаём исходный архив');
+      return buffer;
+    }
+    if (entries.length === 1) {
+      return entries[0].getData();
+    }
+
+    const merged = await mergePdfs(entries.map((e) => e.getData()));
+    if (!merged) {
+      console.warn(
+        `[LABELS] mergePdfs вернул null, отдаём исходный ZIP (${entries.length} PDF)`,
+      );
+      return buffer;
+    }
+    console.log(
+      `[LABELS] Склеено ${entries.length} PDF в один (${merged.length} байт)`,
+    );
+    return merged;
+  } catch (err) {
+    console.error('[LABELS] Ошибка распаковки/склейки ZIP:', err.message);
+    return buffer;
+  }
 }
 
 /**
@@ -344,6 +402,7 @@ module.exports = {
   // Domain Parser
   normalizeRootDomain,
   // PDF
+  mergeLabelBuffersIfNeeded,
   mergePdfs,
   // Дата/время
   formatLocalTimestamp,

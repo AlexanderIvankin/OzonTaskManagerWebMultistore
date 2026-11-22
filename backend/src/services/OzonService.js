@@ -721,11 +721,23 @@ class OzonService {
             () => fetchPdf(payload.file_url),
             { context: `downloadPackageLabel[${storeId}]` }
           );
-          const pdfBuffer = Buffer.from(pdfResponse.data);
-          if (pdfBuffer.slice(0, 4).compare(Buffer.from('%PDF')) === 0) {
-            return pdfBuffer;
-          }
-          console.warn(`[LABEL][store ${storeId}] Скачанный файл не является PDF`);
+
+          const buf = Buffer.from(pdfResponse.data);
+          const magic4 = buf.length >= 4 ? buf.slice(0, 4) : Buffer.alloc(0);
+          const magic2 = buf.length >= 2 ? buf.slice(0, 2) : Buffer.alloc(0);
+
+          const isPdf = magic4.compare(Buffer.from('%PDF')) === 0;
+          const isZip = magic2.compare(Buffer.from('PK')) === 0;
+
+          // Для одного posting Ozon отдаёт PDF, для массива — ZIP с PDF.
+          // Распаковку/склейку делает OrderService.getAllLabels через
+          // mergeLabelBuffersIfNeeded (utils.js).
+          if (isPdf || isZip) return buf;
+
+          console.warn(
+            `[LABEL][store ${storeId}] Скачанный файл не PDF и не ZIP ` +
+            `(первые байты: ${buf.slice(0, 8).toString('hex')}, size=${buf.length})`
+          );
           return null;
         }
 

@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import {
   ordersApi,
   Order,
@@ -37,6 +38,11 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
   const [loading, setLoading] = useState(false);
   // Скачивание моделей: индикаторы по offer_id (одноразовый токен + скачивание)
   const [modelLoading, setModelLoading] = useState<Record<string, boolean>>({});
+
+  // оптимистичный флаг «уже скачали в этой сессии»
+  const [justDownloaded, setJustDownloaded] = useState(false);
+
+  const isLabelDownloaded = justDownloaded || !!order.labelDownloadedAt;
 
   // DISABLE_MODELS=true в текущем магазине — скрываем блок моделей целиком.
   // Скачивание моделей доступно только там, где работа с моделями включена.
@@ -88,10 +94,9 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
       a.download = `label_${order.orderId}.pdf`;
       a.click();
       window.URL.revokeObjectURL(url);
+      setJustDownloaded(true);
+      toast.success(`Этикетка заказа ${order.orderId} скачана`);
     } catch (err: any) {
-      // Кулдаун: при подключённом сокете live-тост уже ушёл по WebSocket —
-      // локальный не дублируем; сокет отключён -> показываем локально (fallback);
-      // иначе показываем текст из тела ошибки (Blob при responseType: "blob")
       const payload = await readApiErrorPayload(err);
       if (payload?.cooldown && isSocketConnected()) return;
       toast.error(
@@ -284,12 +289,15 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
         </Button>
 
         <Button
-          variant="secondary"
-          className="ml-0 sm:ml-auto md:ml-0 xl:ml-auto"
+          variant={isLabelDownloaded ? "default" : "secondary"}
+          className={cn(
+            "ml-0 sm:ml-auto md:ml-0 xl:ml-auto",
+            isLabelDownloaded && "bg-green-600 text-white hover:bg-green-700",
+          )}
           onClick={handleDownloadLabel}
           disabled={loading}
         >
-          📄 Скачать этикетку
+          {isLabelDownloaded ? "✅ Этикетка скачана" : "📄 Скачать этикетку"}
         </Button>
       </CardFooter>
       {missingOfferIds.length > 0 && (

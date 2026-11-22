@@ -239,12 +239,16 @@ exports.getLabel = async (req, res, next) => {
     const storeId = req.storeId;
     const userId = req.user.id;
     const { orderId } = req.params;
+
     const labelBuffer = await OrderService.getLabel(storeId, orderId, userId);
     if (!labelBuffer) {
       return res.status(404).json({ error: 'Label not available' });
     }
+    
     // Кулдаун ставится только после успешной выдачи
-    CooldownService.touch('label', storeId, userId);
+    // opts с orderId → кулдаун per-order 60 сек + global 15 сек
+    CooldownService.touch('label', storeId, userId, { orderId });
+
     disableCache(res);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=label_${orderId}.pdf`);

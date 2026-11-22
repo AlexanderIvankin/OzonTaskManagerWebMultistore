@@ -14,27 +14,8 @@ import { toast } from "sonner";
 import { isSocketConnected, onNotificationNew } from "../lib/socket";
 import { OrderProductsList } from "./OrderProductsList";
 
-const DOWNLOADED_LABELS_KEY = "downloaded_label_ids";
 const RETRY_DELAY_MS = 30000;
 const MAX_RETRIES = 3;
-
-function getDownloadedLabelIds(): Set<string> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const raw = localStorage.getItem(DOWNLOADED_LABELS_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-function saveDownloadedLabelIds(ids: Set<string>) {
-  try {
-    localStorage.setItem(DOWNLOADED_LABELS_KEY, JSON.stringify([...ids]));
-  } catch {
-    // ignore
-  }
-}
 
 interface CompletedOrderCardProps {
   order: CompletedOrder;
@@ -59,22 +40,15 @@ export const CompletedOrderCard = ({ order }: CompletedOrderCardProps) => {
   // этикетка ещё не готова, идёт автоожидание/повтор
   const [labelPending, setLabelPending] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
-  const [downloadedLabelIds, setDownloadedLabelIds] = useState<Set<string>>(
-    () => getDownloadedLabelIds(),
-  );
 
-  const isDownloaded = downloadedLabelIds.has(order.orderId);
+  // Оптимистичный флаг: показываем «скачано» сразу после клика,
+  // не дожидаясь рефетча с сервера. Серверный labelDownloadedAt —
+  // источник истины при перезагрузке страницы / переходе между вкладками.
+  const [justDownloaded, setJustDownloaded] = useState(false);
 
-  const markLabelDownloaded = useCallback(() => {
-    setDownloadedLabelIds((prev) => {
-      const next = new Set(prev);
-      next.add(order.orderId);
-      saveDownloadedLabelIds(next);
-      return next;
-    });
-  }, [order.orderId]);
+  const isDownloaded = justDownloaded || !!order.labelDownloadedAt;
 
-  const handleDownloadLabel = async () => {
+  const handleDownloadLabel = useCallback(async () => {
     if (downloading || labelPending) return;
     setDownloading(true);
     setLabelPending(false);
@@ -86,7 +60,7 @@ export const CompletedOrderCard = ({ order }: CompletedOrderCardProps) => {
       a.download = `label_${order.orderId}.pdf`;
       a.click();
       window.URL.revokeObjectURL(url);
-      markLabelDownloaded();
+      setJustDownloaded(true); // больше localStorage
       toast.success(`Этикетка заказа ${order.orderId} скачана`);
     } catch (err: unknown) {
       const payload = await readApiErrorPayload(err);
@@ -121,7 +95,7 @@ export const CompletedOrderCard = ({ order }: CompletedOrderCardProps) => {
     } finally {
       setDownloading(false);
     }
-  };
+  }, [order.orderId, downloading, labelPending, retryCount]);
 
   // Реагируем на сокет-уведомление label_ready — автоскачиваем этикетку
   // без перезагрузки страницы.

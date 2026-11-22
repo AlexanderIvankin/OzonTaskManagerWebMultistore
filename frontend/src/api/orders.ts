@@ -78,6 +78,7 @@ export interface Order {
   missingStats: string[];
   products: OrderProduct[];
   storedMatches?: StoredMatch[];
+  labelDownloadedAt?: number | null;
   // images убраны с верхнего уровня — фото теперь привязаны к каждому товару (products[].images)
 }
 
@@ -91,6 +92,8 @@ export interface CompletedOrder {
   completedAt: number;
   products: OrderProduct[];
   consumedStoredReturns?: ConsumedStoredReturn[];
+  /** ms-таймстемп первого скачивания этикетки этим сотрудником, либо null. */
+  labelDownloadedAt?: number | null;
 }
 
 /** Ответ POST /user/orders/refresh: оба списка после синхронизации с Ozon */
