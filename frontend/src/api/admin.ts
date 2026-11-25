@@ -553,12 +553,6 @@ export const adminApi = {
         message: string;
       }>(`/admin/models/${encodeURIComponent(offerId)}`)
       .then((res) => res.data),
-
-  // Скачать модель себе (персонал)
-  downloadModel: (offerId: string): Promise<AxiosResponse<Blob>> =>
-    api.get(`/admin/models/${encodeURIComponent(offerId)}/download`, {
-      responseType: "blob",
-    }),
 };
 
 /**

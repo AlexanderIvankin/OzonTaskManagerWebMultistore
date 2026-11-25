@@ -148,7 +148,6 @@ const modelsUpload = multer({
 });
 router.get('/models', requireModelsEnabled, adminController.listModels);
 router.post('/models/upload', requireModelsEnabled, modelsUpload.single('file'), adminController.uploadModel);
-router.get('/models/:offerId/download', requireModelsEnabled, adminController.downloadModel);
 router.delete('/models/:offerId', requireModelsEnabled, adminController.deleteModel);
 
 // --- Планировщик: пауза/возобновление авто-проверки очереди (аналог /pause, /resume) ---

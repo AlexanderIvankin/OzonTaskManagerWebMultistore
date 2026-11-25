@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { isSocketConnected } from "../lib/socket";
 import { FillStatsDialog } from "./FillStatsDialog";
 import { OrderProductsList } from "./OrderProductsList";
+import { useModelDownload } from "../hooks/useModelDownload";
 
 // Размер файла в человекочитаемом виде (МБ)
 const formatSize = (bytes: number | null | undefined) => {
@@ -37,7 +38,11 @@ interface OrderCardProps {
 export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
   const [loading, setLoading] = useState(false);
   // Скачивание моделей: индикаторы по offer_id (одноразовый токен + скачивание)
-  const [modelLoading, setModelLoading] = useState<Record<string, boolean>>({});
+  const {
+    states: modelStates,
+    download: downloadModel,
+    isBusy: isModelBusy,
+  } = useModelDownload();
 
   // оптимистичный флаг «уже скачали в этой сессии»
   const [justDownloaded, setJustDownloaded] = useState(false);
@@ -108,31 +113,8 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
   };
 
   // Скачивание 3D-модели товара: токен -> zip (прямых ссылок на S3 нет)
-  const handleDownloadModel = async (offerId: string, fileName: string) => {
-    setModelLoading((prev) => ({ ...prev, [offerId]: true }));
-    try {
-      const grant = await ordersApi.requestModelToken(offerId);
-      const blob = await ordersApi.downloadModelByToken(grant.token);
-
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = grant.fileName || fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-
-      toast.success(`Модель ${grant.fileName || fileName} скачана`);
-    } catch (err: any) {
-      toast.error(
-        err?.response?.data?.error ||
-          err.message ||
-          "Не удалось скачать модель",
-      );
-    } finally {
-      setModelLoading((prev) => ({ ...prev, [offerId]: false }));
-    }
+  const handleDownloadModel = (offerId: string, fileName: string) => {
+    void downloadModel(offerId, fileName);
   };
 
   // Дополнительный блок под товаром в общем списке состава: кнопка «Скачать
@@ -175,32 +157,52 @@ export const OrderCard = ({ order, onOrderUpdated }: OrderCardProps) => {
       const offerId = p.offer_id;
       const model = p.model;
       if (!offerId || !model) return null;
+
+      const st = modelStates[offerId];
+      const isBusy = isModelBusy(offerId);
+
+      const label =
+        st?.phase === "preparing"
+          ? "⏳ Готовим модель…"
+          : st?.phase === "downloading"
+            ? st.totalBytes > 0
+              ? `⏳ Скачивание ${Math.round(st.progress * 100)}%`
+              : "⏳ Скачивание…"
+            : st?.phase === "done"
+              ? "✅ Скачано"
+              : "⬇️ Скачать модель";
+
       return (
         <div className="flex flex-col items-center mt-5 w-full min-w-0 px-2 gap-1">
           <Button
             variant="outline"
             size="sm"
-            disabled={!!modelLoading[offerId]}
+            disabled={isBusy}
             onClick={() => handleDownloadModel(offerId, model.fileName)}
             title={`Скачать 3D-модель: ${model.fileName}${formatSize(model.fileSize)}`}
             className="
-        h-auto min-w-0 max-w-full
-        whitespace-normal
-        flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5
-        text-center leading-tight
-        py-1.5 px-3
-      "
+          h-auto min-w-0 max-w-full
+          whitespace-normal
+          flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5
+          text-center leading-tight
+          py-1.5 px-3
+        "
           >
-            <span className="shrink-0">
-              {modelLoading[offerId] ? "⏳ Скачивание…" : "⬇️ Скачать модель"}
-            </span>
-            <span className="text-muted-foreground break-all [overflow-wrap:anywhere] min-w-0">
-              ({model.fileName}
-              {formatSize(model.fileSize)})
-            </span>
+            <span className="shrink-0">{label}</span>
+            {!isBusy && st?.phase !== "done" && (
+              <span className="text-muted-foreground break-all [overflow-wrap:anywhere] min-w-0">
+                ({model.fileName}
+                {formatSize(model.fileSize)})
+              </span>
+            )}
           </Button>
 
-          {/* Модель взята у родительского артикула */}
+          {st?.phase === "error" && (
+            <p className="text-xs text-red-500 text-center break-all [overflow-wrap:anywhere] max-w-full">
+              {st.message}
+            </p>
+          )}
+
           {model.offerId !== offerId && (
             <p className="text-xs text-muted-foreground text-center break-all [overflow-wrap:anywhere] min-w-0 max-w-full">
               🧩 Модель родительского артикула{" "}

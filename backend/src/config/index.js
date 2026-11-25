@@ -66,6 +66,16 @@ module.exports = {
     maxUploadMb: int('MODELS_MAX_UPLOAD_MB', 1024),
     tokenTtlMin: int('MODELS_TOKEN_TTL_MIN', 15),
     cacheTtlMin: int('MODELS_CACHE_TTL_MIN', 60),
+
+    // --- Двухфазная выдача (prepare -> task -> download) ---
+    // Лимит локального кэша zip. При превышении — LRU-эвикция старейших
+    // по mtime (в cleanCache). 0 — без лимита (не рекомендуем: 1GB модель
+    // × 100 артикулов = 100 GB).
+    cacheMaxGb: int('MODELS_CACHE_MAX_GB', 20),
+    // Сколько хранить завершённые задачи в памяти (cleanup в scheduler).
+    taskTtlMin: int('MODELS_TASK_TTL_MIN', 30),
+    // Максимум одновременных подготовок на одного пользователя.
+    taskMaxPerUser: int('MODELS_TASK_MAX_PER_USER', 3),
   },
 
   // --- Бэкапы БД (локально + S3) ---

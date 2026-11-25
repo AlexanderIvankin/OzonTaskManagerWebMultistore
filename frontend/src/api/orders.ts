@@ -138,24 +138,6 @@ export interface FinishOrderResponse {
   label: "available" | "not available";
 }
 
-export interface ModelDownloadGrant {
-  token: string;
-  expiresAt: number;
-  /** Артикул, по которому реально лежит zip (для товара -NR/-NL это родитель) */
-  offerId: string;
-  /** Артикул, запрошенный клиентом (может отличаться от offerId) */
-  requestedOfferId?: string;
-  sourceOfferId?: string;
-  fileName: string;
-  fileSize: number | null;
-  /**
-   * Версия модели — ETag объекта в S3. При скачивании бэкенд сверяет её с
-   * хранилищем: если архив обновили напрямую в S3, сотруднику уходит
-   * оповещение «Модель обновлена», а скачивается уже актуальная версия.
-   */
-  version?: string | null;
-}
-
 export const ordersApi = {
   // Получить активные заказы текущего пользователя
   getActiveOrders: () =>
@@ -197,24 +179,6 @@ export const ordersApi = {
     api
       .get(`/user/labels/${encodeURIComponent(orderId)}/sent`, {
         responseType: "blob",
-      })
-      .then((res) => res.data),
-
-  // === 3D-модели (zip, без прямых ссылок на S3) ===
-  // Шаг 1: запросить одноразовый токен скачивания (TTL ~15 минут)
-  requestModelToken: (offerId: string) =>
-    api
-      .post<ModelDownloadGrant>(
-        `/models/request/${encodeURIComponent(offerId)}`,
-      )
-      .then((res) => res.data),
-
-  // Шаг 2: скачать zip по токену (токен гасится при первом обращении)
-  downloadModelByToken: (token: string) =>
-    api
-      .get(`/models/download/${encodeURIComponent(token)}`, {
-        responseType: "blob",
-        timeout: 0, // 500 МБ на медленном интернете — без таймаута
       })
       .then((res) => res.data),
 };

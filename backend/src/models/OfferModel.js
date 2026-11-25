@@ -179,7 +179,10 @@ class OfferModel {
     const db = getModelsDB();
     const row = await db.get('SELECT * FROM model_download_tokens WHERE token = ?', token);
     if (!row) return null;
-    if (row.used_at) return null;
+    // Двухфазное скачивание: токен «живёт» только по TTL (15 мин).
+    // Флаг used_at не блокирует повторные запросы — это нужно для Range-
+    // докачки (обрыв на 400 МБ = повторный GET с тем же токеном).
+    // used_at остаётся как диагностический маркер «скачивание начато».
     if (row.expires_at <= Date.now()) return null;
     return row;
   }
@@ -194,8 +197,10 @@ class OfferModel {
 
   static async pruneExpiredTokens() {
     const db = getModelsDB();
+    // Удаляем только по expires_at. used_at больше не влияет: токен
+    // reusable в пределах TTL (см. getLiveToken и ModelService.consumeToken).
     const res = await db.run(
-      'DELETE FROM model_download_tokens WHERE expires_at < ? OR used_at IS NOT NULL',
+      'DELETE FROM model_download_tokens WHERE expires_at < ?',
       Date.now()
     );
     return res.changes || 0;

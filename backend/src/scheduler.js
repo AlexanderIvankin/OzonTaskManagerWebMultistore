@@ -9,6 +9,7 @@ const EarningsService = require('./services/EarningsService');
 const BackupService = require('./services/BackupService');
 const StorageService = require('./services/StorageService');
 const ModelService = require('./services/ModelService');
+const ModelDownloadTaskService = require('./services/ModelDownloadTaskService');
 const OfferModel = require('./models/OfferModel');
 const Notification = require('./models/Notification');
 const NotificationService = require('./services/NotificationService');
@@ -1105,9 +1106,13 @@ function startModelsMaintenanceChecker() {
     try {
       const removed = StorageService.cleanCache();
       const pruned = await OfferModel.pruneExpiredTokens();
-      if (removed || pruned) {
+      const tasksCleanup = ModelDownloadTaskService.cleanup();
+      
+      if (removed || pruned || tasksCleanup.removed || tasksCleanup.failed) {
         console.log(
-          `[SCHEDULER] Обслуживание моделей: удалено ${removed} файл(ов) кэша, ${pruned} токен(ов)`
+          `[SCHEDULER] Обслуживание моделей: удалено ${removed} файл(ов) кэша, ` +
+          `${pruned} токен(ов), задач: -${tasksCleanup.removed} ` +
+          `(timeout: ${tasksCleanup.failed})`
         );
       }
       try {

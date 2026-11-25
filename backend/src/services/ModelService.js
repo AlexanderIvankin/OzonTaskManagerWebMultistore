@@ -1,5 +1,6 @@
 const OfferModel = require('../models/OfferModel');
 const StorageService = require('./StorageService');
+const ModelDownloadTaskService = require('./ModelDownloadTaskService');
 const NotificationService = require('./NotificationService');
 const OzonService = require('./OzonService');
 const { getStoreDB, getUsersDB } = require('../config/database');
@@ -726,15 +727,157 @@ class ModelService {
     };
   }
 
+  /**
+   * Проверка токена скачивания.
+   *
+   * markTokenUsed НЕ вызывается: токен reusable до expires_at (15 мин).
+   * Это нужно для Range-докачки — обрыв на 400 МБ = повторный GET с тем же
+   * токеном. used_at остаётся NULL у новых токенов (диагностический маркер
+   * не ведётся сознательно).
+   */
   static async consumeToken(token) {
     const row = await OfferModel.getLiveToken(token);
     if (!row) {
-      const err = new Error('Токен недействителен, истёк или уже использован');
+      const err = new Error('Токен недействителен или истёк');
       err.status = 403;
       throw err;
     }
-    await OfferModel.markTokenUsed(token);
     return { offerId: row.offer_id, userId: row.user_id };
+  }
+
+  /**
+ * ФАЗА 1 двухфазного скачивания: подготовка модели.
+ *
+ * Возвращает:
+ *  • ready:true + token — файл уже в кэше, можно скачивать сразу;
+ *  • ready:false + taskId — запущена фоновая задача S3→кэш;
+ *                            фронт опрашивает GET /api/models/tasks/:id.
+ *
+ * Побочные эффекты:
+ *  • Сверяет ETag с S3 (reconcileFromStorage): если файл обновлён в S3,
+ *    инвалидирует локальный кэш → попадает в ветку «ready:false».
+ *  • Уведомляет персонал, если модель взята у родительского артикула
+ *    (как в старом requestToken).
+ *
+ * @param {string} rawOfferId
+ * @param {object} user — req.user (id, role, name, ...)
+ * @param {{storeId?:string|null}} [opts]
+ */
+  static async prepareDownload(rawOfferId, user, { storeId = null } = {}) {
+    const offerId = normalizeOfferId(rawOfferId);
+    if (!offerId) {
+      const err = new Error('Некорректный артикул');
+      err.status = 400;
+      throw err;
+    }
+
+    const resolved = await this.resolveModel(offerId);
+    if (!resolved) {
+      const err = new Error(`Модель для артикула ${offerId} не найдена`);
+      err.status = 404;
+      throw err;
+    }
+
+    const access = await this.checkAccess(offerId, user, { storeId });
+    if (!access.allowed) {
+      const err = new Error('Модель не выдана вам — запросите у модератора');
+      err.status = 403;
+      throw err;
+    }
+
+    const sourceOfferId = String(resolved.matchedOfferId);
+    const fileName =
+      resolved.model.file_name || StorageService.fileNameFor(sourceOfferId);
+    const initialFileSize = resolved.model.file_size || null;
+
+    // Parent-usage (только для не-staff при parent-matched артикуле)
+    const isStaff = STAFF_ROLES.includes(user.role);
+    if (!isStaff && sourceOfferId !== String(offerId)) {
+      await this.notifyParentUsage(
+        {
+          context: 'download',
+          orderId: null,
+          userId: user.id,
+          userName: user.name || null,
+          storeId,
+        },
+        [{
+          offerId: String(offerId),
+          productName: null,
+          parentOfferId: sourceOfferId,
+          fileName,
+        }]
+      );
+    }
+
+    // Сверка ETag с S3: если изменился — invalidateCache уже вызван внутри,
+    // локальный файл удалён → getCachedInfo ниже вернёт null → запустим fetch.
+    try {
+      await this.reconcileFromStorage(sourceOfferId, { storeId });
+    } catch (err) {
+      // S3-ошибка не должна блокировать попытку: попробуем с текущим кэшем.
+      console.warn(
+        `[MODELS] prepareDownload: reconcile не удался (${sourceOfferId}):`,
+        err.message
+      );
+    }
+
+    // Кэш свежий — сразу выдаём токен (фаза 2 будет моментальной)
+    const cached = StorageService.getCachedInfo(sourceOfferId);
+    if (cached) {
+      const { token, expiresAt } = await OfferModel.createToken(
+        sourceOfferId,
+        user.id,
+        TOKEN_TTL_MS
+      );
+      return {
+        ready: true,
+        token,
+        expiresAt,
+        offerId: sourceOfferId,
+        requestedOfferId: String(offerId),
+        sourceOfferId,
+        fileName,
+        fileSize: cached.size || initialFileSize,
+        version: resolved.model.s3_etag || null,
+      };
+    }
+
+    // Кэша нет — запускаем/подцепляемся к фоновой задаче
+    const taskId = await ModelDownloadTaskService.start(
+      sourceOfferId,
+      fileName,
+      initialFileSize,
+      user,
+      { storeId }
+    );
+    return {
+      ready: false,
+      taskId,
+      offerId: sourceOfferId,
+      requestedOfferId: String(offerId),
+      sourceOfferId,
+      fileName,
+      fileSize: initialFileSize,
+    };
+  }
+
+  /**
+   * ФАЗА 2 (download): данные для отдачи файла из ЛОКАЛЬНОГО кэша.
+   * Никаких S3-запросов. null — файла нет (вызывайте prepare).
+   *
+   * @returns {{ path: string, size: number, fileName: string, version: string|null } | null}
+   */
+  static async getCachedDownloadInfo(offerId) {
+    const cached = StorageService.getRawCachedInfo(offerId);
+    if (!cached) return null;
+    const record = await OfferModel.get(offerId);
+    return {
+      path: cached.path,
+      size: cached.size,
+      fileName: StorageService.fileNameFor(offerId),
+      version: (record && record.s3_etag) || null,
+    };
   }
 
   /**

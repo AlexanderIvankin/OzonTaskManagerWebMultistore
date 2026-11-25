@@ -3,8 +3,6 @@ import { useSelector } from "react-redux";
 import { RootState } from "../../store";
 import {
   adminApi,
-  getBlobErrorMessage,
-  getDownloadFileName,
   OfferModelRow,
 } from "../../api/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { useModelDownload } from "../../hooks/useModelDownload";
 
 // Размер zip в человекочитаемом виде
 const formatSize = (bytes: number | null | undefined) => {
@@ -62,7 +61,11 @@ export const Models = () => {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [downloadingOffer, setDownloadingOffer] = useState<string | null>(null);
+  const {
+    states: modelStates,
+    download: downloadModel,
+    isBusy: isModelBusy,
+  } = useModelDownload();
   const [file, setFile] = useState<File | null>(null);
   const [offerId, setOfferId] = useState("");
 
@@ -162,22 +165,8 @@ export const Models = () => {
     }
   };
 
-  const handleDownload = async (offerId: string) => {
-    setDownloadingOffer(offerId);
-    try {
-      const res = await adminApi.downloadModel(offerId);
-      const fileName = getDownloadFileName(res, `${offerId}.zip`);
-      const url = window.URL.createObjectURL(res.data);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      a.click();
-      window.URL.revokeObjectURL(url);
-    } catch (err: any) {
-      toast.error(await getBlobErrorMessage(err, "Не удалось скачать модель"));
-    } finally {
-      setDownloadingOffer(null);
-    }
+  const handleDownload = (offerId: string) => {
+    void downloadModel(offerId, `${offerId}.zip`);
   };
 
   const handleDelete = async (offerId: string) => {
@@ -478,11 +467,21 @@ export const Models = () => {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={downloadingOffer === m.offer_id}
+                          disabled={isModelBusy(m.offer_id)}
                           onClick={() => handleDownload(m.offer_id)}
                           title="Скачать zip себе"
                         >
-                          {downloadingOffer === m.offer_id ? "⏳" : "⬇️"}
+                          {(() => {
+                            const st = modelStates[m.offer_id];
+                            if (st?.phase === "preparing") return "⏳ Готовим…";
+                            if (st?.phase === "downloading") {
+                              return st.totalBytes > 0
+                                ? `⏳ ${Math.round(st.progress * 100)}%`
+                                : "⏳";
+                            }
+                            if (st?.phase === "done") return "✅";
+                            return "⬇️";
+                          })()}
                         </Button>
                         <Button
                           variant="destructive"

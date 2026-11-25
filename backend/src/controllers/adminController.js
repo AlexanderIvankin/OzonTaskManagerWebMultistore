@@ -1664,34 +1664,6 @@ exports.deleteModel = async (req, res, next) => {
   }
 };
 
-exports.downloadModel = async (req, res, next) => {
-  try {
-    if (stores.getStore(req.storeId).features.disableModels) {
-      return res.status(403).json({ error: 'Работа с моделями отключена для этого магазина' });
-    }
-    const { offerId } = req.params;
-    const normalized = String(offerId).trim().replace(/\.zip$/i, '');
-    const info = await ModelService.getDownloadInfo(normalized, { storeId: req.storeId });
-    if (!fs.existsSync(info.path)) {
-      return res.status(404).json({ error: 'Файл модели не найден в хранилище' });
-    }
-    disableCache(res);
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${info.fileName}"`);
-    if (info.size) res.setHeader('Content-Length', String(info.size));
-    if (info.version) res.setHeader('X-Model-Version', String(info.version));
-    const stream = fs.createReadStream(info.path);
-    stream.on('error', () => { if (!res.headersSent) res.status(500).end(); else res.end(); });
-    stream.pipe(res);
-  } catch (err) {
-    console.error('[downloadModel] Ошибка:', err);
-    if (err.message && err.message.includes('ENOENT')) {
-      return res.status(404).json({ error: 'Модель не найдена' });
-    }
-    next(err);
-  }
-};
-
 // ============================================================================
 // --- ВОЗВРАТЫ: ручная синхронизация и диагностика (шаг 1) ---
 // ============================================================================

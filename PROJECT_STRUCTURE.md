@@ -1,9 +1,9 @@
 # Project Structure
 
-_Auto-generated: 2026-11-17 21:11:12 UTC_
+_Auto-generated: 2026-11-25 17:46:19 UTC_
 
 **Root:** `OzonTaskManagerWebMultistore`  
-**Files shown:** 222  
+**Files shown:** 226  
 **Directories shown:** 43
 
 ## Tree
@@ -80,6 +80,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── EmailService.js
 │   │   │   ├── LozonResolver.js
 │   │   │   ├── MaterialsService.js
+│   │   │   ├── ModelDownloadTaskService.js
 │   │   │   ├── ModelService.js
 │   │   │   ├── NotificationService.js
 │   │   │   ├── OrderService.js
@@ -139,6 +140,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── admin.ts
 │   │   │   ├── chat.ts
 │   │   │   ├── index.ts
+│   │   │   ├── models.ts
 │   │   │   ├── notifications.ts
 │   │   │   ├── orders.ts
 │   │   │   ├── returns.ts
@@ -177,6 +179,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   ├── useChatPanel.ts
 │   │   │   ├── useChatSocket.ts
 │   │   │   ├── useCrossTabAuthGuard.ts
+│   │   │   ├── useModelDownload.ts
 │   │   │   └── usePushSubscription.ts
 │   │   ├── lib/
 │   │   │   ├── notify.ts
@@ -196,6 +199,7 @@ OzonTaskManagerWebMultistore/
 │   │   │   │   ├── OrdersManagement.tsx
 │   │   │   │   ├── ReturnsManagement.tsx
 │   │   │   │   ├── StaffStats.tsx
+│   │   │   │   ├── StoredReturnsManagement.tsx
 │   │   │   │   ├── Users.tsx
 │   │   │   │   └── Warehouses.tsx
 │   │   │   ├── Login/

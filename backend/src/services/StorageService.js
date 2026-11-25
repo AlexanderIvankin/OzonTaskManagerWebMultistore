@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { pipeline } = require('stream/promises');
 const { s3, BUCKET, MODELS_PREFIX } = require('../config/s3');
+const config = require('../config');
 const {
   PutObjectCommand,
   GetObjectCommand,
@@ -11,8 +12,12 @@ const {
 } = require('@aws-sdk/client-s3');
 
 const CACHE_DIR = path.join(__dirname, '../../models-cache');
-// TTL локального кэша zip (по умолчанию 1 час) — настраивается в .env
+// TTL локального кэша zip (по умолчанию 1 час)
 const CACHE_TTL = (parseInt(process.env.MODELS_CACHE_TTL_MIN, 10) || 60) * 60 * 1000;
+// Лимит дискового кэша (LRU при превышении); 0 — без лимита
+const CACHE_MAX_BYTES = (config.models.cacheMaxGb || 0) * 1024 * 1024 * 1024;
+// Сироты .tmp-* старше 5 минут — от упавших upload'ов, чистим
+const TMP_ORPHAN_TTL_MS = 5 * 60 * 1000;
 
 /**
  * ETag объекта S3 приходит в кавычках ('"abc123"'). Для сравнения версий
@@ -24,12 +29,15 @@ function normalizeEtag(etag) {
 }
 
 class StorageService {
+  // offerId -> Promise<string> (путь к кэшу). Mutex: параллельные prepare
+  // на один артикул используют ОДИН S3-GetObject, а не N.
+  static _inflight = new Map();
+
   static ensureCacheDir() {
     if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
   }
 
   static keyFor(offerId) {
-    // s3://bucket/[MODELS_S3_PREFIX]{offer_id}.zip — по умолчанию файлы в корне бакета
     return `${MODELS_PREFIX}${offerId}.zip`;
   }
 
@@ -37,14 +45,19 @@ class StorageService {
     return path.join(CACHE_DIR, `${offerId}.zip`);
   }
 
-  /**
-   * Имя файла, отдаваемое клиенту: ARD000001-N.zip
-   */
+  /** Абсолютный путь к файлу кэша (для диагностики / X-Accel-Redirect). */
+  static absolutePath(offerId) {
+    return this.cachePath(offerId);
+  }
+
   static fileNameFor(offerId) {
     return `${offerId}.zip`;
   }
 
-  // Залить zip в S3
+  // ------------------------------------------------------------------
+  // ЗАГРУЗКА / ИНВАЛИДАЦИЯ
+  // ------------------------------------------------------------------
+
   static async uploadZip(offerId, buffer, contentType = 'application/zip') {
     await s3.send(new PutObjectCommand({
       Bucket: BUCKET,
@@ -52,15 +65,9 @@ class StorageService {
       Body: buffer,
       ContentType: contentType,
     }));
-    // сбросить локальный кэш (файл обновлён — старый кэш недействителен)
     this.invalidateCache(offerId);
   }
 
-  /**
-   * Сбросить локальный кэш zip для артикула (файл в S3 изменился/удалён).
-   * Идемпотентно: нет файла — не ошибка.
-   * @returns {boolean} true — файл кэша был и удалён
-   */
   static invalidateCache(offerId) {
     const cp = this.cachePath(offerId);
     if (fs.existsSync(cp)) {
@@ -74,10 +81,13 @@ class StorageService {
     return false;
   }
 
+  // ------------------------------------------------------------------
+  // ИНФОРМАЦИЯ О КЭШЕ
+  // ------------------------------------------------------------------
+
   /**
-   * Состояние локального кэша zip (для админки: «модель сейчас в кэше сервера»).
+   * Для админки: «есть ли файл и не просрочен ли он».
    * @returns {{ cached: boolean, fresh: boolean, size: number|null, mtime: number|null }}
-   *   cached — файл присутствует; fresh — присутствует и не просрочен по TTL.
    */
   static cacheInfo(offerId) {
     const cp = this.cachePath(offerId);
@@ -97,8 +107,59 @@ class StorageService {
     }
   }
 
-  // Скачать zip: сначала кэш, потом S3, с прогревом кэша.
-  // Возвращает путь к файлу в локальном кэше.
+  /**
+   * ФАЗА 1 (prepare): файл есть И не просрочен.
+   * null — можно запускать фоновую задачу.
+   * @returns {{ path: string, size: number, mtime: number } | null}
+   */
+  static getCachedInfo(offerId) {
+    const cp = this.cachePath(offerId);
+    if (!fs.existsSync(cp)) return null;
+    try {
+      const st = fs.statSync(cp);
+      if (st.mtimeMs + CACHE_TTL <= Date.now()) return null; // TTL истёк
+      return { path: cp, size: st.size, mtime: st.mtimeMs };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * ФАЗА 2 (download): файл есть, БЕЗ проверки TTL.
+   * prepare уже валидировал свежесть; здесь важно только, что файл физически
+   * на месте (token TTL 15 мин << cache TTL 60 мин, поэтому расхождение
+   * невозможно в нормальном flow).
+   * @returns {{ path: string, size: number, mtime: number } | null}
+   */
+  static getRawCachedInfo(offerId) {
+    const cp = this.cachePath(offerId);
+    if (!fs.existsSync(cp)) return null;
+    try {
+      const st = fs.statSync(cp);
+      return { path: cp, size: st.size, mtime: st.mtimeMs };
+    } catch {
+      return null;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // ЗАГРУЗКА S3 -> КЭШ
+  // ------------------------------------------------------------------
+
+  /**
+   * Гарантирует наличие актуального файла в кэше (mutex).
+   * @returns {Promise<string>} путь к файлу
+   */
+  static async ensureCached(offerId) {
+    return this.fetchZipToCacheSafe(offerId);
+  }
+
+  /**
+   * Атомарная загрузка S3 -> кэш.
+   * Пишет в `.tmp-<pid>-<ts>-<rand>` и делает rename — обрыв процесса
+   * оставит сироту `.tmp-*`, но НЕ битый `{offerId}.zip`, который
+   * cacheInfo посчитал бы `fresh: true`.
+   */
   static async fetchZipToCache(offerId) {
     this.ensureCacheDir();
     const cp = this.cachePath(offerId);
@@ -106,27 +167,49 @@ class StorageService {
     if (fs.existsSync(cp)) {
       const st = fs.statSync(cp);
       if (st.mtimeMs + CACHE_TTL > Date.now()) return cp;
-      fs.unlinkSync(cp); // просрочен
+      try { fs.unlinkSync(cp); } catch { }
     }
 
-    const resp = await s3.send(new GetObjectCommand({
-      Bucket: BUCKET,
-      Key: this.keyFor(offerId),
-    }));
-
-    await pipeline(resp.Body, fs.createWriteStream(cp));
-    return cp;
+    const tmp = `${cp}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const resp = await s3.send(new GetObjectCommand({
+        Bucket: BUCKET,
+        Key: this.keyFor(offerId),
+      }));
+      await pipeline(resp.Body, fs.createWriteStream(tmp));
+      fs.renameSync(tmp, cp);
+      return cp;
+    } catch (err) {
+      try { fs.unlinkSync(tmp); } catch { }
+      throw err;
+    }
   }
 
   /**
-   * Гарантирует наличие zip в кэше и возвращает { path, size }.
-   * Используется перед отдачей файла клиенту (Content-Length + streaming).
+   * Mutex-обёртка над fetchZipToCache.
+   * Параллельные prepare на один offerId получат ОДИН S3-GetObject.
    */
+  static async fetchZipToCacheSafe(offerId) {
+    const key = String(offerId);
+    const existing = this._inflight.get(key);
+    if (existing) return existing;
+    const p = this.fetchZipToCache(offerId).finally(() => {
+      this._inflight.delete(key);
+    });
+    this._inflight.set(key, p);
+    return p;
+  }
+
+  /** @deprecated Используйте ensureCached + getCachedInfo. */
   static async getZipInfo(offerId) {
-    const cp = await this.fetchZipToCache(offerId);
+    const cp = await this.fetchZipToCacheSafe(offerId);
     const st = fs.statSync(cp);
     return { path: cp, size: st.size };
   }
+
+  // ------------------------------------------------------------------
+  // S3-ОПЕРАЦИИ
+  // ------------------------------------------------------------------
 
   static async exists(offerId) {
     try {
@@ -135,12 +218,6 @@ class StorageService {
     } catch { return false; }
   }
 
-  /**
-   * HeadObject: existence + метаданные без скачивания.
-   * @returns {Promise<{size: number|null, lastModified: number|null, etag: string|null}|null>}
-   *   null — объекта нет (404/NoSuchKey); прочие ошибки пробрасываются.
-   *   etag — версия объекта (для сверки «файл изменился?» без скачивания тела).
-   */
   static async statZip(offerId) {
     try {
       const st = await s3.send(new HeadObjectCommand({
@@ -159,12 +236,6 @@ class StorageService {
     }
   }
 
-  /**
-   * ListObjectsV2: все zip-архивы в бакете (с пагинацией по ContinuationToken).
-   * Возвращает и ключ, и offer_id (без MODELS_PREFIX и '.zip') — для
-   * периодической синхронизации S3 -> offer_models (ModelService.syncFromStorage).
-   * @returns {Promise<Array<{key: string, offerId: string, size: number|null, lastModified: number|null, etag: string|null}>>}
-   */
   static async listZipKeys() {
     const out = [];
     let token;
@@ -177,26 +248,18 @@ class StorageService {
           ContinuationToken: token,
         }));
       } catch (err) {
-        // Диагностика: что именно ответил S3
         console.error('[STORAGE] ListObjectsV2 failed', {
           name: err.name,
           message: err.message,
           code: err.Code || err.code,
           status: err.$metadata?.httpStatusCode,
-          requestId: err.$metadata?.requestId,
-          extendedRequestId: err.$metadata?.extendedRequestId,
-          cfId: err.$metadata?.cfId,
-          attempts: err.$metadata?.attempts,
-          totalRetryDelay: err.$metadata?.totalRetryDelay,
-          // body обычно уже съеден, но иногда успевает остаться:
-          body: err.$response?.body,
         });
         throw err;
       }
       for (const obj of resp.Contents || []) {
         const key = obj.Key;
         if (!key || !key.toLowerCase().endsWith('.zip')) continue;
-        const offerId = key.slice(MODELS_PREFIX.length, -4); // strip prefix + '.zip'
+        const offerId = key.slice(MODELS_PREFIX.length, -4);
         out.push({
           key,
           offerId,
@@ -214,18 +277,59 @@ class StorageService {
     await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: this.keyFor(offerId) }));
     this.invalidateCache(offerId);
   }
-  // Очистка просроченного кэша (для scheduler)
+
+  // ------------------------------------------------------------------
+  // ОЧИСТКА
+  // ------------------------------------------------------------------
+
+  /**
+   * Очистка кэша:
+   *  1) сироты `.tmp-*` старше 5 мин (упавшие upload'ы)
+   *  2) `.zip` старше CACHE_TTL
+   *  3) LRU-эвикция, если суммарный размер > MODELS_CACHE_MAX_GB
+   * @returns {number} сколько файлов удалено
+   */
   static cleanCache() {
     if (!fs.existsSync(CACHE_DIR)) return 0;
+    const now = Date.now();
     let removed = 0;
+    const zips = [];
+
     for (const f of fs.readdirSync(CACHE_DIR)) {
       const fp = path.join(CACHE_DIR, f);
-      const st = fs.statSync(fp);
-      if (st.mtimeMs + CACHE_TTL <= Date.now()) {
-        fs.unlinkSync(fp);
-        removed++;
+      let st;
+      try { st = fs.statSync(fp); } catch { continue; }
+
+      if (f.includes('.tmp-')) {
+        if (st.mtimeMs + TMP_ORPHAN_TTL_MS <= now) {
+          try { fs.unlinkSync(fp); removed++; } catch { }
+        }
+        continue;
+      }
+      if (!f.endsWith('.zip')) continue;
+
+      if (st.mtimeMs + CACHE_TTL <= now) {
+        try { fs.unlinkSync(fp); removed++; } catch { }
+        continue;
+      }
+      zips.push({ path: fp, size: st.size, mtime: st.mtimeMs });
+    }
+
+    if (CACHE_MAX_BYTES > 0) {
+      let totalSize = zips.reduce((s, z) => s + z.size, 0);
+      if (totalSize > CACHE_MAX_BYTES) {
+        zips.sort((a, b) => a.mtime - b.mtime); // oldest first
+        for (const z of zips) {
+          if (totalSize <= CACHE_MAX_BYTES) break;
+          try {
+            fs.unlinkSync(z.path);
+            totalSize -= z.size;
+            removed++;
+          } catch { }
+        }
       }
     }
+
     return removed;
   }
 }
