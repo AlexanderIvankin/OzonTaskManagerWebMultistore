@@ -399,7 +399,7 @@ export const AdminPanel = () => {
       <div className="grid gap-4 lg:grid-cols-2">
         {/* === /order_details <номер_заказа> === */}
         <Card>
-          <CardHeader>
+          <CardHeader className="text-center">
             <CardTitle>📄 Детали заказа</CardTitle>
             <CardDescription>
               Аналог /order_details: статус, склад, состав, получатель
@@ -516,7 +516,7 @@ export const AdminPanel = () => {
 
         {/* === 🚫 Чёрный список клиентов (глобальный, users.db) === */}
         <Card className="border-destructive/40">
-          <CardHeader>
+          <CardHeader className="text-center">
             <CardTitle>🚫 Чёрный список клиентов</CardTitle>
             <CardDescription>
               Клиенты, которые постоянно отменяют заказы. Список{" "}
@@ -533,7 +533,7 @@ export const AdminPanel = () => {
             {/* Форма добавления */}
             <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end">
               <div className="flex-1 space-y-1.5">
-                <Label htmlFor="bl-client-id">client_id</Label>
+                <Label className="justify-center" htmlFor="bl-client-id">client_id</Label>
                 <Input
                   id="bl-client-id"
                   placeholder="91703548"
@@ -544,7 +544,7 @@ export const AdminPanel = () => {
                 />
               </div>
               <div className="flex-[2] space-y-1.5">
-                <Label htmlFor="bl-reason">Причина (опционально)</Label>
+                <Label className="justify-center" htmlFor="bl-reason">Причина (опционально)</Label>
                 <Input
                   id="bl-reason"
                   placeholder="Постоянные отмены (5 из 7 за неделю)"
@@ -575,7 +575,7 @@ export const AdminPanel = () => {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="text-center">client_id</TableHead>
+                    <TableHead className="text-center justifu-center">client_id</TableHead>
                     <TableHead className="text-center">Причина</TableHead>
                     <TableHead className="text-center hidden md:table-cell">
                       Добавил
@@ -625,7 +625,7 @@ export const AdminPanel = () => {
 
         {/* === /admin_send_label <номер_заказа> [имя_сотрудника] === */}
         <Card>
-          <CardHeader>
+          <CardHeader className="text-center">
             <CardTitle>🏷️ Этикетка заказа</CardTitle>
             <CardDescription>
               Аналог /admin_send_label: скачать PDF себе или отправить
@@ -700,7 +700,7 @@ export const AdminPanel = () => {
 
         {/* === /admin_fill_stats + /clear_product_stats === */}
         <Card>
-          <CardHeader>
+          <CardHeader className="text-center">
             <CardTitle>📝 Статистика товара</CardTitle>
             <CardDescription>
               Аналог /admin_fill_stats и /clear_product_stats: заполнить/
@@ -755,7 +755,7 @@ export const AdminPanel = () => {
 
         {/* === /clear_assignments — КРАСНАЯ, с подтверждением === */}
         <Card className="border-destructive/50">
-          <CardHeader>
+          <CardHeader className="text-center">
             <CardTitle className="text-destructive">
               ⚠️ Сброс всех назначений
             </CardTitle>
@@ -781,15 +781,15 @@ export const AdminPanel = () => {
 
         {/* === /pause + /resume === */}
         <Card>
-          <CardHeader>
+          <CardHeader className="text-center">
             <CardTitle>⏯️ Авто-проверка очереди заказов</CardTitle>
             <CardDescription>
               Аналог /pause и /resume: приостановить или возобновить
               автоматическую проверку новых заказов
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col flex-wrap space-y-4 justify-center xl:justify-start">
-            <p className="flex flex-wrap items-center justify-center gap-2 text-sm xl:justify-start">
+          <CardContent className="flex flex-col flex-wrap space-y-4 justify-center">
+            <p className="flex flex-wrap items-center justify-center gap-2 text-sm">
               Статус:{" "}
               {schedulerPaused === null ? (
                 <Badge variant="outline">неизвестен</Badge>
@@ -799,7 +799,7 @@ export const AdminPanel = () => {
                 <Badge>▶️ Работает</Badge>
               )}
             </p>
-            <div className="flex flex-col items-center gap-2 sm:flex-row sm:flex-wrap sm:items-center justify-center xl:justify-start">
+            <div className="flex flex-col items-center gap-2 sm:flex-row sm:flex-wrap sm:items-center justify-center">
               <Button
                 variant="outline"
                 onClick={handlePause}
