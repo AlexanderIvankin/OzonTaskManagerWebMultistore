@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { User, UserStore, Assignment, UserStats, Earnings, Warehouse, ProductStat } = require('../models');
+const { User, UserStore, Assignment, UserStats, Earnings, Warehouse, ProductStat, ClientBlacklist } = require('../models');
 const SyncService = require('../services/SyncService');
 const OzonService = require('../services/OzonService');
 const OrderService = require('../services/OrderService');
@@ -29,6 +29,7 @@ const {
   formatPhonePretty,
   toSqliteLiteral,
   disableCache,
+  getClientIdFromPostingNumber,
 } = require('../utils');
 
 // archiver v8 — чистый ESM-пакет, требует динамического import() в CommonJS.
@@ -675,12 +676,32 @@ exports.getAwaitingOrders = async (req, res, next) => {
       console.error(`[getAwaitingOrders][store ${storeId}] storedMatches:`, storedErr.message);
     }
 
+    // Blacklist клиентов (global, users.db) — batch-обогащение
+    let blacklistMap = new Map();
+    try {
+      const clientIds = ordersWithImages
+        .map((o) => getClientIdFromPostingNumber(o.posting_number))
+        .filter(Boolean);
+      blacklistMap = await ClientBlacklist.getBatch(clientIds);
+    } catch (blErr) {
+      console.error(`[getAwaitingOrders][store ${storeId}] blacklist:`, blErr.message);
+    }
+
     res.json(
-      ordersWithImages.map((o) => ({
-        ...o,
-        storedMatches: storedMatchesByOrder.get(o.posting_number) || [],
-      }))
+      ordersWithImages.map((o) => {
+        const clientId = getClientIdFromPostingNumber(o.posting_number);
+        const bl = clientId ? blacklistMap.get(clientId) : null;
+        return {
+          ...o,
+          clientId,
+          clientBlacklisted: !!bl,
+          clientBlacklistReason: bl?.reason || null,
+          clientBlacklistAddedAt: bl?.added_at || null,
+          storedMatches: storedMatchesByOrder.get(o.posting_number) || [],
+        };
+      })
     );
+
   } catch (err) {
     next(err);
   }
@@ -820,7 +841,30 @@ exports.getActiveOrdersAll = async (req, res, next) => {
       for (const r of result) r.storedMatches = [];
     }
 
+    // Blacklist клиентов (global, users.db) — batch-обогащение
+    try {
+      const clientIds = result
+        .map((r) => getClientIdFromPostingNumber(r.orderId))
+        .filter(Boolean);
+      const blMap = await ClientBlacklist.getBatch(clientIds);
+      for (const r of result) {
+        const cid = getClientIdFromPostingNumber(r.orderId);
+        const bl = cid ? blMap.get(cid) : null;
+        r.clientId = cid;
+        r.clientBlacklisted = !!bl;
+        r.clientBlacklistReason = bl?.reason || null;
+      }
+    } catch (blErr) {
+      console.error(`[getActiveOrdersAll][store ${storeId}] blacklist:`, blErr.message);
+      for (const r of result) {
+        r.clientId = getClientIdFromPostingNumber(r.orderId);
+        r.clientBlacklisted = false;
+        r.clientBlacklistReason = null;
+      }
+    }
+
     res.json(result);
+    
   } catch (err) {
     console.error(`[getActiveOrdersAll][store ${req.storeId}] Ошибка:`, err);
     next(err);
@@ -910,6 +954,59 @@ exports.exportProductStats = async (req, res, next) => {
     if (err.message && err.message.includes('Нет данных')) {
       return res.status(404).json({ error: err.message });
     }
+    next(err);
+  }
+};
+
+// ============================================================================
+// --- ЧЁРНЫЙ СПИСОК КЛИЕНТОВ (users.db, глобальный) ---
+// ============================================================================
+
+exports.listClientBlacklist = async (req, res, next) => {
+  try {
+    const items = await ClientBlacklist.list();
+    res.json({ items });
+  } catch (err) {
+    console.error('[listClientBlacklist] Ошибка:', err);
+    next(err);
+  }
+};
+
+exports.addToClientBlacklist = async (req, res, next) => {
+  try {
+    const { clientId, reason } = req.body || {};
+    if (!clientId || !String(clientId).trim()) {
+      return res.status(400).json({ error: 'client_id обязателен' });
+    }
+    const item = await ClientBlacklist.add(clientId, {
+      reason: reason || null,
+      addedBy: req.user?.id || null,
+    });
+    console.log(
+      `[ADMIN][store ${req.storeId}] ${req.user?.name || req.user?.id} ` +
+      `добавил в client_blacklist client_id=${item.client_id}`
+    );
+    res.json({ item });
+  } catch (err) {
+    console.error('[addToClientBlacklist] Ошибка:', err);
+    next(err);
+  }
+};
+
+exports.removeFromClientBlacklist = async (req, res, next) => {
+  try {
+    const { clientId } = req.params;
+    const ok = await ClientBlacklist.remove(clientId);
+    if (!ok) {
+      return res.status(404).json({ error: 'client_id не найден в blacklist' });
+    }
+    console.log(
+      `[ADMIN][store ${req.storeId}] ${req.user?.name || req.user?.id} ` +
+      `удалил из client_blacklist client_id=${clientId}`
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[removeFromClientBlacklist] Ошибка:', err);
     next(err);
   }
 };

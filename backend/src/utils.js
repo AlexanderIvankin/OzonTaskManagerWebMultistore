@@ -42,6 +42,22 @@ function normalizeRootDomain(value) {
 }
 
 /**
+ * Ozon posting_number: "{client_id}-{posting_suffix}-{attempt}".
+ * Пример: "91703548-0052-1" → "91703548".
+ * Если дефиса нет (edge case) — возвращаем всю строку.
+ * @param {string|number|null} postingNumber
+ * @returns {string|null}
+ */
+function getClientIdFromPostingNumber(postingNumber) {
+  if (postingNumber === null || postingNumber === undefined) return null;
+  const str = String(postingNumber).trim();
+  if (!str) return null;
+  const idx = str.indexOf('-');
+  if (idx > 0) return str.slice(0, idx);
+  return str;
+}
+
+/**
  * Ozon для массива posting_numbers отдаёт ZIP с отдельными PDF, для одного —
  * готовый PDF. Функция склеивает ZIP в единый PDF через mergePdfs.
  * - Если пришёл PDF — вернуть как есть.
@@ -401,6 +417,8 @@ function disableCache(res) {
 module.exports = {
   // Domain Parser
   normalizeRootDomain,
+  // Ozon helpers
+  getClientIdFromPostingNumber,
   // PDF
   mergeLabelBuffersIfNeeded,
   mergePdfs,

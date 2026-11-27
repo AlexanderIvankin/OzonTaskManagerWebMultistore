@@ -110,6 +110,15 @@ export interface AdjustmentRow {
   adjusted_at: number;
 }
 
+/** Строка чёрного списка клиентов (глобальный, users.db). */
+export interface ClientBlacklistItem {
+  client_id: string;
+  reason: string | null;
+  added_by: number | null;
+  added_by_name: string | null;
+  added_at: number;
+}
+
 export interface Warehouse {
   warehouse_id: string;
   name: string;
@@ -126,6 +135,11 @@ export interface AdminActiveOrder {
   warehouseId?: string | null;
   statsStatus: "filled" | "missing";
   missingStats: string[];
+  // Blacklist клиента: clientId парсится из posting_number на бэке
+  // ("91703548-0052-1" → "91703548"). true → показать красный баннер.
+  clientId?: string | null;
+  clientBlacklisted?: boolean;
+  clientBlacklistReason?: string | null;
   products: Array<{
     name: string;
     quantity: number;
@@ -409,6 +423,29 @@ export const adminApi = {
   // === Экспорт статистики товаров (Excel) ===
   exportProductStats: (): Promise<AxiosResponse<Blob>> =>
     api.get("/admin/export/product-stats", { responseType: "blob" }),
+
+  // === Чёрный список клиентов (глобальный, users.db) ===
+  // client_id = первая часть posting_number ("91703548-0052-1" → "91703548").
+  // Вредитель один — магазинов много, поэтому список общий для всей системы.
+  getClientBlacklist: () =>
+    api
+      .get<{ items: ClientBlacklistItem[] }>("/admin/client-blacklist")
+      .then((res) => res.data),
+
+  addToClientBlacklist: (clientId: string, reason?: string) =>
+    api
+      .post<{ item: ClientBlacklistItem }>("/admin/client-blacklist", {
+        clientId,
+        reason,
+      })
+      .then((res) => res.data),
+
+  removeFromClientBlacklist: (clientId: string) =>
+    api
+      .delete<{
+        ok: true;
+      }>(`/admin/client-blacklist/${encodeURIComponent(clientId)}`)
+      .then((res) => res.data),
 
   // === Скачивание файлов БД (только персонал) ===
   // MULTISTORE: у каждого магазина своя store-N.db, плюс три глобальные БД

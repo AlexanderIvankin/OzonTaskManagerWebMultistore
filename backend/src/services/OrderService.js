@@ -1256,6 +1256,29 @@ class OrderService {
       for (const r of result) r.storedMatches = [];
     }
 
+    // Blacklist клиентов (глобальный, users.db) — для employee view
+    try {
+      const ClientBlacklist = require('../models/ClientBlacklist');
+      const { getClientIdFromPostingNumber } = require('../utils');
+      const clientIds = result
+        .map((r) => getClientIdFromPostingNumber(r.orderId))
+        .filter(Boolean);
+      const blMap = await ClientBlacklist.getBatch(clientIds);
+      for (const r of result) {
+        const cid = getClientIdFromPostingNumber(r.orderId);
+        const bl = cid ? blMap.get(cid) : null;
+        r.clientId = cid;
+        r.clientBlacklisted = !!bl;
+        r.clientBlacklistReason = bl?.reason || null;
+      }
+    } catch (blErr) {
+      console.error(`[buildActiveOrders][store ${storeId}] blacklist:`, blErr.message);
+      for (const r of result) {
+        r.clientBlacklisted = false;
+        r.clientBlacklistReason = null;
+      }
+    }
+
     return result;
   }
 
@@ -1341,6 +1364,29 @@ class OrderService {
     } catch (consumErr) {
       console.error(`[buildCompletedOrdersAwaitingDeliver][store ${storeId}] consumptions:`, consumErr.message);
       for (const r of result) r.consumedStoredReturns = [];
+    }
+
+    // Blacklist клиентов (глобальный, users.db) — для employee view
+    try {
+      const ClientBlacklist = require('../models/ClientBlacklist');
+      const { getClientIdFromPostingNumber } = require('../utils');
+      const clientIds = result
+        .map((r) => getClientIdFromPostingNumber(r.orderId))
+        .filter(Boolean);
+      const blMap = await ClientBlacklist.getBatch(clientIds);
+      for (const r of result) {
+        const cid = getClientIdFromPostingNumber(r.orderId);
+        const bl = cid ? blMap.get(cid) : null;
+        r.clientId = cid;
+        r.clientBlacklisted = !!bl;
+        r.clientBlacklistReason = bl?.reason || null;
+      }
+    } catch (blErr) {
+      console.error(`[buildCompletedOrdersAwaitingDeliver][store ${storeId}] blacklist:`, blErr.message);
+      for (const r of result) {
+        r.clientBlacklisted = false;
+        r.clientBlacklistReason = null;
+      }
     }
 
     return result;

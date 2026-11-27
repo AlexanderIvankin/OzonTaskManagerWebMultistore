@@ -245,6 +245,26 @@ async function createUsersSchema(db) {
     'CREATE INDEX IF NOT EXISTS idx_user_materials_user ON user_materials(user_id)'
   );
 
+  // ==========================================================================
+  //  ЧЁРНЫЙ СПИСОК КЛИЕНТОВ (глобальный — вредитель один, магазинов много)
+  // ==========================================================================
+  // client_id вытаскивается из posting_number: "91703548-0052-1" → "91703548".
+  // Админ видит баннер «КЛИЕНТ В ЧЁРНОМ СПИСКЕ» в очереди заказов и в
+  // активных — чтобы не назначать заведомо убыточный заказ.
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS client_blacklist (
+      client_id TEXT PRIMARY KEY,
+      reason TEXT,
+      added_by INTEGER,
+      added_at INTEGER NOT NULL,
+      FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+  await db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_client_blacklist_added_at ' +
+    'ON client_blacklist(added_at DESC)'
+  );
+
   // Индексы
   await db.exec('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)');
   await db.exec('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');

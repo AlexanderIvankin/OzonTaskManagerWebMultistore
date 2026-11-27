@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { adminApi, User, getBlobErrorMessage } from "../../api/admin";
+import {
+  adminApi,
+  User,
+  ClientBlacklistItem,
+  getBlobErrorMessage,
+} from "../../api/admin";
 import {
   Card,
   CardContent,
@@ -7,6 +12,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -118,6 +131,16 @@ export const AdminPanel = () => {
   const [deleteStatsOpen, setDeleteStatsOpen] = useState(false);
   const [deletingStats, setDeletingStats] = useState(false);
 
+  // === Чёрный список клиентов (глобальный) ===
+  const [clientBlacklist, setClientBlacklist] = useState<ClientBlacklistItem[]>(
+    [],
+  );
+  const [blLoading, setBlLoading] = useState(false);
+  const [blNewId, setBlNewId] = useState("");
+  const [blNewReason, setBlNewReason] = useState("");
+  const [blAdding, setBlAdding] = useState(false);
+  const [blRemovingId, setBlRemovingId] = useState<string | null>(null);
+
   // === Сброс всех назначений (/clear_assignments) ===
   const [clearOpen, setClearOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -160,10 +183,23 @@ export const AdminPanel = () => {
     }
   };
 
+  const loadClientBlacklist = async () => {
+    setBlLoading(true);
+    try {
+      const data = await adminApi.getClientBlacklist();
+      setClientBlacklist(data.items || []);
+    } catch (err: any) {
+      toast.error(err.message || "Не удалось загрузить чёрный список");
+    } finally {
+      setBlLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadEmployees();
     loadWarehouseNames();
     loadSchedulerStatus();
+    loadClientBlacklist();
   }, []);
 
   // === /order_details <номер_заказа> ===
@@ -183,6 +219,53 @@ export const AdminPanel = () => {
       );
     } finally {
       setDetailsLoading(false);
+    }
+  };
+
+  // === /blacklist <client_id> ===
+
+  const handleAddBlacklist = async () => {
+    const clientId = blNewId.trim();
+    if (!clientId) {
+      toast.error("Укажите client_id");
+      return;
+    }
+    setBlAdding(true);
+    try {
+      await adminApi.addToClientBlacklist(
+        clientId,
+        blNewReason.trim() || undefined,
+      );
+      toast.success(`Клиент ${clientId} добавлен в чёрный список`);
+      setBlNewId("");
+      setBlNewReason("");
+      await loadClientBlacklist();
+    } catch (err: any) {
+      toast.error(
+        err.response?.data?.error ||
+          err.message ||
+          "Не удалось добавить в чёрный список",
+      );
+    } finally {
+      setBlAdding(false);
+    }
+  };
+
+  const handleRemoveBlacklist = async (clientId: string) => {
+    if (!confirm(`Удалить клиента ${clientId} из чёрного списка?`)) return;
+    setBlRemovingId(clientId);
+    try {
+      await adminApi.removeFromClientBlacklist(clientId);
+      toast.success(`Клиент ${clientId} удалён из чёрного списка`);
+      await loadClientBlacklist();
+    } catch (err: any) {
+      toast.error(
+        err.response?.data?.error ||
+          err.message ||
+          "Не удалось удалить из чёрного списка",
+      );
+    } finally {
+      setBlRemovingId(null);
     }
   };
 
@@ -427,6 +510,115 @@ export const AdminPanel = () => {
                   </p>
                 )}
               </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* === 🚫 Чёрный список клиентов (глобальный, users.db) === */}
+        <Card className="border-destructive/40">
+          <CardHeader>
+            <CardTitle>🚫 Чёрный список клиентов</CardTitle>
+            <CardDescription>
+              Клиенты, которые постоянно отменяют заказы. Список{" "}
+              <b>глобальный</b> — вредитель один, магазинов много. Заказы таких
+              клиентов подсвечиваются в очереди и могут скрываться фильтром.
+              <br />
+              <span className="text-xs">
+                <code>client_id</code> — первая часть номера заказа Ozon:{" "}
+                <code>91703548-0052-1</code> → <code>91703548</code>.
+              </span>
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Форма добавления */}
+            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end">
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="bl-client-id">client_id</Label>
+                <Input
+                  id="bl-client-id"
+                  placeholder="91703548"
+                  value={blNewId}
+                  onChange={(e) => setBlNewId(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddBlacklist()}
+                  className="font-mono"
+                />
+              </div>
+              <div className="flex-[2] space-y-1.5">
+                <Label htmlFor="bl-reason">Причина (опционально)</Label>
+                <Input
+                  id="bl-reason"
+                  placeholder="Постоянные отмены (5 из 7 за неделю)"
+                  value={blNewReason}
+                  onChange={(e) => setBlNewReason(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddBlacklist()}
+                />
+              </div>
+              <Button
+                onClick={handleAddBlacklist}
+                disabled={blAdding || !blNewId.trim()}
+                className="sm:w-auto w-full"
+              >
+                {blAdding ? "Добавление..." : "➕ Добавить"}
+              </Button>
+            </div>
+
+            {/* Таблица */}
+            {blLoading ? (
+              <div className="text-center py-4 text-sm text-muted-foreground">
+                Загрузка...
+              </div>
+            ) : clientBlacklist.length === 0 ? (
+              <div className="text-center py-4 text-sm text-muted-foreground">
+                Чёрный список пуст
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-center">client_id</TableHead>
+                    <TableHead className="text-center">Причина</TableHead>
+                    <TableHead className="text-center hidden md:table-cell">
+                      Добавил
+                    </TableHead>
+                    <TableHead className="text-center hidden lg:table-cell">
+                      Дата
+                    </TableHead>
+                    <TableHead className="text-center">Действия</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {clientBlacklist.map((item) => (
+                    <TableRow key={item.client_id}>
+                      <TableCell className="text-center">
+                        <code className="font-bold">{item.client_id}</code>
+                      </TableCell>
+                      <TableCell className="text-center text-sm">
+                        {item.reason || (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center hidden md:table-cell text-sm text-muted-foreground">
+                        {item.added_by_name ||
+                          (item.added_by ? `ID ${item.added_by}` : "—")}
+                      </TableCell>
+                      <TableCell className="text-center hidden lg:table-cell text-xs text-muted-foreground">
+                        {new Date(item.added_at).toLocaleString("ru-RU")}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => handleRemoveBlacklist(item.client_id)}
+                          disabled={blRemovingId === item.client_id}
+                          title="Удалить из чёрного списка"
+                        >
+                          {blRemovingId === item.client_id ? "⏳" : "🗑"}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>

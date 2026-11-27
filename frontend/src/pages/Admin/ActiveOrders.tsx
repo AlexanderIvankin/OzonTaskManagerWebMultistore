@@ -218,6 +218,21 @@ export const ActiveOrders = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
+                {order.clientBlacklisted && (
+                  <div className="rounded-md border-2 border-red-500 bg-red-50 dark:bg-red-950/30 p-2 text-center">
+                    <div className="text-base font-bold text-red-700 dark:text-red-300 uppercase tracking-wide">
+                      🚫 Клиент в чёрном списке
+                    </div>
+                    <div className="text-sm text-red-600 dark:text-red-400">
+                      <code className="font-mono font-semibold">
+                        {order.clientId}
+                      </code>
+                      {order.clientBlacklistReason && (
+                        <span> — {order.clientBlacklistReason}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="grid gap-1 text-sm text-center justify-center lg:text-start lg:justify-start">
                   <div>
                     <span className="font-semibold">Сотрудник:</span>{" "}

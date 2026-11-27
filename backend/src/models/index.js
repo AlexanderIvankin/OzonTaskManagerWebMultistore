@@ -15,6 +15,8 @@ const StoredReturn = require('./StoredReturn');
 const ProductStat = require('./ProductStat');
 const OfferModel = require('./OfferModel');
 
+const ClientBlacklist = require('./ClientBlacklist');
+
 // Чат поддержки (chat.db)
 const ChatThread = require('./ChatThread');
 const ChatMessage = require('./ChatMessage');
@@ -36,9 +38,11 @@ module.exports = {
   UserMaterial,
 
   StoredReturn,
-  
+
   ProductStat,
   OfferModel,
+
+  ClientBlacklist,
 
   ChatThread,
   ChatMessage,

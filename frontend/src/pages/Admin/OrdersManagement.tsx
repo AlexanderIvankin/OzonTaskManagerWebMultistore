@@ -5,6 +5,7 @@ import { adminApi, Warehouse } from "../../api/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -47,6 +48,10 @@ interface AwaitingOrder {
     quantity: number;
     lozon_ids: string[];
   }>;
+  // Blacklist клиента: clientId парсится из posting_number на бэке
+  clientId?: string | null;
+  clientBlacklisted?: boolean;
+  clientBlacklistReason?: string | null;
 }
 
 interface EmployeeOption {
@@ -194,6 +199,10 @@ export const OrdersManagement = () => {
   // "all" — без фильтра, иначе ID склада из warehouses
   const [warehouseFilter, setWarehouseFilter] = useState("all");
 
+  // Скрывать заказы клиентов из blacklist. Default ON — чтобы админ
+  // не тратил время на заведомо мёртвые заказы. Выключить — посмотреть.
+  const [hideBlacklisted, setHideBlacklisted] = useState(true);
+
   const loadOrders = async (warehouseId?: string) => {
     setLoading(true);
     try {
@@ -230,6 +239,15 @@ export const OrdersManagement = () => {
     setWarehouseFilter(next);
     loadOrders(next === "all" ? undefined : next);
   };
+
+  // Фильтр «скрыть blacklisted»
+  const hiddenByBlacklistCount = hideBlacklisted
+    ? orders.filter((o) => o.clientBlacklisted).length
+    : 0;
+  const visibleOrders = hideBlacklisted
+    ? orders.filter((o) => !o.clientBlacklisted)
+    : orders;
+
   const [selectedEmployee, setSelectedEmployee] = useState<{
     [key: string]: string | null;
   }>({});
@@ -313,7 +331,7 @@ export const OrdersManagement = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col items-center justify-center gap-3 text-center lg:flex-row lg:justify-between">
+      <div className="flex flex-col items-center justify-center gap-3 text-center xl:flex-row xl:justify-between">
         <h1 className="text-2xl font-bold text-center">
           ⏳ Очередь заказов (awaiting_packaging)
           <span className="block text-muted-foreground mt-1">
@@ -321,9 +339,9 @@ export const OrdersManagement = () => {
             <span className="text-blue-600">{orders.length}</span>
           </span>
         </h1>
-        <div className="flex flex-col items-center gap-2 md:flex-row md:items-end">
+        <div className="flex flex-col items-center gap-2 xl:flex-row xl:items-end">
           {/* Фильтр по складу (аналог /orders [warehouse_id]) */}
-          <div className="flex flex-col items-center md:items-start">
+          <div className="flex flex-col items-center xl:items-start">
             <Label className="mb-[8px]">Склад</Label>
             <Select
               value={warehouseFilter}
@@ -353,6 +371,28 @@ export const OrdersManagement = () => {
               </SelectContent>
             </Select>
           </div>
+
+          {/* 🚫 Скрыть blacklist — default ON */}
+          <div className="flex flex-col items-center gap-1.5 sm:flex-row md:h-8 md:rounded-md md:border md:border-input md:bg-background md:px-2.5">
+            <Switch
+              id="hide-blacklisted"
+              checked={hideBlacklisted}
+              onCheckedChange={setHideBlacklisted}
+            />
+            <Label
+              htmlFor="hide-blacklisted"
+              className="cursor-pointer select-none whitespace-nowrap text-sm leading-none"
+              title="Скрыть заказы клиентов из чёрного списка"
+            >
+              🚫 Скрыть blacklist
+              {hiddenByBlacklistCount > 0 && (
+                <span className="ml-1 text-destructive">
+                  ({hiddenByBlacklistCount})
+                </span>
+              )}
+            </Label>
+          </div>
+
           <Button onClick={() => loadOrders()} disabled={loading}>
             🔄 Обновить
           </Button>
@@ -363,13 +403,15 @@ export const OrdersManagement = () => {
         <div className="text-center py-10 text-muted-foreground">
           Загрузка заказов...
         </div>
-      ) : orders.length === 0 ? (
+      ) : visibleOrders.length === 0 ? (
         <div className="text-center py-10 text-muted-foreground">
-          Нет заказов в очереди
+          {orders.length > 0 && hiddenByBlacklistCount > 0
+            ? `Все заказы (${orders.length}) от клиентов из чёрного списка — выключите фильтр, чтобы увидеть`
+            : "Нет заказов в очереди"}
         </div>
       ) : (
         <div className="grid gap-4">
-          {orders.map((order) => {
+          {visibleOrders.map((order) => {
             const warehouseId = getOrderWarehouseId(order);
             const priorityEmployees = filterPriorityEmployees(
               visibleEmployees,
@@ -393,6 +435,26 @@ export const OrdersManagement = () => {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {/* 🚫 Клиент из blacklist — крупный красный баннер */}
+                  {order.clientBlacklisted && (
+                    <div className="rounded-md border-2 border-red-500 bg-red-50 dark:bg-red-950/30 p-3 text-center">
+                      <div className="text-lg font-bold text-red-700 dark:text-red-300 uppercase tracking-wide">
+                        🚫 Клиент в чёрном списке
+                      </div>
+                      <div className="text-sm text-red-600 dark:text-red-400 mt-1">
+                        <code className="font-mono font-semibold">
+                          {order.clientId}
+                        </code>
+                        {order.clientBlacklistReason && (
+                          <span> — {order.clientBlacklistReason}</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-red-600/80 dark:text-red-400/80 mt-1">
+                        Заказ, скорее всего, будет отменён. Назначайте
+                        осознанно.
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <div className="font-semibold mb-1 text-center lg:text-start">
                       Склад:

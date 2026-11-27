@@ -134,6 +134,13 @@ router.post('/orders/reload-queue', authorize(...STAFF_ROLES), adminController.r
 // --- Статистика товара: удаление (аналог /clear_product_stats) ---
 router.delete('/product-stats/:offerId', adminController.deleteProductStats);
 
+// --- Чёрный список клиентов (глобальный, users.db) ---
+// client_id извлекается из posting_number: "91703548-0052-1" → "91703548".
+// Вредитель один — магазинов много, поэтому общий список.
+router.get('/client-blacklist', adminController.listClientBlacklist);
+router.post('/client-blacklist', adminController.addToClientBlacklist);
+router.delete('/client-blacklist/:clientId', adminController.removeFromClientBlacklist);
+
 // --- 3D-модели (zip-архивы в S3, раздел «Модели») ---
 // Модель на артикул — ОДИН zip-архив в корне бакета: s3://<bucket>/{offer_id}.zip.
 // Лимит размера zip — MODELS_MAX_UPLOAD_MB (по умолчанию 1024 МБ = 1 ГБ).
